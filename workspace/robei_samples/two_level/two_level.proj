@@ -1,0 +1,9 @@
+<two_level name="two_level" parent="0" type="proj">
+ <model name="model" parent="two_level" type="folder">
+  <and2.model name="and2.model" parent="model" type="model"/>
+  <top_two.model name="top_two.model" parent="model" type="model"/>
+ </model>
+ <test name="test" parent="two_level" type="folder"/>
+ <const name="const" parent="two_level" type="folder"/>
+ <verilog name="verilog" parent="two_level" type="folder"/>
+</two_level>

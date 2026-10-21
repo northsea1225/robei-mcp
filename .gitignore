@@ -2,4 +2,5 @@
 __pycache__/
 workspace/build/
 workspace/testbench/
+workspace/gui_shots/
 *.pyc
