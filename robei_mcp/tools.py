@@ -640,6 +640,29 @@ def read_robei_project(proj_path: str) -> dict[str, Any]:
     }
 
 
+def _export_dependencies(out_path: Path, text: str, module_name: str) -> list[Path]:
+    """Sibling exported modules that this model instantiates (for hierarchical lint)."""
+    dependencies: list[Path] = []
+    seen = {module_name}
+    for candidate in sorted(out_path.parent.glob("*.v")):
+        if candidate == out_path:
+            continue
+        try:
+            source = candidate.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        match = re.search(r"\bmodule\s+([A-Za-z_][A-Za-z0-9_$]*)", source)
+        if not match:
+            continue
+        name = match.group(1)
+        if name in seen:
+            continue
+        if re.search(rf"\b{re.escape(name)}\b", text):
+            dependencies.append(candidate)
+            seen.add(name)
+    return dependencies
+
+
 def export_robei_verilog(
     model_path: str,
     out_name: str | None = None,
@@ -661,7 +684,8 @@ def export_robei_verilog(
         raise FileExistsError(f"refusing to overwrite existing file: {out_path}")
     out_path.write_text(text, encoding="utf-8", newline="\n")
 
-    lint = lint_verilog(files=[_rel(out_path)], top=model["name"], timeout_s=30)
+    lint_files = [_rel(out_path)] + [_rel(dep) for dep in _export_dependencies(out_path, text, model["name"])]
+    lint = lint_verilog(files=lint_files, top=model["name"], timeout_s=30)
     return {
         "ok": bool(lint.get("ok")),
         "model_path": str(path),

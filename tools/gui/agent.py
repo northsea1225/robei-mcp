@@ -215,6 +215,20 @@ def main(argv: list[str]) -> int:
     payload: dict
     if cmd == "shot":
         payload = shot(argv[2] if len(argv) > 2 else "shot")
+    elif cmd == "fg":
+        import win32gui
+        import win32process
+
+        hwnd = win32gui.GetForegroundWindow()
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        payload = {
+            "ok": True,
+            "hwnd": hwnd,
+            "title": win32gui.GetWindowText(hwnd),
+            "class": win32gui.GetClassName(hwnd),
+            "pid": pid,
+            "exe": exe_name(pid),
+        }
     elif cmd == "windows":
         payload = {"ok": True, "session_id": session_id(), "windows": list_windows()}
     elif cmd == "uia":
