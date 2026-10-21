@@ -321,6 +321,21 @@ def main(argv: list[str]) -> int:
         keyboard.send_keys(argv[2], with_spaces=True, pause=0.01)
         time.sleep(0.2)
         payload = {"ok": True, "typed_chars": len(argv[2])}
+    elif cmd == "startenv":
+        # startenv VAR=VAL [VAR2=VAL2] <exe> [args...]
+        pairs = []
+        rest = argv[2:]
+        while rest and "=" in rest[0] and not rest[0].lower().endswith(".exe"):
+            pairs.append(rest.pop(0))
+        target = rest[0]
+        args = rest[1:]
+        env = os.environ.copy()
+        for pair in pairs:
+            key, _, value = pair.partition("=")
+            env[key] = value
+        proc = subprocess.Popen([target, *args], cwd=str(Path(target).parent), env=env)
+        time.sleep(1.0)
+        payload = {"ok": True, "pid": proc.pid, "exe": target, "env": pairs}
     elif cmd == "start":
         target = argv[2]
         args = argv[3:]
