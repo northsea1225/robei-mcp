@@ -1,0 +1,5 @@
+[mcp_servers.robei]
+command = 'C:\dev\robei-mcp\.venv\Scripts\python.exe'
+args = ['C:\dev\robei-mcp\server.py']
+startup_timeout_sec = 20
+tool_timeout_sec = 120

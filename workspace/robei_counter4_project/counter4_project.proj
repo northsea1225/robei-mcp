@@ -1,0 +1,6 @@
+<counter4_project name="counter4_project" parent="0" type="proj">
+ <model name="model" parent="counter4_project" type="folder"/>
+ <test name="test" parent="counter4_project" type="folder"/>
+ <const name="const" parent="counter4_project" type="folder"/>
+ <verilog name="verilog" parent="counter4_project" type="folder"/>
+</counter4_project>

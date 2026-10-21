@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "robei": {
+      "command": "C:\\dev\\robei-mcp\\.venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\dev\\robei-mcp\\server.py"
+      ]
+    }
+  }
+}

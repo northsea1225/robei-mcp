@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "robei_remote": {
+      "command": "ssh",
+      "args": [
+        "my-win",
+        "MSYS_NO_PATHCONV=1 /c/Windows/System32/cmd.exe /d /c C:/dev/robei-mcp/run-mcp.cmd"
+      ]
+    }
+  }
+}
