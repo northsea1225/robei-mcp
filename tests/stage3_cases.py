@@ -49,7 +49,12 @@ async def main():
                 "lint_verilog",
                 "simulate",
                 "read_waveform",
+                "find_events",
+                "render_waveform",
                 "read_robei_model",
+                "read_robei_project",
+                "export_robei_verilog",
+                "generate_testbench",
             ]
 
             runtime = await call(session, "runtime_status", {})

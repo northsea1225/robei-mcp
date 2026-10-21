@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from .config import SETTINGS
@@ -80,3 +81,134 @@ def resolve_model_path(value: str | Path) -> Path:
     raise FileNotFoundError(
         "model not found under allowed roots: " + "; ".join(str(r) for r in roots)
     )
+
+
+def resolve_project_path(value: str | Path) -> Path:
+    """Resolve a Robei .proj path. Read-only: the project is never written back."""
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = SETTINGS.workspace / candidate
+    resolved = candidate.resolve()
+    roots = (SETTINGS.workspace, *SETTINGS.model_roots, SETTINGS.robei_home / "project")
+    if not any(is_within(resolved, root) for root in roots):
+        raise ValueError(f"project path escapes allowed roots: {resolved}")
+    if resolved.suffix.lower() != ".proj":
+        raise ValueError("project file must have .proj extension")
+    if not resolved.is_file():
+        raise FileNotFoundError(f"project not found: {resolved}")
+    return resolved
+
+
+# ---------------------------------------------------------------------------
+# Static path scan used before simulate()
+# ---------------------------------------------------------------------------
+
+_TOKEN_RE = re.compile(r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*.*?\*/', re.DOTALL)
+_INCLUDE_RE = re.compile(r'`include\s+"([^"\n]+)"|`include\s+<([^>\n]+)>', re.IGNORECASE)
+_PATH_FUNC_RE = re.compile(
+    r"\$(fopen|readmemh|readmemb|writememh|writememb|dumpfile)\s*\(",
+    re.IGNORECASE,
+)
+
+
+def strip_comments(text: str) -> str:
+    """Blank out comments while keeping string literals and byte offsets intact."""
+
+    def replace(match: re.Match[str]) -> str:
+        chunk = match.group(0)
+        if chunk.startswith('"'):
+            return chunk
+        return "".join("\n" if ch == "\n" else " " for ch in chunk)
+
+    return _TOKEN_RE.sub(replace, text)
+
+
+def _line_of(text: str, index: int) -> int:
+    return text.count("\n", 0, index) + 1
+
+
+def _quoted_literal(text: str, start: int) -> str | None:
+    index = start
+    while index < len(text) and text[index] in " \t\r\n":
+        index += 1
+    if index >= len(text) or text[index] != '"':
+        return None
+    end = text.find('"', index + 1)
+    if end == -1:
+        return None
+    return text[index + 1 : end]
+
+
+def _resolve_checked(raw: str, base: Path) -> tuple[Path, bool]:
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = base / candidate
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        resolved = candidate
+    return resolved, is_within(resolved, SETTINGS.workspace)
+
+
+def scan_source_paths(sources: list[Path]) -> dict:
+    """Reject simulation inputs that point at files outside the workspace.
+
+    Scans `include and $fopen/$readmemh/$readmemb/$writememh/$writememb/$dumpfile.
+    Literal paths that resolve outside the workspace are rejected. Non-literal
+    expressions are reported as unresolved instead of being guessed.
+    """
+    findings: list[dict] = []
+    rejected: list[dict] = []
+    unresolved: list[dict] = []
+
+    for source in sources:
+        try:
+            text = source.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            rejected.append({"file": str(source), "reason": f"unreadable: {exc}"})
+            continue
+        clean = strip_comments(text)
+
+        entries: list[tuple[str, str, int]] = []
+        for match in _INCLUDE_RE.finditer(clean):
+            raw = match.group(1) or match.group(2) or ""
+            entries.append(("include", raw, match.start()))
+        for match in _PATH_FUNC_RE.finditer(clean):
+            raw = _quoted_literal(clean, match.end())
+            func = "$" + match.group(1).lower()
+            if raw is None:
+                unresolved.append(
+                    {
+                        "file": str(source),
+                        "line": _line_of(clean, match.start()),
+                        "kind": func,
+                        "reason": "non-literal path expression; cannot verify statically",
+                    }
+                )
+                continue
+            entries.append((func, raw, match.start()))
+
+        for kind, raw, index in entries:
+            if not raw.strip():
+                continue
+            resolved, inside = _resolve_checked(raw, source.parent)
+            item = {
+                "file": str(source),
+                "line": _line_of(clean, index),
+                "kind": kind,
+                "raw": raw,
+                "resolved": str(resolved),
+                "inside_workspace": inside,
+            }
+            findings.append(item)
+            if not inside:
+                rejected.append(item)
+
+    return {
+        "ok": not rejected,
+        "workspace": str(SETTINGS.workspace),
+        "scanned_files": [str(p) for p in sources],
+        "findings": findings,
+        "rejected": rejected,
+        "unresolved": unresolved,
+    }

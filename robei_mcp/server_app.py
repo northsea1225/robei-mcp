@@ -11,9 +11,10 @@ mcp = MCPServer(
     name="robei-mcp",
     version=__version__,
     instructions=(
-        "Local Robei EDA helper. It wraps bundled Icarus Verilog, vvp and Yosys, "
-        "parses VCD files, and reads Robei .model XML without writing it back. "
-        "All source/output paths are restricted to the configured workspace."
+        "Local Robei EDA helper. It wraps bundled Icarus Verilog, vvp, Yosys and "
+        "(optionally) Verilator, parses VCD files, reads Robei .model/.proj XML "
+        "without writing it back, and exports Verilog into the configured "
+        "workspace. All source/output paths are restricted to the workspace."
     ),
 )
 
@@ -24,7 +25,7 @@ def _error(exc: Exception) -> dict[str, Any]:
 
 @mcp.tool()
 def runtime_status() -> dict[str, Any]:
-    """Check Robei, iverilog, vvp and yosys paths and versions."""
+    """Check Robei, iverilog, vvp, yosys and verilator paths and versions."""
     try:
         return tools.runtime_status()
     except Exception as exc:
@@ -33,7 +34,7 @@ def runtime_status() -> dict[str, Any]:
 
 @mcp.tool()
 def lint_verilog(files: list[str], top: str | None = None, timeout_s: int = 30) -> dict[str, Any]:
-    """Lint Verilog with iverilog -Wall and run a separate Yosys synthesis check."""
+    """Lint with iverilog -Wall, Verilator --lint-only -Wall and Yosys (synth + unused-wire pass)."""
     try:
         return tools.lint_verilog(files=files, top=top, timeout_s=timeout_s)
     except Exception as exc:
@@ -63,9 +64,82 @@ def read_waveform(
 
 
 @mcp.tool()
+def find_events(
+    vcd_path: str,
+    signal: str,
+    condition: str,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Find times where a signal enters a condition, e.g. signal='count' condition=\"== 4'b1111\"."""
+    try:
+        return tools.find_events(vcd_path=vcd_path, signal=signal, condition=condition, limit=limit)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def render_waveform(
+    vcd_path: str,
+    signals: list[str],
+    out_name: str | None = None,
+    title: str | None = None,
+) -> dict[str, Any]:
+    """Render selected VCD signals to a PNG under workspace/build/waveforms."""
+    try:
+        return tools.render_waveform(vcd_path=vcd_path, signals=signals, out_name=out_name, title=title)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
 def read_robei_model(path: str) -> dict[str, Any]:
     """Read a Robei .model XML file and return metadata, ports, parameters and Verilog code."""
     try:
         return tools.read_robei_model(path=path)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def read_robei_project(proj_path: str) -> dict[str, Any]:
+    """Read a Robei .proj project (read-only): folders, files and every model."""
+    try:
+        return tools.read_robei_project(proj_path=proj_path)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def export_robei_verilog(
+    model_path: str,
+    out_name: str | None = None,
+    parameter_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a full module from a .model Code+Ports, write it to workspace/build/export, then lint it."""
+    try:
+        return tools.export_robei_verilog(
+            model_path=model_path,
+            out_name=out_name,
+            parameter_overrides=parameter_overrides,
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def generate_testbench(
+    verilog_path: str,
+    top: str,
+    out_path: str | None = None,
+    clock_period_ns: int = 10,
+) -> dict[str, Any]:
+    """Generate a clock/reset/VCD testbench skeleton for a module without overwriting files."""
+    try:
+        return tools.generate_testbench(
+            verilog_path=verilog_path,
+            top=top,
+            out_path=out_path,
+            clock_period_ns=clock_period_ns,
+        )
     except Exception as exc:
         return _error(exc)

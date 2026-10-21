@@ -1,0 +1,9 @@
+<!DOCTYPE Robei>
+<Module Category="Current" Class="module" Code="and_child u1 (.a(a), .b(b), .y(t1));&#xa;and_child u2 (.a(t1), .b(c), .y(y));" Name="top_two" Parameters="" Parent="0" Type="model">
+ <Port Datatype="wire" Datasize="1" Inout="input" Name="a" Parent="top_two"/>
+ <Port Datatype="wire" Datasize="1" Inout="input" Name="b" Parent="top_two"/>
+ <Port Datatype="wire" Datasize="1" Inout="input" Name="c" Parent="top_two"/>
+ <Port Datatype="wire" Datasize="1" Inout="output" Name="y" Parent="top_two"/>
+ <Instance Name="u1" Module="and_child" X="100" Y="100"/>
+ <Instance Name="u2" Module="and_child" X="300" Y="100"/>
+</Module>

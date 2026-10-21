@@ -1,0 +1,6 @@
+<!DOCTYPE Robei>
+<Module Category="Current" Class="module" Code="assign y = a &amp; b;" Name="and_child" Parameters="" Parent="0" Type="model">
+ <Port Datatype="wire" Datasize="1" Inout="input" Name="a" Parent="and_child"/>
+ <Port Datatype="wire" Datasize="1" Inout="input" Name="b" Parent="and_child"/>
+ <Port Datatype="wire" Datasize="1" Inout="output" Name="y" Parent="and_child"/>
+</Module>

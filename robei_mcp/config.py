@@ -21,6 +21,25 @@ def _default_model_roots(workspace: Path) -> tuple[Path, ...]:
     return (Path(r"C:\ProgramData\Robei"), workspace)
 
 
+def _first_existing(candidates: tuple[Path, ...]) -> Path | None:
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+VERILATOR_CANDIDATES = (
+    Path(r"C:\msys64\ucrt64\bin\verilator_bin.exe"),
+    Path(r"C:\msys64\ucrt64\bin\verilator.exe"),
+    Path(r"C:\msys64\mingw64\bin\verilator_bin.exe"),
+)
+
+VERILATOR_ROOT_CANDIDATES = (
+    Path(r"C:\msys64\ucrt64\share\verilator"),
+    Path(r"C:\msys64\mingw64\share\verilator"),
+)
+
+
 @dataclass(frozen=True)
 class Settings:
     project_root: Path
@@ -30,6 +49,8 @@ class Settings:
     iverilog: Path
     vvp: Path
     yosys: Path
+    verilator: Path
+    verilator_root: Path
     model_roots: tuple[Path, ...]
     default_timeout_s: int = 30
     max_timeout_s: int = 120
@@ -43,6 +64,8 @@ def load_settings() -> Settings:
     workspace = _env_path("ROBEI_MCP_WORKSPACE", PROJECT_ROOT / "workspace").resolve()
     robei_home = _env_path("ROBEI_HOME", Path(r"E:\Robei")).resolve()
     bin_dir = robei_home / "bin"
+    verilator_default = _first_existing(VERILATOR_CANDIDATES) or VERILATOR_CANDIDATES[0]
+    verilator_root_default = _first_existing(VERILATOR_ROOT_CANDIDATES) or VERILATOR_ROOT_CANDIDATES[0]
     return Settings(
         project_root=PROJECT_ROOT,
         workspace=workspace,
@@ -51,6 +74,8 @@ def load_settings() -> Settings:
         iverilog=_env_path("IVERILOG_EXE", bin_dir / "iverilog.exe").resolve(),
         vvp=_env_path("VVP_EXE", bin_dir / "vvp.exe").resolve(),
         yosys=_env_path("YOSYS_EXE", bin_dir / "yosys.exe").resolve(),
+        verilator=_env_path("VERILATOR_EXE", verilator_default),
+        verilator_root=_env_path("VERILATOR_ROOT_DIR", verilator_root_default),
         model_roots=_default_model_roots(workspace),
     )
 

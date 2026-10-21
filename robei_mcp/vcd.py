@@ -275,3 +275,163 @@ def query_vcd(
     selected = match_signals(data, signals)
     result["values"] = [value_at(data, signal, time) for signal in selected]
     return result
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: event search and PNG rendering
+# ---------------------------------------------------------------------------
+
+import math
+import re as _re
+
+_COND_RE = _re.compile(r"^\s*(==|!=|>=|<=|>|<)\s*(\S+)\s*$")
+_LITERAL_RE = _re.compile(r"^(\d*)'([bBoOdDhH])([0-9a-fA-FxXzZ_?]+)$")
+
+
+class ConditionError(ValueError):
+    pass
+
+
+def parse_condition(condition: str) -> tuple[str, dict[str, Any]]:
+    match = _COND_RE.match(condition or "")
+    if not match:
+        raise ConditionError(
+            "condition must look like '== 4'b1111', '>= 5' or '!= 0' (no eval is used)"
+        )
+    op, token = match.group(1), match.group(2)
+    token = token.replace("_", "")
+    literal: dict[str, Any] = {"raw": token, "int": None, "bits": None, "width": None}
+
+    sized = _LITERAL_RE.match(token)
+    if sized:
+        width_text, base, digits = sized.groups()
+        literal["width"] = int(width_text) if width_text else None
+        base = base.lower()
+        if base == "b":
+            literal["bits"] = digits.lower()
+            if all(ch in "01" for ch in digits):
+                literal["int"] = int(digits, 2)
+        elif base == "h":
+            if all(ch in "0123456789abcdef" for ch in digits.lower()):
+                literal["int"] = int(digits, 16)
+                literal["bits"] = format(literal["int"], "b").zfill(literal["width"] or 0)
+        elif base == "o":
+            if all(ch in "01234567" for ch in digits):
+                literal["int"] = int(digits, 8)
+        elif base == "d":
+            if digits.isdigit():
+                literal["int"] = int(digits, 10)
+    elif token.isdigit():
+        literal["int"] = int(token, 10)
+    else:
+        raise ConditionError(f"unsupported literal: {token}")
+    return op, literal
+
+
+def _compare(op: str, value: str, value_int: int | None, literal: dict[str, Any]) -> bool:
+    if value_int is not None and literal["int"] is not None:
+        left, right = value_int, literal["int"]
+        return {
+            "==": left == right,
+            "!=": left != right,
+            ">": left > right,
+            ">=": left >= right,
+            "<": left < right,
+            "<=": left <= right,
+        }[op]
+    if op in {"==", "!="} and literal["bits"] is not None:
+        equal = value.lower() == literal["bits"].lower()
+        return equal if op == "==" else not equal
+    return False
+
+
+def find_events(
+    data: VcdData,
+    signal_query: str,
+    condition: str,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Find transitions into a condition, e.g. count == 4'b1111."""
+    limit = max(1, min(int(limit), 1000))
+    signal = match_signals(data, [signal_query])[0]
+    op, literal = parse_condition(condition)
+    history = data.changes.get(signal.identifier, [])
+
+    events: list[dict[str, Any]] = []
+    previous = False
+    matched_total = 0
+    for time, raw in history:
+        value, value_int = _format_value(signal, raw)
+        current = _compare(op, value, value_int, literal)
+        if current and not previous:
+            matched_total += 1
+            if len(events) < limit:
+                events.append({"time": time, "value": value, "value_int": value_int})
+        previous = current
+
+    return {
+        "signal": signal.full_name,
+        "condition": condition,
+        "timescale": data.timescale,
+        "event_count": matched_total,
+        "events": events,
+        "truncated": matched_total > len(events),
+        "max_time": data.max_time,
+    }
+
+
+def render_waveform_png(
+    data: VcdData,
+    signal_names: list[str],
+    out_path: Path,
+    title: str | None = None,
+) -> dict[str, Any]:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError as exc:  # pragma: no cover - depends on local venv
+        raise RuntimeError(
+            "matplotlib is not installed in this environment; run "
+            "'python -m pip install matplotlib' inside the venv"
+        ) from exc
+
+    if not signal_names:
+        raise ValueError("signals must not be empty")
+    if len(signal_names) > 16:
+        raise ValueError("at most 16 signals can be rendered at once")
+    signals = match_signals(data, signal_names)
+
+    fig, axes = plt.subplots(len(signals), 1, figsize=(10, 1.6 * len(signals) + 0.6), sharex=True)
+    if len(signals) == 1:
+        axes = [axes]
+
+    for axis, signal in zip(axes, signals):
+        times: list[int] = []
+        values: list[float] = []
+        for time, raw in data.changes.get(signal.identifier, []):
+            _value, value_int = _format_value(signal, raw)
+            times.append(time)
+            values.append(float(value_int) if value_int is not None else math.nan)
+        if times:
+            axis.step(times, values, where="post", linewidth=1.2)
+            axis.plot(times, values, "o", markersize=2)
+        axis.set_ylabel(signal.full_name if len(signal.full_name) < 28 else signal.name, fontsize=8)
+        axis.grid(True, alpha=0.3)
+        axis.tick_params(labelsize=7)
+
+    axes[-1].set_xlabel(f"time [{data.timescale}]", fontsize=8)
+    fig.suptitle(title or "Robei MCP waveform", fontsize=10)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=120, format="png")
+    plt.close(fig)
+
+    return {
+        "path": str(out_path),
+        "signals": [s.full_name for s in signals],
+        "size_bytes": out_path.stat().st_size,
+        "max_time": data.max_time,
+        "timescale": data.timescale,
+    }
