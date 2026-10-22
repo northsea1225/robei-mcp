@@ -76,8 +76,13 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
   `runtime_status()` 优雅返回 `ok=false` + 各工具 `exists=false`（不再 ImportError）
 - `tests/portable_core.py`：15/15 PASS（Windows，真实 iverilog/vvp/yosys），覆盖
   simulate / VCD / generate_testbench / model / project / simulate_project / lint
+- macOS（Homebrew iverilog 13.0，Python 3.14）：同一份 `portable_core.py` 跑出
+  **14 passed, 1 skipped**（skipped = 本机没装 yosys）
 - `.github/workflows/ci.yml`：ubuntu-latest + `apt install iverilog yosys` 跑同一份
-  `portable_core.py`（不需要 Robei、不需要 GUI、不需要 Windows）
+  `portable_core.py`（不需要 Robei、不需要 GUI、不需要 Windows）——首次运行就抓到两个
+  真实问题，修完后 **CI 绿**（run `39747769496`, commit `d54439d`）
+- 注意：需要 **Python 3.10+**（`Path.write_text(newline=...)` 是 3.10 才有的参数；
+  macOS 自带的 3.9 会在 `generate_testbench` 处报 TypeError）
 
 仅可见 / 待定：
 
@@ -547,6 +552,15 @@ read_waveform / find_events / render_waveform 读 build/<test>.vcd
 
 `tests/portable_core.py` 是"无 Robei / 无 GUI / 跨平台"的子集：simulate、VCD 解析、
 `generate_testbench` 往返、`.model`/`.proj` 只读解析、`simulate_project`、lint。
+每一步是独立 step（`simulate` / `testbench` / `robei-xml` / `headless` / `lint`），
+所以失败时 annotation 直接点名是哪一组，不用翻日志。
+
+第一版 CI 就是靠这个定位到两个问题的：
+1. `portable_core` 断言了 `runtime_status()["ok"]`，而它要求 Robei 本体存在——
+   CI 里没有 Robei，必然失败；改成断言 iverilog/vvp 存在。
+2. Ubuntu 与 macOS 都缺少 Windows 上的 `D:\robei-lab` 沙盒路径，`config.py` 里
+   `ctypes.wintypes` 的顶层 import 直接让整包无法导入；改成条件导入 + 按平台探测 PATH。
+
 Robei 相关的一切（`robei_gui_*`、`robei_doctor` 的 GUI 任务检查、stage5–13）只在
 Windows 交互桌面上跑，不进 CI。
 
