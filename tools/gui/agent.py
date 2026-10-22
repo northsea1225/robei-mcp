@@ -215,6 +215,10 @@ def main(argv: list[str]) -> int:
     payload: dict
     if cmd == "shot":
         payload = shot(argv[2] if len(argv) > 2 else "shot")
+    elif cmd.startswith("probe"):
+        import importlib
+
+        payload = importlib.import_module(cmd).run()
     elif cmd == "fg":
         import win32gui
         import win32process
@@ -231,6 +235,24 @@ def main(argv: list[str]) -> int:
         }
     elif cmd == "windows":
         payload = {"ok": True, "session_id": session_id(), "windows": list_windows()}
+    elif cmd == "uia_pid":
+        from pywinauto import Application
+
+        target_exe = argv[2].lower()
+        rows = []
+        for win in list_windows():
+            if win["exe"].lower() != target_exe:
+                continue
+            row = {"hwnd": win["hwnd"], "title": win["title"], "class": win["class"], "count": None}
+            try:
+                app = Application(backend="uia").connect(handle=win["hwnd"])
+                dlg = app.window(handle=win["hwnd"])
+                row["count"] = len(dlg.descendants())
+                row["control_type"] = dlg.element_info.control_type
+            except Exception as exc:
+                row["error"] = f"{type(exc).__name__}: {exc}"
+            rows.append(row)
+        payload = {"ok": True, "windows": rows}
     elif cmd == "uia":
         payload = uia_dump(argv[2] if len(argv) > 2 else "Robei", int(argv[3]) if len(argv) > 3 else 120)
     elif cmd == "focus":
