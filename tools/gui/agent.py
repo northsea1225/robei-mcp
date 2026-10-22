@@ -219,6 +219,10 @@ def main(argv: list[str]) -> int:
         import importlib
 
         payload = importlib.import_module(cmd).run()
+    elif cmd == "job":
+        import agent_job
+
+        payload = agent_job.run()
     elif cmd == "fg":
         import win32gui
         import win32process

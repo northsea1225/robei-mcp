@@ -4,3 +4,6 @@ workspace/build/
 workspace/testbench/
 workspace/gui_shots/
 *.pyc
+tools/gui/agent-job.json
+workspace/**/build/
+tools/gui/agent-args.txt

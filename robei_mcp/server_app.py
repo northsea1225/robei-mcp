@@ -5,7 +5,7 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 
 from . import __version__
-from . import tools
+from . import gui, tools
 
 mcp = MCPServer(
     name="robei-mcp",
@@ -14,7 +14,9 @@ mcp = MCPServer(
         "Local Robei EDA helper. It wraps bundled Icarus Verilog, vvp, Yosys and "
         "(optionally) Verilator, parses VCD files, reads Robei .model/.proj XML "
         "without writing it back, and exports Verilog into the configured "
-        "workspace. All source/output paths are restricted to the workspace."
+        "workspace. All source/output paths are restricted to the workspace. "
+        "The robei_gui_* tools drive the Robei IDE itself through its built-in "
+        "UIA accessibility bridge (open project, open model, compile, read log)."
     ),
 )
 
@@ -141,5 +143,68 @@ def generate_testbench(
             out_path=out_path,
             clock_period_ns=clock_period_ns,
         )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def robei_gui_status(output_lines: int = 20) -> dict[str, Any]:
+    """Report whether Robei is running, the loaded project, open models and the Output tail."""
+    try:
+        return gui.status(output_lines=output_lines)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def robei_gui_launch(wait_s: int = 30) -> dict[str, Any]:
+    """Start the Robei IDE on the interactive desktop and wait for its main window."""
+    try:
+        return gui.launch(wait_s=wait_s)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def robei_gui_open_project(proj_path: str, timeout_s: int = 90) -> dict[str, Any]:
+    """Open a .proj through File > Open and verify the Files tree shows that project."""
+    try:
+        return gui.open_project(proj_path=proj_path, timeout_s=timeout_s)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def robei_gui_open_model(name: str, timeout_s: int = 90) -> dict[str, Any]:
+    """Double-click a model in the Robei Files tree so its canvas becomes the current one."""
+    try:
+        return gui.open_model(name=name, timeout_s=timeout_s)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def robei_gui_compile(timeout_s: int = 90) -> dict[str, Any]:
+    """Run Build > Compile on the open model and return the new Output lines."""
+    try:
+        return gui.compile_model(timeout_s=timeout_s)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def robei_gui_output(lines: int = 80) -> dict[str, Any]:
+    """Read the last N lines of the Robei Output dock."""
+    try:
+        return gui.output(lines=lines)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def robei_gui_close() -> dict[str, Any]:
+    """Force-close the Robei IDE. Unsaved model edits are lost."""
+    try:
+        return gui.close()
     except Exception as exc:
         return _error(exc)

@@ -1,0 +1,80 @@
+# Robei GUI 工具（robei_gui_*）
+
+MCP 直接驱动 Robei 本体。底层走 Robei 自编入的 **UIA provider**（详见 `L1-uia-bridge.md`），
+不修改程序、不注入 DLL、不需要 `QT_ACCESSIBILITY`。
+
+## 前置条件
+
+1. Windows 上有**已登录且未锁屏**的交互桌面（Session 1）。
+2. 注册辅助任务（只需一次）：
+
+```powershell
+python tools\gui\register_task.py            # 创建/刷新 RobeiMCP_GuiAgent
+python tools\gui\register_task.py --remove   # 不再需要时删除
+```
+
+`register_task.py` 用当前用户名注册 `/IT`（仅交互式）任务，动作是
+`C:\dev\robei-mcp\.venv\Scripts\pythonw.exe C:\dev\robei-mcp\tools\gui\agent_launch.py`。
+
+## 传输方式
+
+| 场景 | mode | 行为 |
+| --- | --- | --- |
+| MCP 服务器跑在交互桌面 | `direct` | 在同一进程里直接调 `tools/gui/robei_ui.py` |
+| MCP 服务器跑在 Session 0（SSH / 服务） | `queued` | 写 `tools/gui/agent-job.json` → `schtasks /Run RobeiMCP_GuiAgent` → 轮询 `workspace/gui_shots/last.json` 匹配 `job_id` |
+
+`robei_gui_status` 返回里的 `bridge` 字段会给出 `server_session` / `console_session` / `task_state`，
+可直接判断当前是哪种模式。单个任务串行执行，默认超时 90 秒（上限 180 秒）。
+
+## 工具
+
+| 工具 | 作用 | 关键返回 |
+| --- | --- | --- |
+| `robei_gui_status(output_lines=20)` | 是否在运行、当前工程、打开的模型页签、Output 尾部 | `running` `project` `tree` `models` `output_tail` `bridge` |
+| `robei_gui_launch(wait_s=30)` | 启动 Robei（默认 `D:\robei-lab\robei\bin\Robei.exe`，可用 `ROBEI_GUI_EXE` 覆盖） | `pid` `title` `already_running` |
+| `robei_gui_open_project(proj_path, timeout_s=90)` | File→Open，键入绝对路径并回车，随后用 Files 树根节点校验 | `project` `tree` `dialog` |
+| `robei_gui_open_model(name, timeout_s=90)` | 展开 Files 树（Qt 忽略 UIA 展开模式，改用 `点击 + →`）后双击模型 | `models` `tree` |
+| `robei_gui_compile(timeout_s=90)` | Build→Compile，解析 `Output` 增量 | `generated` `errors` `warnings` `missing_modules` `check_warnings` |
+| `robei_gui_output(lines=80)` | Output 面板末 N 行 | `text` `lines_total` |
+| `robei_gui_close()` | `taskkill /F /IM Robei.exe` | `stdout` |
+
+路径校验：`robei_gui_open_project` 复用 `security.resolve_project_path`，
+只允许 `workspace`、`ROBEI_MODEL_ROOTS`（默认 `C:\ProgramData\Robei`）和 `ROBEI_HOME\project` 之下的 `.proj`。
+
+## 实测
+
+`tests/stage5_gui_cases.py` 用真实 stdio MCP 客户端串起 10 项断言：
+
+```
+PASS  tool_registration        PASS  robei_gui_launch      PASS  robei_gui_open_model
+PASS  status_before_launch     PASS  robei_gui_status      PASS  robei_gui_compile
+PASS  robei_gui_open_project   PASS  robei_gui_output      PASS  robei_gui_close
+PASS  status_after_close
+10/10 passed
+```
+
+编译 `and2.model` 的真实返回：
+
+```json
+{"ok": true, "compiled": true, "check_warnings": 0, "error_count": 0,
+ "generated": ["C:/dev/robei-mcp/workspace/robei_samples/two_level/build/and2.v"]}
+```
+
+## 已知限制
+
+1. **Compile 只编译当前打开的 model**。没有打开模型时不会编译工程，工具会直接拒绝并提示先 `robei_gui_open_model`。
+2. **层次化 model 的 elaboration 仍会报错**：`top_two`（实例化 `and2`）编译时 Robei 只把 `top_two.v` 放进 `filelist.vf`，
+   `iverilog` 去 `C:\ProgramData\Robei\lib\AND2.v` 找库并撞上重复声明：
+
+   ```
+   top_two.v:12: error: Unknown module type: and2
+   C:/ProgramData/Robei/lib/AND2.v:23: error: 'AND2' has already been declared in this scope.
+   *** These modules were missing:
+   and2 referenced 2 times.
+   ```
+
+   这不是本项目的 bug，是 Robei 自己的库解析行为；工具的 `missing_modules`/`errors` 会如实回传。
+3. Robei 编译时会往**安装副本**目录（`<install>\project\test1\model\`）写模板模型，属其自身行为；`E:\Robei` 只读使用时需注意。
+4. `robei_gui_compile` 返回的 `model` 是**所有打开的页签**，不是“当前激活页签”（UIA 未暴露选中态，待补）。
+5. 同一时刻只允许一个 GUI 任务；并发调用会被计划任务串行化，可能触发超时。
+6. `robei_gui_close` 是强制结束进程，未保存的模型编辑会丢失。

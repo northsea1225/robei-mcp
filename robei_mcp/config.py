@@ -40,12 +40,19 @@ VERILATOR_ROOT_CANDIDATES = (
 )
 
 
+def _default_gui_exe(robei_home: Path) -> Path:
+    """Prefer the sandbox copy of the IDE so the install tree stays untouched."""
+    sandbox = Path(r"D:\robei-lab\robei\bin\Robei.exe")
+    return sandbox if sandbox.is_file() else robei_home / "bin" / "Robei.exe"
+
+
 @dataclass(frozen=True)
 class Settings:
     project_root: Path
     workspace: Path
     robei_home: Path
     robei_exe: Path
+    robei_gui_exe: Path
     iverilog: Path
     vvp: Path
     yosys: Path
@@ -71,6 +78,7 @@ def load_settings() -> Settings:
         workspace=workspace,
         robei_home=robei_home,
         robei_exe=_env_path("ROBEI_EXE", bin_dir / "Robei.exe").resolve(),
+        robei_gui_exe=_env_path("ROBEI_GUI_EXE", _default_gui_exe(robei_home)).resolve(),
         iverilog=_env_path("IVERILOG_EXE", bin_dir / "iverilog.exe").resolve(),
         vvp=_env_path("VVP_EXE", bin_dir / "vvp.exe").resolve(),
         yosys=_env_path("YOSYS_EXE", bin_dir / "yosys.exe").resolve(),
