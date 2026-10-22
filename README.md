@@ -47,6 +47,18 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
 - `robei_gui_compile_all`：`two_level` 两个模型 2/2 通过，层次化 `top_two` 靠
   `iverilog -y <工程>/verilog` 找到 `and2`
 
+已验证（阶段 13，`tests/stage13_doctor.py`，18/18 PASS）：
+
+- `robei_doctor` 一项一项报告 python / venv / mcp / matplotlib / workspace 可写 /
+  Robei / iverilog / vvp / yosys / verilator / GUI 任务 / 环境变量覆盖
+- `deep=true` 会真的编译并运行一个两行 testbench，输出 `DOCTOR_OK` 才算通过
+- 负向：把 `ROBEI_HOME` 指到不存在的目录，doctor 返回 `ok=false`、失败项
+  `['robei_exe','iverilog','vvp','yosys']`，并给出 `ROBEI_HOME` 的修复提示
+- `tools\setup.py --check` 退出码 0；`--apply` 重复执行全部 `skip`
+- `.const` 现在会被解析：真机 `File→New→const` 生成的文件是
+  `<Module Type="const" Vendor="AMD" Device="" Family="" Code="" .../>`，
+  与 `.model`/`.test` 同一个 `<Module>` 根，因此复用同一个解析器
+
 仅可见 / 待定：
 
 - Robei GUI 打开和编译：当前 SSH 在 Session 0，交互桌面在 Session 1，无法从 SSH 看到/点击 GUI；已准备 `workspace\robei_counter4_project` 和手动步骤，待人工验证。
@@ -76,6 +88,10 @@ C:\dev\robei-mcp\
     tools.py                     工具实现
     vcd.py                       VCD 解析、事件查询、PNG 渲染
     verilog.py                   端口解析 + testbench 生成
+    doctor.py                    环境自检（python/venv/包/路径/任务/深度仿真）
+  tools\
+    setup.py                     一键 bootstrap + 自检（--check / --apply）
+    gui\                          Session 1 侧 UIA 驱动与 schtasks 桥
   tests\
     stage2_smoke.py              正常路径冒烟
     stage3_cases.py              警告、语法错误、超时、残留进程
@@ -99,6 +115,21 @@ C:\dev\robei-mcp\
 ```
 
 ## 安装
+
+一条命令搞定（只补缺的，不改 `E:\Robei`）：
+
+```powershell
+# 只检查，不动磁盘
+python C:\dev\robei-mcp\tools\setup.py --check
+
+# 缺什么建什么：.venv、mcp/matplotlib、Session-1 助手任务
+python C:\dev\robei-mcp\tools\setup.py --apply
+```
+
+`--apply` 的每一步都会打印（`done` / `skip` + 结果），重复执行是幂等的。
+想连"真的能编译并跑一个 tb"一起验证，加 `--deep`。
+
+手工步骤（等价）：
 
 已使用系统 Python 3.12.10 创建虚拟环境：
 
@@ -323,6 +354,18 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
 
 只读解析 `.model` 的模块名、类型、参数、端口、`parameter_list` 和 `Code`。
 非 `Port` 的子节点（例如 `Instance`）以通用节点树放进 `other_children`，不猜测含义。不写回。
+
+### `robei_doctor`
+
+```json
+{"deep": false}
+```
+
+自检整条链路，每项返回 `{name, ok, required, detail, hint}`，`ok` 只由
+`required` 项决定（Verilator、GUI 任务、matplotlib 是可选件）。
+
+`deep=true` 时会在 `workspace/build/doctor/` 编译并运行一个两行 testbench，
+只有拿到 `DOCTOR_OK` 才算通过——用来区分"路径对"和"真的能跑"。
 
 ### `list_projects`
 
@@ -565,7 +608,10 @@ C:\dev\robei-mcp\workspace\robei_counter4_project\
   而不是"窗口在不在"。
 - 层次化 `.model` 的实例/连线 schema 未用真实 Robei 工程验证：当前只做通用节点树保留，
   不解释 `Instance`/`netlist` 的语义；等 Robei 里画出的两层样例补齐后再定。
-- `.test`、`.const` 目录只列文件，不解析内容。
+- `read_robei_project` 现在解析 `.model` / `.test` / `.const` 三类，但只到属性层
+  （名称、Type、Code、端口、Vendor/Device/Family）；画布上的 `Instance`/连线语义仍未解释。
+- 没有创建 `.const` 的工具：真机生成的空 const 只有 `<Module Type="const">`，
+  引脚/时序约束的写法需要真实样例才能实现（同类问题见层次化 Instance）。
 - `generate_testbench` 是骨架生成器，不理解设计语义（例如不会自动产生激励序列或断言）。
 - 超时后可能留下部分 VCD；这是被终止仿真的预期副产物。
 - Codex 长驻 app-server 需要重启才能热加载新 MCP server。
@@ -596,7 +642,7 @@ Robei 原生闭环已接入：`create_robei_test` + `sync_robei_verilog` + `robe
 - `robei_gui_experiment(plot=True)`：跑完自动把 VCD 画成 PNG 放到
   `workspace/build/waveforms/`，一次调用拿到 输出 + 波形 + 信号列表
 
-回归：`tests\stage5_gui_cases.py`（10 项）、`tests\stage6_gui_code.py`（11 项）、`tests\stage7_model_ports.py`（10 项）、`tests\stage8_create_flow.py`（10 项）、`tests\stage9_native_run.py`、`tests\stage10_counter_native.py`、`tests\stage11_mcp_native.py`（14 项）、`tests\stage12_ops.py`（17 项），都走真实 stdio MCP 客户端，全部 PASS。
+回归：`tests\stage5_gui_cases.py`（10 项）、`tests\stage6_gui_code.py`（11 项）、`tests\stage7_model_ports.py`（10 项）、`tests\stage8_create_flow.py`（10 项）、`tests\stage9_native_run.py`、`tests\stage10_counter_native.py`、`tests\stage11_mcp_native.py`（14 项）、`tests\stage12_ops.py`（17 项）、`tests\stage13_doctor.py`（18 项），都走真实 stdio MCP 客户端，全部 PASS。
 
 ## 从 SSH 会话推送仓库
 

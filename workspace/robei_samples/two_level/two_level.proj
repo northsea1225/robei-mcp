@@ -4,6 +4,8 @@
   <top_two.model name="top_two.model" parent="model" type="model"/>
  </model>
  <test name="test" parent="two_level" type="folder"/>
- <const name="const" parent="two_level" type="folder"/>
+ <const name="const" parent="two_level" type="folder">
+  <pin_probe.const name="pin_probe.const" parent="const" type="const"/>
+ </const>
  <verilog name="verilog" parent="two_level" type="folder"/>
 </two_level>

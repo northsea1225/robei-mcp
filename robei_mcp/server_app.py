@@ -5,7 +5,7 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 
 from . import __version__
-from . import gui, tools
+from . import doctor, gui, tools
 
 mcp = MCPServer(
     name="robei-mcp",
@@ -98,6 +98,18 @@ def read_robei_model(path: str) -> dict[str, Any]:
     """Read a Robei .model XML file and return metadata, ports, parameters and Verilog code."""
     try:
         return tools.read_robei_model(path=path)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def robei_doctor(deep: bool = False) -> dict[str, Any]:
+    """Self-check the whole stack: python/venv, mcp+matplotlib, workspace, Robei, iverilog/vvp/yosys, GUI task.
+
+    Set deep=True to also compile and run a two-line testbench with the configured iverilog/vvp.
+    """
+    try:
+        return doctor.run(deep=deep)
     except Exception as exc:
         return _error(exc)
 

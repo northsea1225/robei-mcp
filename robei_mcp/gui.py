@@ -86,6 +86,11 @@ def _task_query() -> dict[str, Any]:
     return {"exists": True, "state": state}
 
 
+def task_status() -> dict[str, Any]:
+    """Is the Session-1 helper task registered, and in which state?"""
+    return {"task": TASK_NAME, **_task_query()}
+
+
 def _read_last() -> dict[str, Any] | None:
     try:
         return json.loads(LAST_JSON.read_text(encoding="utf-8"))

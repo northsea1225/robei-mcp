@@ -633,6 +633,8 @@ def list_projects(limit: int = 200) -> dict[str, Any]:
         entry["models"] = sorted(p.stem for p in model_dir.glob("*.model")) if model_dir.is_dir() else []
         entry["tests"] = sorted(p.stem for p in test_dir.glob("*.test")) if test_dir.is_dir() else []
         entry["verilog"] = sorted(p.name for p in verilog_dir.glob("*.v")) if verilog_dir.is_dir() else []
+        const_dir = proj.parent / "const"
+        entry["constraints"] = sorted(p.name for p in const_dir.glob("*.const")) if const_dir.is_dir() else []
         entry["build"] = {
             "exists": build_dir.is_dir(),
             "vcd": sorted(p.name for p in build_dir.glob("*.vcd")) if build_dir.is_dir() else [],
@@ -692,6 +694,17 @@ def read_robei_project(proj_path: str) -> dict[str, Any]:
         except Exception as exc:
             test_errors.append({"file": str(test_path), "error": f"{type(exc).__name__}: {exc}"})
 
+    constraints: list[dict[str, Any]] = []
+    constraint_errors: list[dict[str, str]] = []
+    for entry in (folders.get("const") or {}).get("files", []):
+        if entry["extension"] != ".const":
+            continue
+        const_path = Path(entry.get("path") or (project_dir / entry["name"]))
+        try:
+            constraints.append(parse_robei_model(const_path))
+        except Exception as exc:
+            constraint_errors.append({"file": str(const_path), "error": f"{type(exc).__name__}: {exc}"})
+
     sha_after = _sha256(path)
     return {
         "ok": True,
@@ -707,6 +720,8 @@ def read_robei_project(proj_path: str) -> dict[str, Any]:
         "model_errors": model_errors,
         "tests": tests,
         "test_errors": test_errors,
+        "constraints": constraints,
+        "constraint_errors": constraint_errors,
         "sha256_before": sha_before,
         "sha256_after": sha_after,
         "unchanged": sha_before == sha_after,
