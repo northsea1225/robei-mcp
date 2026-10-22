@@ -67,6 +67,18 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
   与真实输出逐行相等；`find_events(count == 4'b1111)` 同样是 `t=155`，和 IDE 内跑的一致
 - `render=true` 同时产出 PNG；未知 test 名会返回可用列表
 
+已验证（阶段 15，可移植性 + CI）：
+
+- `config.py` 不再硬依赖 `ctypes.wintypes`（非 Windows 条件导入），工具路径按平台探测
+  （Windows 走 `<ROBEI_HOME>\bin\*.exe`，POSIX 走 `/usr/bin`、`/usr/local/bin`、
+  `/opt/homebrew/bin`、`/opt/local/bin`）
+- macOS 上 `git clone` 后 `from robei_mcp import tools` 成功，
+  `runtime_status()` 优雅返回 `ok=false` + 各工具 `exists=false`（不再 ImportError）
+- `tests/portable_core.py`：15/15 PASS（Windows，真实 iverilog/vvp/yosys），覆盖
+  simulate / VCD / generate_testbench / model / project / simulate_project / lint
+- `.github/workflows/ci.yml`：ubuntu-latest + `apt install iverilog yosys` 跑同一份
+  `portable_core.py`（不需要 Robei、不需要 GUI、不需要 Windows）
+
 仅可见 / 待定：
 
 - Robei GUI 打开和编译：当前 SSH 在 Session 0，交互桌面在 Session 1，无法从 SSH 看到/点击 GUI；已准备 `workspace\robei_counter4_project` 和手动步骤，待人工验证。
@@ -523,6 +535,24 @@ read_waveform / find_events / render_waveform 读 build/<test>.vcd
 5. `.proj` 是登记表：手工放进去的文件必须同时写进 `.proj` 对应目录块，否则
    Files 树里看不到，`robei_gui_open_model` 会返回 not found。
 
+## 持续集成
+
+```text
+.github/workflows/ci.yml
+  portable (ubuntu-latest)
+    apt install iverilog yosys
+    pip install -r requirements.txt
+    python tests/portable_core.py
+```
+
+`tests/portable_core.py` 是"无 Robei / 无 GUI / 跨平台"的子集：simulate、VCD 解析、
+`generate_testbench` 往返、`.model`/`.proj` 只读解析、`simulate_project`、lint。
+Robei 相关的一切（`robei_gui_*`、`robei_doctor` 的 GUI 任务检查、stage5–13）只在
+Windows 交互桌面上跑，不进 CI。
+
+跨平台注意：Linux/macOS 只支持核心工具链（iverilog/vvp/yosys/verilator），
+`robei_gui_*` 会返回 `GUI tools require Windows`。
+
 ## 安全边界
 
 - 固定工具白名单，`shell=False`。
@@ -633,6 +663,8 @@ C:\dev\robei-mcp\workspace\robei_counter4_project\
   而不是"窗口在不在"。
 - 层次化 `.model` 的实例/连线 schema 未用真实 Robei 工程验证：当前只做通用节点树保留，
   不解释 `Instance`/`netlist` 的语义；等 Robei 里画出的两层样例补齐后再定。
+- 核心工具在 Linux/macOS 上可用（只要有 iverilog/vvp），但 `robei_gui_*` 与 Robei
+  版本读取是 Windows 专属；CI 只覆盖核心部分。
 - **画布编辑无法自动化**：右键 `Add model`、ToolBox 列表、按坐标拖拽三条路都试过，
   模型文件都不变（细节见 `docs/gui-tools.md` 末节）。要层次化设计只能写 `Code` 字段，
   这条已验证可编译。
@@ -670,7 +702,7 @@ Robei 原生闭环已接入：`create_robei_test` + `sync_robei_verilog` + `robe
 - `robei_gui_experiment(plot=True)`：跑完自动把 VCD 画成 PNG 放到
   `workspace/build/waveforms/`，一次调用拿到 输出 + 波形 + 信号列表
 
-回归：`tests\stage5_gui_cases.py`（10 项）、`tests\stage6_gui_code.py`（11 项）、`tests\stage7_model_ports.py`（10 项）、`tests\stage8_create_flow.py`（10 项）、`tests\stage9_native_run.py`、`tests\stage10_counter_native.py`、`tests\stage11_mcp_native.py`（14 项）、`tests\stage12_ops.py`（17 项）、`tests\stage13_doctor.py`（18 项）、`tests\stage14_headless.py`（9 项），都走真实 stdio MCP 客户端（stage14 连 IDE 都不需要），全部 PASS。
+回归：`tests\stage5_gui_cases.py`（10 项）、`tests\stage6_gui_code.py`（11 项）、`tests\stage7_model_ports.py`（10 项）、`tests\stage8_create_flow.py`（10 项）、`tests\stage9_native_run.py`、`tests\stage10_counter_native.py`、`tests\stage11_mcp_native.py`（14 项）、`tests\stage12_ops.py`（17 项）、`tests\stage13_doctor.py`（18 项）、`tests\stage14_headless.py`（9 项），都走真实 stdio MCP 客户端（stage14 连 IDE 都不需要）；另有跨平台的 `tests/portable_core.py`（15 项，CI 跑的就是它）。全部 PASS。
 
 ## 从 SSH 会话推送仓库
 

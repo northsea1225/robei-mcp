@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import ctypes
-import ctypes.wintypes as wintypes
 import os
+
+try:  # ctypes.wintypes only exists on Windows
+    import ctypes.wintypes as wintypes
+except Exception:  # pragma: no cover - non-Windows hosts
+    wintypes = None
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,11 +18,28 @@ def _env_path(name: str, default: Path) -> Path:
     return Path(value).expanduser() if value else default
 
 
+IS_WINDOWS = os.name == "nt"
+POSIX_BIN_DIRS = (Path("/usr/bin"), Path("/usr/local/bin"), Path("/opt/homebrew/bin"), Path("/opt/local/bin"))
+
+
+def _tool_default(name: str, bin_dir: Path) -> Path:
+    """Robei ships the toolchain next to the IDE on Windows; POSIX uses PATH dirs."""
+    if IS_WINDOWS:
+        return bin_dir / f"{name}.exe"
+    for directory in POSIX_BIN_DIRS:
+        candidate = directory / name
+        if candidate.is_file():
+            return candidate
+    return POSIX_BIN_DIRS[0] / name
+
+
 def _default_model_roots(workspace: Path) -> tuple[Path, ...]:
     raw = os.environ.get("ROBEI_MODEL_ROOTS")
     if raw:
         return tuple(Path(p).expanduser() for p in raw.split(os.pathsep) if p.strip())
-    return (Path(r"C:\ProgramData\Robei"), workspace)
+    if IS_WINDOWS:
+        return (Path(r"C:\ProgramData\Robei"), workspace)
+    return (workspace,)
 
 
 def _first_existing(candidates: tuple[Path, ...]) -> Path | None:
@@ -32,6 +53,10 @@ VERILATOR_CANDIDATES = (
     Path(r"C:\msys64\ucrt64\bin\verilator_bin.exe"),
     Path(r"C:\msys64\ucrt64\bin\verilator.exe"),
     Path(r"C:\msys64\mingw64\bin\verilator_bin.exe"),
+    Path("/usr/bin/verilator_bin"),
+    Path("/usr/bin/verilator"),
+    Path("/opt/homebrew/bin/verilator"),
+    Path("/usr/local/bin/verilator"),
 )
 
 VERILATOR_ROOT_CANDIDATES = (
@@ -79,9 +104,9 @@ def load_settings() -> Settings:
         robei_home=robei_home,
         robei_exe=_env_path("ROBEI_EXE", bin_dir / "Robei.exe").resolve(),
         robei_gui_exe=_env_path("ROBEI_GUI_EXE", _default_gui_exe(robei_home)).resolve(),
-        iverilog=_env_path("IVERILOG_EXE", bin_dir / "iverilog.exe").resolve(),
-        vvp=_env_path("VVP_EXE", bin_dir / "vvp.exe").resolve(),
-        yosys=_env_path("YOSYS_EXE", bin_dir / "yosys.exe").resolve(),
+        iverilog=_env_path("IVERILOG_EXE", _tool_default("iverilog", bin_dir)).resolve(),
+        vvp=_env_path("VVP_EXE", _tool_default("vvp", bin_dir)).resolve(),
+        yosys=_env_path("YOSYS_EXE", _tool_default("yosys", bin_dir)).resolve(),
         verilator=_env_path("VERILATOR_EXE", verilator_default),
         verilator_root=_env_path("VERILATOR_ROOT_DIR", verilator_root_default),
         model_roots=_default_model_roots(workspace),

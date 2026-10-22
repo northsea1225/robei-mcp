@@ -205,7 +205,18 @@ Robei 重新打开工程后仍未把它当作可运行的测试模型（Run 依�
 3. **按估算坐标从 ToolBox 拖到画布**（`mouse.press/move/release` 分 10 步）：
    拖拽动作本身返回成功，模型文件仍然不变。
 
-结论：这个版本的 Robei 没有可用的画布编辑自动化入口。要用 MCP 生成"画布级"
-层次化设计，只能沿用 `Code` 字段写实例化——那条路已经验证可编译
+4. **找 `code2graph`（"Code to Graph"）**：exe 里确实有 `code2graph` / `Code to Graph`
+   字符串，但在 UI 上找不到入口——画布右键只有 `Parameters` / `Datasheet`，
+   模型标签页右键为空，`Edit` 菜单只有 Copy/Paste/Cut/Delete/Find。
+5. **工具栏**：主窗口上那排图标根本不暴露给 UIA（`descendants()` 里只有 `MenuBar`，
+   没有任何 `QToolButton`），所以无法按名字点到"Code to Graph"。
+6. **搜索面板**：`Search for Models` 能搜到 `and2` / `top_two`，但结果项坐标是负的
+   （`-933,-752`，不在任何屏幕上），右键菜单因此抓不到。
+
+结论：这个版本的 Robei 没有可用的画布编辑自动化入口（6 条路都试过）。要用 MCP 生成
+"画布级"层次化设计，只能沿用 `Code` 字段写实例化——那条路已经验证可编译
 （`two_level` 的 `top_two` 在 `compile_all` 里 2/2 通过）。
-`<Instance>` / `Wire` 的 schema 仍然需要一个真人拖出来的样例才能补。
+
+`<Instance>` / `Wire` 的 schema 仍然需要一个真人拖出来的样例。拿到样例后不需要改代码
+就能先"看见"它：`read_robei_model` 会把未知子节点原样放在 `other_children` 里
+（`generic_node`：tag / attributes / text / children）。
