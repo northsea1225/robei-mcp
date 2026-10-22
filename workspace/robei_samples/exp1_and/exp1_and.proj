@@ -1,0 +1,8 @@
+<exp1_and name="exp1_and" parent="0" type="proj">
+ <model name="model" parent="exp1_and" type="folder">
+  <and_gate.model name="and_gate.model" parent="model" type="model"/>
+ </model>
+ <test name="test" parent="exp1_and" type="folder"/>
+ <const name="const" parent="exp1_and" type="folder"/>
+ <verilog name="verilog" parent="exp1_and" type="folder"/>
+</exp1_and>
