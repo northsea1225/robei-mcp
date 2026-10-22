@@ -877,3 +877,175 @@ def set_port(
         "sha256_after": _sha256(path),
         "ports": parsed.get("ports"),
     }
+
+
+# ---------------------------------------------------------------------------
+# project / model scaffolding (workspace only)
+# ---------------------------------------------------------------------------
+
+MODEL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _attr(value: str) -> str:
+    from xml.sax.saxutils import escape
+
+    return escape(value, {'"': "&quot;"}).replace("\n", "&#xa;")
+
+
+def _model_xml(name: str, ports: list[dict] | None, code: str, comment: str) -> str:
+    head = (
+        f'<Module Category="Current" Class="module" Code="{_attr(code)}" Color="#d3d3d3" '
+        f'Comment="{_attr(comment)}" Height="1080" Name="{name}" Parameters="" Parent="0" '
+        f'Type="model" Width="1600" X="0" Y="0">'
+    )
+    lines = ["<!DOCTYPE Robei>", head]
+    for index, port in enumerate(ports or []):
+        direction = str(port.get("direction", "input")).lower()
+        side = str(port.get("side") or ("left" if direction == "input" else "right")).lower()
+        lines.append(
+            " "
+            + _port_tag(
+                name,
+                str(port["name"]),
+                direction,
+                int(port.get("width", 1)),
+                str(port.get("datatype", "wire")).lower(),
+                side,
+                index,
+            )
+        )
+    lines.append("</Module>")
+    return "\n".join(lines) + "\n"
+
+
+def _register_model_in_project(proj_path: Path, model_name: str) -> bool:
+    """Append a model entry to the <model> folder of a .proj, text-preserving."""
+    with proj_path.open("r", encoding="utf-8", newline="") as handle:
+        text = handle.read()
+    entry = f'<{model_name}.model name="{model_name}.model" parent="model" type="model"/>'
+    if f'<{model_name}.model ' in text:
+        return False
+    folder = re.search(r"<model\b[^>]*>", text)
+    if folder is None:
+        raise ValueError("project has no <model> folder")
+    tag = folder.group(0)
+    if tag.endswith("/>"):
+        block = tag[:-2] + ">\n  " + entry + "\n </model>"
+        new_text = text[: folder.start()] + block + text[folder.end():]
+    else:
+        close = text.find("</model>", folder.end())
+        if close == -1:
+            raise ValueError("unterminated <model> folder")
+        new_text = text[:close] + "  " + entry + "\n " + text[close:]
+    ET.fromstring(new_text)
+    with proj_path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(new_text)
+    return True
+
+
+def create_robei_project(name: str, models: list[str] | None = None) -> dict[str, Any]:
+    """Create a Robei project skeleton (folders + .proj + blank models) in the workspace."""
+    if not MODEL_NAME_RE.match(name):
+        raise ValueError(f"invalid project name: {name!r}")
+    models = [name] if models is None else list(models)
+    for model in models:
+        if not MODEL_NAME_RE.match(model):
+            raise ValueError(f"invalid model name: {model!r}")
+    root = SETTINGS.workspace / name
+    if root.exists():
+        raise FileExistsError(f"project path already exists: {root}")
+    for sub in ("model", "test", "const", "verilog"):
+        (root / sub).mkdir(parents=True, exist_ok=True)
+
+    entries = "\n".join(
+        f'  <{m}.model name="{m}.model" parent="model" type="model"/>' for m in models
+    )
+    proj_text = (
+        f'<{name} name="{name}" parent="0" type="proj">\n'
+        f' <model name="model" parent="{name}" type="folder">\n{entries}\n </model>\n'
+        f' <test name="test" parent="{name}" type="folder"/>\n'
+        f' <const name="const" parent="{name}" type="folder"/>\n'
+        f' <verilog name="verilog" parent="{name}" type="folder"/>\n'
+        f"</{name}>\n"
+    )
+    proj_path = root / f"{name}.proj"
+    proj_path.write_text(proj_text, encoding="utf-8", newline="\n")
+    ET.fromstring(proj_text)
+
+    created = []
+    for model in models:
+        model_path = root / "model" / f"{model}.model"
+        model_path.write_text(_model_xml(model, [], "", ""), encoding="utf-8", newline="\n")
+        created.append(str(model_path))
+    return {
+        "ok": True,
+        "project": name,
+        "root": str(root),
+        "proj": str(proj_path),
+        "models": created,
+        "relative_root": _rel(root),
+    }
+
+
+def create_robei_model(
+    proj_path: str,
+    name: str,
+    ports: list[dict[str, Any]] | None = None,
+    code: str = "",
+    comment: str = "",
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Create a .model with ports + Code inside an existing project and register it."""
+    proj = resolve_project_path(proj_path)
+    if not is_within(proj, SETTINGS.workspace):
+        raise ValueError("refusing to modify a project outside the workspace")
+    if not MODEL_NAME_RE.match(name):
+        raise ValueError(f"invalid model name: {name!r}")
+    model_dir = proj.parent / "model"
+    if not model_dir.is_dir():
+        raise FileNotFoundError(f"project has no model folder: {model_dir}")
+    target = model_dir / f"{name}.model"
+    if target.exists() and not overwrite:
+        raise FileExistsError(f"model already exists: {target}")
+
+    cleaned: list[dict[str, Any]] = []
+    for port in ports or []:
+        entry = {
+            "name": str(port["name"]),
+            "direction": str(port.get("direction", "input")).lower(),
+            "width": int(port.get("width", 1)),
+            "datatype": str(port.get("datatype", "wire")).lower(),
+            "side": (str(port["side"]).lower() if port.get("side") else None),
+        }
+        if not PORT_NAME_RE.match(entry["name"]):
+            raise ValueError(f"invalid port name: {entry['name']!r}")
+        if entry["direction"] not in PORT_DIRECTIONS:
+            raise ValueError(f"invalid direction: {entry['direction']}")
+        if entry["datatype"] not in PORT_DATATYPES:
+            raise ValueError(f"invalid datatype: {entry['datatype']}")
+        if not 1 <= entry["width"] <= 1024:
+            raise ValueError("port width must be 1..1024")
+        cleaned.append(entry)
+
+    xml_text = _model_xml(name, cleaned, code, comment)
+    ET.fromstring(xml_text)
+    backup = None
+    if target.exists():
+        backup = target.with_name(target.name + ".bak-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
+        backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+    target.write_text(xml_text, encoding="utf-8", newline="\n")
+    registered = _register_model_in_project(proj, name)
+
+    parsed = parse_robei_model(target)
+    return {
+        "ok": True,
+        "model": name,
+        "path": str(target),
+        "relative_path": _rel(target),
+        "project": str(proj),
+        "registered_in_project": registered,
+        "backup": str(backup) if backup else None,
+        "sha256": _sha256(target),
+        "ports": parsed.get("ports"),
+        "code": parsed.get("code"),
+    }

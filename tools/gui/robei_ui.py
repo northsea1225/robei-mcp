@@ -326,13 +326,10 @@ def status(output_lines: int = 20) -> dict:
     }
 
 
-def open_project(path: str) -> dict:
+def _open_project_once(target: Path) -> dict:
     dlg, win = main_window()
     if dlg is None:
         return {"ok": False, "error": "Robei is not running"}
-    target = Path(path)
-    if not target.is_file():
-        return {"ok": False, "error": f"project not found: {path}"}
     report: dict = {"ok": False, "path": str(target)}
     report["menu"] = click_menu(dlg, "File", "Open")
     if not report["menu"].get("ok"):
@@ -348,11 +345,30 @@ def open_project(path: str) -> dict:
     report["models"] = model_tabs(dlg)
     report["project"] = tree[0] if tree else None
     expected = target.stem.lower()
-    report["ok"] = bool(tree) and report["project"].lower() == expected
+    report["ok"] = bool(tree) and str(report["project"]).lower() == expected
     if not report["ok"]:
         report["error"] = f"loaded project root is {report['project']!r}, expected {target.stem!r}"
     report["output_tail"] = _tail(read_output(dlg), 10)
     return report
+
+
+def open_project(path: str, attempts: int = 2) -> dict:
+    """Open a .proj; retries once because a freshly started IDE may swallow the first try."""
+    target = Path(path)
+    if not target.is_file():
+        return {"ok": False, "error": f"project not found: {path}"}
+    tries = []
+    for attempt in range(max(1, attempts)):
+        result = _open_project_once(target)
+        tries.append({k: result.get(k) for k in ("ok", "project", "error")})
+        if result.get("ok"):
+            result["attempts"] = len(tries)
+            return result
+        time.sleep(2.0)
+    last = result
+    last["attempts"] = len(tries)
+    last["tries"] = tries
+    return last
 
 
 def compile_model(timeout_s: float = 25.0) -> dict:
@@ -400,6 +416,24 @@ def compile_model(timeout_s: float = 25.0) -> dict:
         "missing_modules": missing,
         "delta": delta.strip()[:4000],
         "output_tail": _tail(after, 20),
+    }
+
+
+def refresh() -> dict:
+    """Build > Refresh: make Robei reload models/projects that changed on disk."""
+    dlg, win = main_window()
+    if dlg is None:
+        return {"ok": False, "error": "Robei is not running"}
+    before = read_output(dlg)
+    click = click_menu(dlg, "Build", "Refresh")
+    time.sleep(1.5)
+    after = read_output(dlg)
+    return {
+        "ok": bool(click.get("ok")),
+        "detail": click,
+        "tree": tree_items(dlg),
+        "models": model_tabs(dlg),
+        "output_tail": _tail(after, 6),
     }
 
 

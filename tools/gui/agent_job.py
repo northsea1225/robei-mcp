@@ -17,6 +17,7 @@ OPS = {
     "open_project": lambda a: robei_ui.open_project(a["path"]),
     "compile": lambda a: robei_ui.compile_model(float(a.get("timeout_s", 25))),
     "output": lambda a: robei_ui.output(int(a.get("lines", 80))),
+    "refresh": lambda a: robei_ui.refresh(),
     "open_model": lambda a: robei_ui.open_model(a["name"]),
     "code_read": lambda a: robei_ui.code_read(),
     "code_write": lambda a: robei_ui.code_write(a["code"], bool(a.get("save", True))),

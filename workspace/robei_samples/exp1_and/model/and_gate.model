@@ -1,6 +1,6 @@
 <!DOCTYPE Robei>
 <Module Category="Current" Class="module" Code="assign y = a &amp; b;" Color="#d3d3d3" Comment="Experiment 1: 2-input AND gate" Height="1080" Name="and_gate" Parameters="" Parent="0" Type="model" Width="1600" X="0" Y="0">
  <Port Color="#f0ffff" Connect="" Datasize="1" Datatype="wire" Description="" Height="30" Inout="output" Name="y" Parent="and_gate" Side="right" Width="30" X="0.98125" Y="0.163889"/>
- <Port Color="#faebd7" Connect="" Datasize="1" Datatype="wire" Description="" Height="30" Inout="input" Name="b" Parent="and_gate" Side="left" Width="30" X="-0.01875" Y="0.308333"/>
+ <Port Color="#faebd7" Connect="" Datasize="1" Datatype="wire" Description="" Height="30" Inout="input" Name="b" Parent="and_gate" Side="left" Width="30" X="-0.01875" Y="0.307407"/>
  <Port Color="#faebd7" Connect="" Datasize="1" Datatype="wire" Description="" Height="30" Inout="input" Name="a" Parent="and_gate" Side="left" Width="30" X="-0.01875" Y="0.453704"/>
 </Module>

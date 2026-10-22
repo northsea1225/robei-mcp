@@ -204,6 +204,10 @@ def output(lines: int = 80) -> dict[str, Any]:
     return call("output", {"lines": lines})
 
 
+def refresh() -> dict[str, Any]:
+    return call("refresh", {})
+
+
 def code_read() -> dict[str, Any]:
     return call("code_read", {})
 

@@ -144,3 +144,29 @@ endmodule    //blank
 
 也就是说「端口（`set_robei_port`）+ 逻辑（`robei_gui_code_write`）+ 编译验证（`robei_gui_compile`）」
 已经能纯脚本造出一个 Robei 能编译的模型。
+
+## 从零造工程：`create_robei_project` / `create_robei_model`
+
+配合 `set_robei_port` / `robei_gui_code_write`，现在已经不需要手写任何 XML：
+
+| 工具 | 作用 |
+| --- | --- |
+| `create_robei_project(name, models=[])` | 在 workspace 下建 `<name>/`：`model/test/const/verilog` 四个目录 + `<name>.proj`（可顺带建空模型） |
+| `create_robei_model(proj_path, name, ports, code, comment, overwrite=False)` | 生成带端口和 `Code` 的 `.model`，并自动登记进 `.proj` 的 `<model>` 目录（文本插入，保留原格式） |
+| `robei_gui_refresh()` | Build→Refresh，让已运行的 Robei 重新读取磁盘上的 `.model/.proj` |
+
+安全约束：只能建在 `workspace` 内；目录已存在直接 `FileExistsError`；模型已存在需显式 `overwrite=True`（旧文件备份成 `.bak-<时间戳>`）。
+
+闭环实测（`tests/stage8_create_flow.py`，10/10 PASS）：
+
+```
+create_robei_project("mcp_sandbox", models=[])        → mcp_sandbox.proj
+create_robei_model(..., "half_adder", ports=a/b/s/c,
+                   code="assign s = a ^ b;\nassign c = a & b;")  → registered_in_project=True
+robei_gui_open_project / open_model / compile          → build/half_adder.v
+simulate + read_waveform                                → 真值表 4/4 正确
+  t=10000 a=0 b=0 s=0 c=0
+  t=20000 a=0 b=1 s=1 c=0
+  t=30000 a=1 b=0 s=1 c=0
+  t=40000 a=1 b=1 s=0 c=1
+```

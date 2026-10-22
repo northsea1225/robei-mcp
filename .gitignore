@@ -9,3 +9,4 @@ workspace/**/build/
 tools/gui/agent-args.txt
 *.bak-*
 *.model.bak*
+workspace/mcp_sandbox/

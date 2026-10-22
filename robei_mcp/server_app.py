@@ -112,6 +112,38 @@ def read_robei_project(proj_path: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def create_robei_project(name: str, models: list[str] | None = None) -> dict[str, Any]:
+    """Create a Robei project skeleton (folders, .proj, blank models) under the workspace."""
+    try:
+        return tools.create_robei_project(name=name, models=models)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def create_robei_model(
+    proj_path: str,
+    name: str,
+    ports: list[dict[str, Any]] | None = None,
+    code: str = "",
+    comment: str = "",
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Create a .model with ports and Code inside a project and register it in the .proj."""
+    try:
+        return tools.create_robei_model(
+            proj_path=proj_path,
+            name=name,
+            ports=ports,
+            code=code,
+            comment=comment,
+            overwrite=overwrite,
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
 def set_robei_port(
     model_path: str,
     name: str,
@@ -220,6 +252,15 @@ def robei_gui_output(lines: int = 80) -> dict[str, Any]:
     """Read the last N lines of the Robei Output dock."""
     try:
         return gui.output(lines=lines)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def robei_gui_refresh() -> dict[str, Any]:
+    """Run Build > Refresh so Robei reloads changed .model/.proj files from disk."""
+    try:
+        return gui.refresh()
     except Exception as exc:
         return _error(exc)
 
