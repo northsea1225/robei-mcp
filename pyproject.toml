@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robei-mcp"
+version = "0.3.0"
+description = "MCP server for Robei EDA: Verilog toolchain, project XML, and IDE automation over UIA"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp==2.3.0",
+  "matplotlib>=3.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+robei-mcp = "robei_mcp.__main__:main"
+
+[tool.setuptools]
+packages = ["robei_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

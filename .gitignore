@@ -10,3 +10,10 @@ tools/gui/agent-args.txt
 *.bak-*
 *.model.bak*
 workspace/mcp_sandbox/
+workspace/logs/
+workspace/reports/
+tools/gui/agent.lock
+*.egg-info/
+.pytest_cache/
+workspace/.tmp/
+workspace/**/.tmp/

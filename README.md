@@ -84,6 +84,19 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
 - 注意：需要 **Python 3.10+**（`Path.write_text(newline=...)` 是 3.10 才有的参数；
   macOS 自带的 3.9 会在 `generate_testbench` 处报 TypeError）
 
+已验证（阶段 15，`tests/stage15_report.py`，15/15 PASS，36 个工具）：
+
+- `report_lab`：无 IDE 跑一次实验 → `workspace/reports/<工程>-<test>-<时间>.md`，
+  含编译结果、`$display` 原文、信号表、每信号前 12 次跳变、内嵌波形 PNG、5 项自动检查
+- `compare_waveforms`：两份 VCD 逐信号比对；同源两份 0 差异，改动一个值后精确报出
+  `t=155 golden=1111 dut=1110`（只报这一个信号）
+- `workspace/logs/mcp-YYYYMMDD.log`：每次子进程 / 每次 GUI 往返一行 JSON
+  （`tool` / `rc` / `ms` / `timeout` / `ok`），出问题能复盘
+- GUI 加互斥锁 `tools/gui/agent.lock`：第二个并发调用立刻返回
+  `another GUI job is still running`，不再互相覆盖 job 文件后一起超时
+- 工程化：`pyproject.toml`（0.3.0，`requires-python>=3.10`，可选 `dev` = pytest），
+  `tests/test_portable.py` 用 pytest 参数化跑 5 个子系统
+
 仅可见 / 待定：
 
 - Robei GUI 打开和编译：当前 SSH 在 Session 0，交互桌面在 Session 1，无法从 SSH 看到/点击 GUI；已准备 `workspace\robei_counter4_project` 和手动步骤，待人工验证。
@@ -97,6 +110,7 @@ C:\dev\robei-mcp\
   .gitignore
   .mcp.json                      Windows Claude Code 项目配置
   README.md
+  pyproject.toml                 0.3.0，requires-python>=3.10，可选 dev=pytest
   requirements.txt               mcp==2.3.0, matplotlib
   run-mcp.cmd                    Windows stdio 包装脚本
   examples\
@@ -111,6 +125,7 @@ C:\dev\robei-mcp\
     security.py                  路径策略 + simulate 前静态路径扫描
     server_app.py                MCP 工具注册
     tools.py                     工具实现
+    oplog.py                     workspace/logs 下的操作日志
     vcd.py                       VCD 解析、事件查询、PNG 渲染
     verilog.py                   端口解析 + testbench 生成
     doctor.py                    环境自检（python/venv/包/路径/任务/深度仿真）
@@ -388,6 +403,30 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
 
 不传 `signals` 时列信号；传 `signals` 时按原始 VCD 时间刻度取值。返回值含 `timescale`、`max_time`、`effective_time`、二进制 `value` 和可解析时的 `value_int`。
 
+### `report_lab`
+
+```json
+{"proj_path": "counter4_native/counter4_native.proj", "test_name": "tb_counter4.test",
+ "title": "4 位计数器"}
+```
+
+用 `simulate_project` 跑一次（不需要 Robei、不需要桌面），把结果写成一份可以直接贴进
+实验报告的 Markdown：编译结论、`$display` 原文、信号表（位宽/类型/跳变次数）、
+每个信号前 N 次跳变、波形 PNG（相对路径嵌入）、以及 5 项自动检查
+（`$finish`、产生 VCD、无 X/Z、有 `$display`、全部通过）。
+
+输出在 `workspace/reports/`，同名文件不覆盖。
+
+### `compare_waveforms`
+
+```json
+{"golden_vcd": "build/sim-.../tb.vcd", "dut_vcd": "build/golden/tb.vcd"}
+```
+
+两份 VCD 逐信号比对，比较点在**两边跳变时间的并集**上，所以"一边完全没跳"也能被抓到。
+返回每个信号的跳变次数、差异条数、首个差异（时间/两侧值），以及总和
+`ok / mismatch_total / differing_signals`。
+
 ### `read_robei_model`
 
 ```json
@@ -567,6 +606,18 @@ Windows 交互桌面上跑，不进 CI。
 跨平台注意：Linux/macOS 只支持核心工具链（iverilog/vvp/yosys/verilator），
 `robei_gui_*` 会返回 `GUI tools require Windows`。
 
+## 日志与并发
+
+- **操作日志**：`workspace/logs/mcp-YYYYMMDD.log`，一行一个 JSON。子进程记录
+  `tool / rc / ms / timeout / cwd / stderr 尾部`，GUI 记录 `op / transport / ok / ms / error`。
+  日志写入失败会静默跳过，绝不影响工具返回。
+- **GUI 互斥**：所有 `robei_gui_*` 共用一份 `agent-job.json`，因此 `gui.call()`
+  先用 `O_CREAT|O_EXCL` 抢 `tools/gui/agent.lock`；抢不到就立刻返回
+  `another GUI job is still running`（超过 `MAX_TIMEOUT_S` 的陈旧锁会被自动清掉）。
+  这是"失败得快"，不是排队——目前没有任务队列。
+- 两者都在 `.gitignore` 里（`workspace/logs/`、`workspace/reports/`、
+  `tools/gui/agent.lock`）。
+
 ## 安全边界
 
 - 固定工具白名单，`shell=False`。
@@ -716,7 +767,8 @@ Robei 原生闭环已接入：`create_robei_test` + `sync_robei_verilog` + `robe
 - `robei_gui_experiment(plot=True)`：跑完自动把 VCD 画成 PNG 放到
   `workspace/build/waveforms/`，一次调用拿到 输出 + 波形 + 信号列表
 
-回归：`tests\stage5_gui_cases.py`（10 项）、`tests\stage6_gui_code.py`（11 项）、`tests\stage7_model_ports.py`（10 项）、`tests\stage8_create_flow.py`（10 项）、`tests\stage9_native_run.py`、`tests\stage10_counter_native.py`、`tests\stage11_mcp_native.py`（14 项）、`tests\stage12_ops.py`（17 项）、`tests\stage13_doctor.py`（18 项）、`tests\stage14_headless.py`（9 项），都走真实 stdio MCP 客户端（stage14 连 IDE 都不需要）；另有跨平台的 `tests/portable_core.py`（15 项，CI 跑的就是它）。全部 PASS。
+回归：`tests\stage5_gui_cases.py`（10 项）、`tests\stage6_gui_code.py`（11 项）、`tests\stage7_model_ports.py`（10 项）、`tests\stage8_create_flow.py`（10 项）、`tests\stage9_native_run.py`、`tests\stage10_counter_native.py`、`tests\stage11_mcp_native.py`（14 项）、`tests\stage12_ops.py`（17 项）、`tests\stage13_doctor.py`（18 项）、`tests\stage14_headless.py`（9 项），都走真实 stdio MCP 客户端（stage14 连 IDE 都不需要）；另有 `tests/stage15_report.py`（15 项：报告、VCD 比对、日志、锁）；跨平台的
+`tests/portable_core.py`（16 项）与 `tests/test_portable.py`（pytest，5 个子系统，CI 跑的就是它）。全部 PASS。
 
 ## 从 SSH 会话推送仓库
 

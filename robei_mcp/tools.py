@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import os
@@ -60,7 +61,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _run(
+def _run_impl(
     args: list[str | Path],
     cwd: Path,
     timeout_s: int,
@@ -119,6 +120,33 @@ def _run(
             "stdout": "",
             "stderr": f"executable not found: {exc}",
         }
+
+
+def _run(
+    args: list[str | Path],
+    cwd: Path,
+    timeout_s: int,
+    env_extra: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Run a tool and record it in workspace/logs so failures stay explainable."""
+    result = _run_impl(args, cwd, timeout_s, env_extra)
+    try:
+        from . import oplog
+
+        command = result.get("command") or [""]
+        oplog.log_event(
+            "exec",
+            tool=Path(str(command[0])).name,
+            rc=result.get("returncode"),
+            ok=result.get("ok"),
+            ms=result.get("duration_ms"),
+            timeout=bool(result.get("timeout")),
+            cwd=str(cwd),
+            tail=(result.get("stderr") or "")[-200:],
+        )
+    except Exception:
+        pass
+    return result
 
 
 def _require_file(path: Path, label: str) -> None:
@@ -587,6 +615,259 @@ def simulate_project(
         except Exception as exc:
             result["plot"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     return result
+
+
+def _norm_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text.startswith(("b", "r", "s")) and len(text) > 1:
+        text = text[1:]
+    if text and all(ch in "01" for ch in text):
+        text = text.lstrip("0") or "0"
+    return text
+
+
+def _sorted_changes(data, signal) -> tuple[list[tuple[int, str]], list[int]]:
+    changes = data.changes.get(signal.identifier, [])
+    return changes, [t for t, _ in changes]
+
+
+def _value_at_changes(changes: list[tuple[int, str]], times: list[int], when: int) -> str | None:
+    index = bisect.bisect_right(times, when) - 1
+    if index < 0:
+        return None
+    return changes[index][1]
+
+
+def compare_waveforms(
+    golden_vcd: str,
+    dut_vcd: str,
+    signals: list[str] | None = None,
+    max_mismatches: int = 20,
+) -> dict[str, Any]:
+    """Diff two VCDs signal by signal, using change times from both sides.
+
+    Values are compared at the union of both timelines, so a signal that simply
+    never toggles in one run is reported at the moment the other one does.
+    """
+    golden_path = resolve_vcd_path(golden_vcd)
+    dut_path = resolve_vcd_path(dut_vcd)
+    golden = parse_vcd(golden_path)
+    dut = parse_vcd(dut_path)
+
+    if signals:
+        wanted = [s.full_name for s in match_signals(golden, signals)]
+    else:
+        wanted = [name for name in golden.signals if name in dut.signals]
+    missing_golden = [n for n in wanted if n not in golden.signals]
+    missing_dut = [n for n in wanted if n not in dut.signals]
+    comparable = [n for n in wanted if n in golden.signals and n in dut.signals]
+
+    results: list[dict[str, Any]] = []
+    total = 0
+    for name in comparable:
+        g_sig = golden.signals[name]
+        d_sig = dut.signals[name]
+        g_changes, g_times = _sorted_changes(golden, g_sig)
+        d_changes, d_times = _sorted_changes(dut, d_sig)
+        timeline = sorted({t for t, _ in g_changes} | {t for t, _ in d_changes})
+        mismatches: list[dict[str, Any]] = []
+        for when in timeline:
+            gv = _value_at_changes(g_changes, g_times, when)
+            dv = _value_at_changes(d_changes, d_times, when)
+            if _norm_value(gv) != _norm_value(dv):
+                if len(mismatches) < max_mismatches:
+                    mismatches.append({"time": when, "golden": gv, "dut": dv})
+                total += 1
+        results.append(
+            {
+                "signal": name,
+                "width": g_sig.width,
+                "width_matches": g_sig.width == d_sig.width,
+                "golden_changes": len(g_changes),
+                "dut_changes": len(d_changes),
+                "mismatch_count": sum(
+                    1
+                    for when in timeline
+                    if _norm_value(_value_at_changes(g_changes, g_times, when))
+                    != _norm_value(_value_at_changes(d_changes, d_times, when))
+                ),
+                "first_mismatch": mismatches[0] if mismatches else None,
+                "mismatches": mismatches,
+            }
+        )
+
+    differing = [row for row in results if row["mismatch_count"]]
+    return {
+        "ok": not differing and not missing_dut,
+        "golden": str(golden_path),
+        "dut": str(dut_path),
+        "timescale": {"golden": golden.timescale, "dut": dut.timescale},
+        "max_time": {"golden": golden.max_time, "dut": dut.max_time},
+        "signal_count": len(comparable),
+        "mismatch_total": total,
+        "differing_signals": [row["signal"] for row in differing],
+        "missing_in_dut": missing_dut,
+        "missing_in_golden": missing_golden,
+        "results": results,
+    }
+
+
+def _pad_value(value: str, width: int) -> str:
+    text = str(value)
+    if width > 1 and text and all(ch in "01" for ch in text):
+        return text.zfill(width)
+    return text
+
+
+def _md_escape(text: str) -> str:
+    return str(text).replace("|", "\\|")
+
+
+def report_lab(
+    proj_path: str,
+    test_name: str,
+    title: str | None = None,
+    out_name: str | None = None,
+    max_transitions: int = 12,
+) -> dict[str, Any]:
+    """Run a Robei test headlessly and write a markdown lab report next to the PNG."""
+    proj = resolve_project_path(proj_path)
+    if not is_within(proj, SETTINGS.workspace):
+        raise ValueError("refusing to report on a project outside the workspace")
+    sim = simulate_project(str(proj), test_name, render=True)
+    vcds = sim.get("vcd_paths") or []
+    display = sim.get("display_output") or ""
+    stem = test_name[:-5] if test_name.lower().endswith(".test") else test_name
+
+    data = parse_vcd(Path(vcds[0])) if vcds else None
+    rows: list[dict[str, Any]] = []
+    if data is not None:
+        for name, signal in data.signals.items():
+            changes = data.changes.get(signal.identifier, [])
+            rows.append(
+                {
+                    "signal": name,
+                    "width": signal.width,
+                    "type": signal.var_type,
+                    "changes": len(changes),
+                    "timeline": [
+                        {"time": t, "value": _pad_value(v, signal.width)}
+                        for t, v in changes[:max_transitions]
+                    ],
+                }
+            )
+
+    raw_values = []
+    if data is not None:
+        for signal in data.signals.values():
+            raw_values.extend(v for _, v in data.changes.get(signal.identifier, []))
+    has_xz = any(ch in str(v).lower() for v in raw_values for ch in ("x", "z"))
+
+    checks = [
+        {"name": "仿真正常结束（$finish）", "ok": "$finish" in display},
+        {"name": "产生波形文件", "ok": bool(vcds)},
+        {"name": "无 X/Z 态", "ok": bool(vcds) and not has_xz},
+        {"name": "有 $display 输出", "ok": any(line.startswith("t=") for line in display.splitlines())},
+    ]
+    checks.append({"name": "全部检查通过", "ok": all(c["ok"] for c in checks)})
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    reports_dir = SETTINGS.workspace / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    if out_name:
+        if not FILE_RE.match(out_name) or not out_name.lower().endswith(".md"):
+            raise ValueError("out_name must be a simple .md file name")
+        target = reports_dir / out_name
+        if target.exists():
+            raise FileExistsError(f"refusing to overwrite existing file: {target}")
+    else:
+        target = reports_dir / f"{proj.stem}-{stem}-{stamp}.md"
+
+    png = (sim.get("plot") or {}).get("path")
+    png_rel = None
+    if png:
+        png_rel = os.path.relpath(png, target.parent).replace("\\", "/")
+
+    lines: list[str] = []
+    heading = title or f"{proj.stem} / {stem}"
+    lines.append(f"# 实验报告：{heading}")
+    lines.append("")
+    lines.append(f"- 工程：`{proj.name}`（{_rel(proj)}）")
+    lines.append(f"- 测试模型：`{stem}.test`")
+    lines.append(f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    versions = runtime_status()["tools"]
+    tool_line = ", ".join(
+        f"{name} {entry.get('version') or '?'}"
+        for name, entry in versions.items()
+        if entry.get("exists")
+    )
+    lines.append(f"- 工具链：{tool_line or '未检测到'}")
+    lines.append("")
+    lines.append("## 1. 编译")
+    lines.append("")
+    lines.append(f"- 结果：{'通过' if sim.get('ok') else '失败'}")
+    if sim.get("headless"):
+        lines.append(f"- 生成源码：`{sim['headless']['tb_source_rel']}`")
+        deps = sim["headless"].get("dependencies") or []
+        lines.append(f"- 依赖模块：{', '.join(f'`{d}`' for d in deps) if deps else '无'}")
+    compile_info = sim.get("compile") or {}
+    if compile_info.get("stderr"):
+        lines.append("")
+        lines.append("```text")
+        lines.append(_clip(compile_info["stderr"], 2000))
+        lines.append("```")
+    lines.append("")
+    lines.append("## 2. 仿真输出")
+    lines.append("")
+    lines.append("```text")
+    lines.append(_clip(display.strip() or "(无输出)", 4000))
+    lines.append("```")
+    lines.append("")
+    lines.append("## 3. 信号一览")
+    lines.append("")
+    lines.append("| 信号 | 位宽 | 类型 | 跳变次数 |")
+    lines.append("| --- | --- | --- | --- |")
+    for row in rows:
+        lines.append(
+            f"| `{_md_escape(row['signal'])}` | {row['width']} | {row['type']} | {row['changes']} |"
+        )
+    lines.append("")
+    lines.append(f"## 4. 关键跳变（每个信号前 {max_transitions} 次）")
+    lines.append("")
+    for row in rows:
+        if not row["timeline"]:
+            continue
+        lines.append(f"### `{row['signal']}`")
+        lines.append("")
+        lines.append("| 时间 | 值 |")
+        lines.append("| --- | --- |")
+        for point in row["timeline"]:
+            lines.append(f"| {point['time']} | `{point['value']}` |")
+        lines.append("")
+    if png_rel:
+        lines.append("## 5. 波形")
+        lines.append("")
+        lines.append(f"![波形]({png_rel})")
+        lines.append("")
+    lines.append("## 6. 自动检查")
+    lines.append("")
+    for item in checks:
+        lines.append(f"- [{'x' if item['ok'] else ' '}] {item['name']}")
+    lines.append("")
+
+    target.write_text("\n".join(lines), encoding="utf-8", newline="\n")
+    return {
+        "ok": all(c["ok"] for c in checks),
+        "report_path": str(target),
+        "relative_path": _rel(target),
+        "png": png,
+        "vcd": vcds[0] if vcds else None,
+        "signals": [row["signal"] for row in rows],
+        "checks": checks,
+        "size_bytes": target.stat().st_size,
+    }
 
 
 def read_waveform(

@@ -26,6 +26,7 @@ GUI_DIR = SETTINGS.project_root / "tools" / "gui"
 JOB_FILE = GUI_DIR / "agent-job.json"
 ARGS_FILE = GUI_DIR / "agent-args.txt"
 LAST_JSON = SETTINGS.workspace / "gui_shots" / "last.json"
+LOCK_FILE = GUI_DIR / "agent.lock"
 
 DEFAULT_TIMEOUT_S = 90
 MAX_TIMEOUT_S = 300
@@ -155,6 +156,19 @@ def _run_direct(op: str, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_queued(op: str, args: dict[str, Any], timeout_s: int) -> dict[str, Any]:
+    if not _acquire_lock():
+        return {
+            "ok": False,
+            "error": "another GUI job is still running; try again in a few seconds",
+            "transport": "schtasks",
+        }
+    try:
+        return _run_queued_locked(op, args, timeout_s)
+    finally:
+        _release_lock()
+
+
+def _run_queued_locked(op: str, args: dict[str, Any], timeout_s: int) -> dict[str, Any]:
     task = _task_query()
     if not task.get("exists"):
         return {
@@ -197,15 +211,62 @@ def _run_queued(op: str, args: dict[str, Any], timeout_s: int) -> dict[str, Any]
     }
 
 
+def _acquire_lock(wait_s: float = 5.0) -> bool:
+    """One GUI job at a time: two clients share one agent-job.json."""
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        try:
+            fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                os.write(fd, f"{os.getpid()} {time.time():.0f}".encode())
+            finally:
+                os.close(fd)
+            return True
+        except FileExistsError:
+            try:
+                if time.time() - LOCK_FILE.stat().st_mtime > MAX_TIMEOUT_S:
+                    LOCK_FILE.unlink()  # stale lock from a killed server
+                    continue
+            except OSError:
+                pass
+            time.sleep(0.2)
+        except OSError:
+            return True  # cannot lock at all -> do not block every call
+    return False
+
+
+def _release_lock() -> None:
+    try:
+        LOCK_FILE.unlink()
+    except OSError:
+        pass
+
+
 def call(op: str, args: dict[str, Any] | None = None, timeout_s: int | None = None) -> dict[str, Any]:
     args = args or {}
     timeout_s = int(min(max(timeout_s or DEFAULT_TIMEOUT_S, 10), MAX_TIMEOUT_S))
+    started = time.monotonic()
     info = transport()
     if info["mode"] == "unsupported":
-        return {"ok": False, "error": "GUI tools require Windows", "transport": info}
-    if info["mode"] == "direct":
-        return _run_direct(op, args)
-    return _run_queued(op, args, timeout_s)
+        payload: dict[str, Any] = {"ok": False, "error": "GUI tools require Windows", "transport": info}
+    elif info["mode"] == "direct":
+        payload = _run_direct(op, args)
+    else:
+        payload = _run_queued(op, args, timeout_s)
+    try:
+        from . import oplog
+
+        oplog.log_event(
+            "gui",
+            op=op,
+            transport=(payload.get("transport") if isinstance(payload, dict) else None),
+            ok=(payload.get("ok") if isinstance(payload, dict) else None),
+            ms=round((time.monotonic() - started) * 1000),
+            error=(payload.get("error") if isinstance(payload, dict) else None),
+        )
+    except Exception:
+        pass
+    return payload
 
 
 # --------------------------------------------------------------------------

@@ -74,6 +74,8 @@ async def main():
                 "create_robei_test",
                 "robei_gui_experiment",
                 "robei_gui_wave_load",
+                "compare_waveforms",
+                "report_lab",
                 "simulate_project",
                 "robei_doctor",
                 "list_projects",

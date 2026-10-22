@@ -87,6 +87,38 @@ def read_waveform(
 
 
 @mcp.tool()
+def compare_waveforms(
+    golden_vcd: str,
+    dut_vcd: str,
+    signals: list[str] | None = None,
+) -> dict[str, Any]:
+    """Diff two VCDs signal by signal; returns the first divergence per signal."""
+    try:
+        return tools.compare_waveforms(golden_vcd=golden_vcd, dut_vcd=dut_vcd, signals=signals)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def report_lab(
+    proj_path: str,
+    test_name: str,
+    title: str | None = None,
+    out_name: str | None = None,
+) -> dict[str, Any]:
+    """Run a Robei test headlessly and write a markdown lab report (signals, transitions, PNG).
+
+    Returns the report path plus the automatic checks (finished, VCD produced, no X/Z).
+    """
+    try:
+        return tools.report_lab(
+            proj_path=proj_path, test_name=test_name, title=title, out_name=out_name
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
 def find_events(
     vcd_path: str,
     signal: str,

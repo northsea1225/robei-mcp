@@ -26,7 +26,7 @@ jobs:
       - name: Install python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install -r requirements.txt pytest
 
       - name: Versions
         run: |
@@ -35,17 +35,8 @@ jobs:
           vvp -V | head -1
           yosys -V || true
 
-      - name: simulate + waveform
-        run: python tests/portable_core.py simulate
+      - name: Portable core (pytest, one case per subsystem)
+        run: python -m pytest -q tests/test_portable.py
 
-      - name: generate_testbench round trip
-        run: python tests/portable_core.py testbench
-
-      - name: Robei XML (read-only)
-        run: python tests/portable_core.py robei-xml
-
-      - name: headless experiment
-        run: python tests/portable_core.py headless
-
-      - name: lint (iverilog + yosys)
-        run: python tests/portable_core.py lint
+      - name: Human-readable summary
+        run: python tests/portable_core.py
