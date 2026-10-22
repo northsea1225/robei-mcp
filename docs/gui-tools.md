@@ -190,7 +190,7 @@ Robei 原话（模型 `Type="model"` 时）：
 Robei 重新打开工程后仍未把它当作可运行的测试模型（Run 依旧报 `and_gate is not test`），
 所以 **Robei 原生 Run/Wave 还没打通**；波形仍由 `simulate` + `read_waveform` / `render_waveform`（同一套 iverilog/vvp）提供。
 
-## 画布编辑：试过但没打通（2026-10-22）
+## 画布：点不动，但可以写（2026-10-22 / 阶段 16 更新）
 
 目标：用 UIA 在画布上放两个实例并连线，拿到 `<Instance>` / 连线的真实 XML schema
 （`two_level` 里的实例目前是写在 `Code` 字段里的，不是画布拖出来的）。
@@ -213,10 +213,30 @@ Robei 重新打开工程后仍未把它当作可运行的测试模型（Run 依�
 6. **搜索面板**：`Search for Models` 能搜到 `and2` / `top_two`，但结果项坐标是负的
    （`-933,-752`，不在任何屏幕上），右键菜单因此抓不到。
 
-结论：这个版本的 Robei 没有可用的画布编辑自动化入口（6 条路都试过）。要用 MCP 生成
-"画布级"层次化设计，只能沿用 `Code` 字段写实例化——那条路已经验证可编译
-（`two_level` 的 `top_two` 在 `compile_all` 里 2/2 通过）。
+结论：这个版本的 Robei 没有可用的**画布编辑**自动化入口（6 条路都试过）。
 
-`<Instance>` / `Wire` 的 schema 仍然需要一个真人拖出来的样例。拿到样例后不需要改代码
-就能先"看见"它：`read_robei_model` 会把未知子节点原样放在 `other_children` 里
-（`generic_node`：tag / attributes / text / children）。
+**但画布文件格式可以直接写。** 阶段 16 从 GitHub 公开工程
+`wwkkww1983/uart`（38 个 `.model`，183 个 `<Wire>`、81 个嵌套 `<Module>`；
+仓库无 LICENSE，因此只取格式、不取代码）拿到真实 schema，并在本机双向验证：
+
+```xml
+<Module Name="top" Type="module" ... Code="">
+  <Module Name="u1" Type="model" Class="and2" File="Current/and2.model" X="148" Y="66" ...>
+    <Port Name="a" Inout="input" Datasize="1" .../>
+    <Port Name="b" Inout="input" Datasize="1" .../>
+    <Port Name="y" Inout="output" Datasize="1" .../>
+  </Module>
+  <Port Name="a" Inout="input" .../>       <!-- 顶层端口，与实例同级 -->
+  <Wire Name="t1" To="top#u2>a" From="top#u1>y" Datatype="wire" Datasize="1"/>
+</Module>
+```
+
+要点：
+
+- **不存在 `<Instance>` 标签**，实例就是嵌套 `<Module Type="model">`；`Class` 写被引用模型名
+- 端点语法 `<owner>#<instance>><port>`（实例）/ `<owner>><port>`（顶层端口）
+- 顶层端口连线的表达式必须用**端口名**，不能用 `Wire.Name`，否则导出后输出悬空
+
+`create_robei_canvas_model` 生成的就是这段 XML；Robei 打开工程 Compile 后自己产出
+`and2 u1( .a(a), .b(b), .y(t1) );`，headless 仿真真值表 `y = a&b&c` 全对
+（`tests/stage16_canvas.py`，12/12 PASS）。仍然做不到的是在已有画布上拖动 / 删除连线。

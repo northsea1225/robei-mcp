@@ -1,6 +1,6 @@
 # Robei MCP Server
 
-Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 Yosys（再加可选的 Verilator）封装成 MCP 工具，并提供只读的 Robei `.model` / `.proj` 解析、Verilog 导出、testbench 生成和纯 Python VCD 读取/绘图。
+Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 Yosys（再加可选的 Verilator）封装成 MCP 工具，并提供 Robei `.model` / `.proj` 解析（含画布级层次化工程的实例 / 连线 / 网表）、画布级 `.model` 生成、Verilog 导出、testbench 生成和纯 Python VCD 读取/绘图。
 
 ## 交付状态
 
@@ -97,6 +97,20 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
 - 工程化：`pyproject.toml`（0.3.0，`requires-python>=3.10`，可选 `dev` = pytest），
   `tests/test_portable.py` 用 pytest 参数化跑 5 个子系统
 
+已验证（阶段 16，`tests/stage16_canvas.py`，12/12 PASS，37 个工具）：
+
+- 真实画布 schema 来自 GitHub 公开工程（`wwkkww1983/uart`，38 个 `.model`：183 个
+  `<Wire>`、81 个嵌套 `<Module>`）——仓里没有 LICENSE，因此**只取文件格式，不取任何代码**
+- 画布格式：`<Module Type="module">` 里放**嵌套** `<Module Type="model" Class="<被引用模型名>"
+  File="Current/<模型>.model">` 表示摆好的实例，`<Wire Name From To>` 表示连线，
+  端点语法 `<owner>#<instance>><port>`（实例）/ `<owner>><port>`（顶层端口）；
+  Robei 里**没有** `<Instance>` 标签
+- `create_robei_canvas_model` 直接写这种 XML（不点画布）→ Robei 打开工程并 Compile，
+  自己生成 `//---Module instantiation---` + `and2 u1( .a(a), .b(b), .y(t1) );`
+- headless 仿真验证连线电气正确：`y = a&b&c`（两个 `and2` 串联），`$strobe` 真值表 8 行全对
+- `read_robei_model` / `read_robei_project` 现在解析 `instances` / `wires` / `netlist`
+  （`nets` + `dangling_instance_ports`），`is_canvas` 标识画布级模型
+
 仅可见 / 待定：
 
 - Robei GUI 打开和编译：当前 SSH 在 Session 0，交互桌面在 Session 1，无法从 SSH 看到/点击 GUI；已准备 `workspace\robei_counter4_project` 和手动步骤，待人工验证。
@@ -110,7 +124,7 @@ C:\dev\robei-mcp\
   .gitignore
   .mcp.json                      Windows Claude Code 项目配置
   README.md
-  pyproject.toml                 0.3.0，requires-python>=3.10，可选 dev=pytest
+  pyproject.toml                 0.4.0，requires-python>=3.10，可选 dev=pytest
   requirements.txt               mcp==2.3.0, matplotlib
   run-mcp.cmd                    Windows stdio 包装脚本
   examples\
@@ -121,7 +135,7 @@ C:\dev\robei-mcp\
   server.py                      MCP stdio 入口
   robei_mcp\
     config.py
-    model.py                     .model 解析 + 通用节点树 + Verilog 导出
+    model.py                     .model 解析（含画布 instances/wires/netlist）+ 通用节点树 + Verilog 导出
     security.py                  路径策略 + simulate 前静态路径扫描
     server_app.py                MCP 工具注册
     tools.py                     工具实现
@@ -136,6 +150,7 @@ C:\dev\robei-mcp\
     stage2_smoke.py              正常路径冒烟
     stage3_cases.py              警告、语法错误、超时、残留进程
     stage4_cases.py              Verilator/未用信号、工程解析、导出、TB、波形、路径逃逸
+    stage16_canvas.py            画布级 model：生成 → 解析 → Robei 编译 → 真值表
   workspace\
     counter4\
       counter4.v                 4 位计数器
@@ -434,7 +449,11 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
 ```
 
 只读解析 `.model` 的模块名、类型、参数、端口、`parameter_list` 和 `Code`。
-非 `Port` 的子节点（例如 `Instance`）以通用节点树放进 `other_children`，不猜测含义。不写回。
+画布级模型另外返回 `instances`（嵌套 `<Module Type="model">`：实例名 / `Class` / `File` /
+坐标 / 实例端口）、`wires`（`net` / `from` / `to`，端点为 `parse_endpoint` 拆好的
+`scope` / `instance` / `port`）、`netlist`（`nets` 网名→端点表 + `dangling_instance_ports`），
+以及 `is_canvas`。仍然不写回。
+非 `Port` / `<Wire>` / 嵌套 `<Module>` 的子节点照旧原样保留在 `other_children`。
 
 ### `robei_doctor`
 
@@ -468,6 +487,8 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 
 - `folders`：`model` / `test` / `const` / `verilog` 四个目录的文件清单（名字、大小、SHA256）
 - `models`：`model/` 下每个 `.model` 的完整解析结果
+- 每个模型都带 `instances` / `wires` / `netlist`（画布级工程直接得到实例与连线），
+  因此不用额外调用 `read_robei_model` 就能看清层次
 - `unknown_nodes` / `node_tree`：**未知节点原样保留**（tag / attributes / text / children），不推断结构
 - `sha256_before` / `sha256_after` / `unchanged`：证明没有改写
 
@@ -517,6 +538,34 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 - 默认 `sync_deps=true`，顺带刷新 `verilog/` 依赖库
 - 目标已存在时 `FileExistsError`（`overwrite=true` 才覆盖，并留 `.bak-<时间戳>`）
 - 登记是幂等的：返回 `registered_in_project`（布尔）与 `registration`（`created` / `exists`）
+
+### `create_robei_canvas_model`
+
+```json
+{"proj_path": "canvas_stage16/canvas_stage16.proj",
+ "name": "top_canvas",
+ "ports": [{"name": "a", "direction": "input"},
+           {"name": "b", "direction": "input"},
+           {"name": "c", "direction": "input"},
+           {"name": "y", "direction": "output"}],
+ "instances": [{"name": "u1", "model": "and2"},
+               {"name": "u2", "model": "and2"}],
+ "wires": [{"net": "t1", "from": "u1.y", "to": "u2.a"},
+           {"net": "w_a", "from": "a", "to": "u1.a"},
+           {"net": "w_b", "from": "b", "to": "u1.b"},
+           {"net": "w_c", "from": "c", "to": "u2.b"},
+           {"net": "w_y", "from": "u2.y", "to": "y"}]}
+```
+
+写画布级 `.model`：实例写成嵌套 `<Module Type="model">`，连线写成 `<Wire>`，端点接受
+`u1.y` / `y` 这种简写（内部转成 `top#u1>y` / `top>y`）。
+
+- 实例的 `Class` 写**被引用模型的模型名**（Robei 自己的写法），`File` 指向
+  `Current/<模型>.model`；实例端口从被引用模型自动读取，不需要手填
+- 校验：实例名 / 模型名合法、被引用模型存在于同工程 `model/`、连线端点存在
+- 只写 workspace 内的工程；目标已存在要 `overwrite=true`（并留 `.bak-<时间戳>`）
+- 返回写回的 `sha256`、`instances` / `wires` / `netlist`（可直接检查有没有悬空端口）
+- Robei 打开后 F2 Compile 会自己把画布转成 Verilog 实例化
 
 ### `generate_testbench`
 
@@ -674,6 +723,14 @@ C:\dev\robei-mcp\.venv\Scripts\python.exe C:\dev\robei-mcp\tests\stage4_cases.py
 4. `render_waveform` 出 PNG
 5. `read_robei_project` 的 `sha256_before == sha256_after`
 
+`stage16_canvas.py` 覆盖（12/12 PASS，画布级 model，全程真 Robei + 真仿真）：
+
+1. 37 个工具注册，含 `create_robei_canvas_model`
+2. 生成「两个 `and2` 实例 + 5 条 `<Wire>`」的画布模型，解析回 `u1` / `u2` / `t1`
+3. 连线语义正确：`t1` 是 `u1.y → u2.a`，没有悬空实例端口
+4. Robei 打开工程、Compile 通过，输出 `.a(a) .b(b) .y(t1)` 形式的实例化
+5. headless 仿真 `$strobe` 真值表 8 行全部满足 `y = a&b&c`
+
 `stage3_cases.py` 覆盖：
 
 1. 正常 4 位计数器 lint/simulate/read_waveform
@@ -726,15 +783,19 @@ C:\dev\robei-mcp\workspace\robei_counter4_project\
 - Robei 的 Wave dock 打开后 `main_window()` 的菜单栏探测会超时，已加"最大 Qt 窗口"
   兜底，但兜底窗口的控件树可能为空——所以判断健康度要看 `robei_gui_health`，
   而不是"窗口在不在"。
-- 层次化 `.model` 的实例/连线 schema 未用真实 Robei 工程验证：当前只做通用节点树保留，
-  不解释 `Instance`/`netlist` 的语义；等 Robei 里画出的两层样例补齐后再定。
+- 层次化 `.model` 的实例/连线 schema 已用 GitHub 上的真实工程 + 本机 Robei 编译双向验证
+  （阶段 16）。但仍只解析**一层**实例：实例内部的 `<Module>` 子节点不递归下钻；
+  老版本用 `Port Connect="net"` 表示连线，这类写法能读出 `netlist`，但不参与 `Wire` 校验。
 - 核心工具在 Linux/macOS 上可用（只要有 iverilog/vvp），但 `robei_gui_*` 与 Robei
   版本读取是 Windows 专属；CI 只覆盖核心部分。
-- **画布编辑无法自动化**：右键 `Add model`、ToolBox 列表、按坐标拖拽三条路都试过，
-  模型文件都不变（细节见 `docs/gui-tools.md` 末节）。要层次化设计只能写 `Code` 字段，
-  这条已验证可编译。
-- `read_robei_project` 现在解析 `.model` / `.test` / `.const` 三类，但只到属性层
-  （名称、Type、Code、端口、Vendor/Device/Family）；画布上的 `Instance`/连线语义仍未解释。
+- **画布点不动，但画布可以写**：右键 `Add model`、ToolBox 列表、按坐标拖拽三条路都试过，
+  模型文件都不变（细节见 `docs/gui-tools.md` 末节）。但 `create_robei_canvas_model`
+  直接生成 Robei 自己的画布 XML（嵌套 `<Module>` + `<Wire>`），Robei 编译时自己转成
+  Verilog 实例化——这条已在阶段 16 验证（Robei 编译 + headless 仿真真值表）。
+  剩下不能做的是「在已有画布上拖动/删连线」这类编辑。
+- `read_robei_project` 解析 `.model` / `.test` / `.const` 三类，画布级模型带
+  `instances` / `wires` / `netlist`；通用节点树有深度/节点数预算，被截断的节点标
+  `truncated: true`（不回读，也不猜结构）。
 - 没有创建 `.const` 的工具：真机生成的空 const 只有 `<Module Type="const">`，
   引脚/时序约束的写法需要真实样例才能实现（同类问题见层次化 Instance）。
 - `generate_testbench` 是骨架生成器，不理解设计语义（例如不会自动产生激励序列或断言）。

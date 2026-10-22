@@ -294,6 +294,37 @@ def create_robei_test(
 
 
 @mcp.tool()
+def create_robei_canvas_model(
+    proj_path: str,
+    name: str,
+    ports: list[dict[str, Any]],
+    instances: list[dict[str, Any]],
+    wires: list[dict[str, str]],
+    comment: str = "",
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Write a canvas-level model: placed instances (nested <Module>) + <Wire> nets.
+
+    ``instances`` = [{"name": "u1", "model": "and2", "x": 200, "y": 120}]
+    ``wires``     = [{"from": "u1.y", "to": "u2.a"}, {"from": "a", "to": "u1.a"}]
+    Robei compiles this into Verilog instantiation, so a hierarchical design can be
+    generated without drawing it.
+    """
+    try:
+        return tools.create_robei_canvas_model(
+            proj_path=proj_path,
+            name=name,
+            ports=ports,
+            instances=instances,
+            wires=wires,
+            comment=comment,
+            overwrite=overwrite,
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
 def generate_testbench(
     verilog_path: str,
     top: str,

@@ -45,26 +45,89 @@ def generic_node(element: ET.Element, depth: int = 0, budget: list[int] | None =
     return node
 
 
+def parse_endpoint(text: str | None) -> dict[str, Any] | None:
+    """Split a Robei wire endpoint: ``top#u1>a`` -> scope/instance/port.
+
+    Canvas models reference a port as ``<owner>#<instance>><port>`` for an
+    instance and ``<owner>><port>`` for a top-level port.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    owner, _, port = raw.partition(">")
+    owner = owner.strip()
+    port = port.strip() or None
+    scope, _, instance = owner.partition("#")
+    return {
+        "raw": raw,
+        "scope": scope.strip() or None,
+        "instance": instance.strip() or None,
+        "port": port,
+    }
+
+
+def _parse_port(element: ET.Element) -> dict[str, Any]:
+    return {
+        "name": _attr_ci(element, "Name") or "",
+        "inout": _attr_ci(element, "Inout") or "",
+        "datatype": _attr_ci(element, "Datatype") or "",
+        "datasize": _attr_ci(element, "Datasize") or "",
+        "connect": _attr_ci(element, "Connect") or "",
+        "side": _attr_ci(element, "Side") or "",
+        "parent": _attr_ci(element, "Parent") or "",
+        "description": _attr_ci(element, "Description") or "",
+    }
+
+
+def _parse_instance(element: ET.Element) -> dict[str, Any]:
+    """A nested ``<Module Type="model">`` is one placed instance on the canvas."""
+    ports = [_parse_port(child) for child in element if child.tag.lower() == "port"]
+    return {
+        "instance": _attr_ci(element, "Name") or "",
+        "model_file": _attr_ci(element, "File") or "",
+        "class": _attr_ci(element, "Class") or "",
+        "x": _attr_ci(element, "X"),
+        "y": _attr_ci(element, "Y"),
+        "width": _attr_ci(element, "Width"),
+        "height": _attr_ci(element, "Height"),
+        "code": _attr_ci(element, "Code") or "",
+        "parameters": _attr_ci(element, "Parameters") or "",
+        "ports": ports,
+    }
+
+
+def _parse_wire(element: ET.Element) -> dict[str, Any]:
+    frm = parse_endpoint(_attr_ci(element, "From"))
+    to = parse_endpoint(_attr_ci(element, "To"))
+    return {
+        "net": _attr_ci(element, "Name") or "",
+        "from": frm,
+        "to": to,
+        "datatype": _attr_ci(element, "Datatype") or "",
+        "datasize": _attr_ci(element, "Datasize") or "",
+        "parent": _attr_ci(element, "Parent") or "",
+    }
+
+
 def parse_robei_model(path: Path) -> dict[str, Any]:
     tree = ET.parse(path)
     root = tree.getroot()
     ports: list[dict[str, Any]] = []
+    instances: list[dict[str, Any]] = []
+    wires: list[dict[str, Any]] = []
     other_children: list[dict[str, Any]] = []
     for child in root:
-        if child.tag.lower() != "port":
-            other_children.append(generic_node(child))
+        tag = child.tag.lower()
+        if tag == "port":
+            ports.append(_parse_port(child))
             continue
-        ports.append(
-            {
-                "name": _attr_ci(child, "Name") or "",
-                "inout": _attr_ci(child, "Inout") or "",
-                "datatype": _attr_ci(child, "Datatype") or "",
-                "datasize": _attr_ci(child, "Datasize") or "",
-                "connect": _attr_ci(child, "Connect") or "",
-                "description": _attr_ci(child, "Description") or "",
-                "parent": _attr_ci(child, "Parent") or "",
-            }
-        )
+        if tag == "module":
+            instances.append(_parse_instance(child))
+            continue
+        if tag == "wire":
+            wires.append(_parse_wire(child))
+            continue
+        other_children.append(generic_node(child))
 
     parameters = _attr_ci(root, "Parameters") or ""
     code = _attr_ci(root, "Code") or ""
@@ -85,10 +148,55 @@ def parse_robei_model(path: Path) -> dict[str, Any]:
         "parameter_lines": parameters.splitlines(),
         "parameter_list": parse_parameter_text(parameters),
         "ports": ports,
+        "instances": instances,
+        "wires": wires,
+        "is_canvas": bool(instances or wires),
+        "netlist": build_netlist(ports, instances, wires),
         "code": code,
         "code_lines": code.splitlines(),
         "other_children": other_children,
         "size_bytes": path.stat().st_size,
+    }
+
+
+def build_netlist(
+    ports: list[dict[str, Any]],
+    instances: list[dict[str, Any]],
+    wires: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Turn ``<Port Connect>`` + ``<Wire From/To>`` into a readable net map."""
+    nets: dict[str, list[dict[str, Any]]] = {}
+
+    def add(net: str, endpoint: dict[str, Any] | None) -> None:
+        if not net or not endpoint or not endpoint.get("port"):
+            return
+        nets.setdefault(net, []).append(
+            {
+                "instance": endpoint.get("instance"),
+                "port": endpoint.get("port"),
+                "side": "instance" if endpoint.get("instance") else "port",
+            }
+        )
+
+    for wire in wires:
+        add(wire["net"], wire["from"])
+        add(wire["net"], wire["to"])
+    for inst in instances:
+        for port in inst["ports"]:
+            if port.get("connect"):
+                add(port["connect"], {"instance": inst["instance"], "port": port["name"]})
+
+    touched = {(e["instance"], e["port"]) for endpoints in nets.values() for e in endpoints}
+    dangling = [
+        {"instance": inst["instance"], "port": port["name"]}
+        for inst in instances
+        for port in inst["ports"]
+        if (inst["instance"], port["name"]) not in touched
+    ]
+    return {
+        "nets": {name: endpoints for name, endpoints in nets.items()},
+        "net_count": len(nets),
+        "dangling_instance_ports": dangling,
     }
 
 
@@ -166,6 +274,51 @@ def model_to_verilog(
         lines.append("")
         for line in body.splitlines():
             lines.append(f"    {line.rstrip()}" if line.strip() else "")
+
+    instances = model.get("instances") or []
+    if instances:
+        port_names = {p.get("name") for p in (model.get("ports") or [])}
+        connections: dict[tuple[str, str], str] = {}
+        for wire in model.get("wires") or []:
+            endpoints = [wire.get("from") or {}, wire.get("to") or {}]
+            # A wire that ends on a top-level port uses that port as the expression,
+            # exactly like Robei's own generated instantiation list.
+            top = next(
+                (e.get("port") for e in endpoints if e.get("port") and not e.get("instance") and e.get("port") in port_names),
+                None,
+            )
+            net = top or wire.get("net") or ""
+            for endpoint in endpoints:
+                if endpoint.get("instance") and endpoint.get("port"):
+                    connections[(endpoint["instance"], endpoint["port"])] = net or f"{endpoint['instance']}_{endpoint['port']}"
+        for inst in instances:
+            for port in inst.get("ports") or []:
+                if port.get("connect"):
+                    connections.setdefault((inst["instance"], port["name"]), port["connect"])
+
+        internal = sorted(
+            {
+                net
+                for net in connections.values()
+                if net and net not in port_names and not re.search(rf"\bwire\b[^;]*\b{re.escape(net)}\b", body)
+            }
+        )
+        lines.append("")
+        for net in internal:
+            lines.append(f"    wire {net};")
+        lines.append("")
+        lines.append("    //---Module instantiation---")
+        for inst in instances:
+            source = inst.get("model_file") or ""
+            module = Path(source).stem if source else ""
+            module = module or inst.get("class") or ""
+            rendered = []
+            for port in inst.get("ports") or []:
+                expr = connections.get((inst["instance"], port["name"]), "")
+                rendered.append(f"        .{port['name']}({expr})")
+            lines.append(f"    {module} {inst['instance']}(")
+            lines.append(",\n".join(rendered))
+            lines.append("    );")
     lines.append("")
     lines.append("endmodule")
     return "\n".join(lines) + "\n"

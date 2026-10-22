@@ -17,3 +17,4 @@ tools/gui/agent.lock
 .pytest_cache/
 workspace/.tmp/
 workspace/**/.tmp/
+workspace/canvas_stage16/

@@ -1466,6 +1466,201 @@ def _test_xml(name: str, code: str, timescale: str = "1ns/1ns") -> str:
     return "<!DOCTYPE Robei>\n" + head + "\n"
 
 
+CANVAS_PORT_X = {"left": "-0.0222222", "right": "0.977778"}
+INSTANCE_PORT_X = {"left": "-0.125", "right": "0.875"}
+
+
+def _canvas_endpoint(top: str, ref: str) -> str:
+    """``u1.y`` -> ``top#u1>y``；``y`` -> ``top>y``."""
+    ref = (ref or "").strip()
+    if not ref:
+        raise ValueError("wire endpoint must not be empty")
+    if "." in ref:
+        instance, _, port = ref.partition(".")
+        if not port:
+            raise ValueError(f"wire endpoint {ref!r} is missing a port")
+        return f"{top}#{instance.strip()}>{port.strip()}"
+    return f"{top}>{ref}"
+
+
+def _canvas_port_xml(
+    parent: str,
+    port: dict[str, Any],
+    index: int,
+    total: int,
+    instance: bool,
+) -> str:
+    side = str(port.get("side") or ("left" if port.get("direction") == "input" else "right")).lower()
+    x = (INSTANCE_PORT_X if instance else CANVAS_PORT_X).get(side, CANVAS_PORT_X["left"])
+    step = 0.25 if instance else 0.2
+    y = 0.1875 + index * step
+    direction = port.get("direction") or port.get("inout") or "input"
+    datatype = port.get("datatype") or "wire"
+    width = port.get("width") or port.get("datasize") or 1
+    return (
+        f'  <Port Connect="{_attr(port.get("connect", ""))}" Name="{_attr(port["name"])}" '
+        f'Inout="{direction}" Function="" Width="20" Side="{side}" X="{x}" Y="{y:.6f}" '
+        f'Datatype="{datatype}" Parent="{_attr(parent)}" Height="20" Color="#faebd7" Datasize="{width}"/>'
+    )
+
+
+def create_robei_canvas_model(
+    proj_path: str,
+    name: str,
+    ports: list[dict[str, Any]],
+    instances: list[dict[str, Any]],
+    wires: list[dict[str, str]],
+    comment: str = "",
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Write a canvas-level model: placed instances (nested ``<Module>``) plus ``<Wire>`` nets.
+
+    This is the format Robei itself produces when a circuit is drawn on the graph
+    page. Robei turns it into Verilog on Compile (``//---Module instantiation---``),
+    so a hierarchical design can be generated without touching the canvas.
+    """
+    proj = resolve_project_path(proj_path)
+    if not is_within(proj, SETTINGS.workspace):
+        raise ValueError("refusing to modify a project outside the workspace")
+    if not MODEL_NAME_RE.match(name):
+        raise ValueError(f"invalid model name: {name!r}")
+    if not instances:
+        raise ValueError("create_robei_canvas_model needs at least one instance")
+    model_dir = proj.parent / "model"
+    if not model_dir.is_dir():
+        raise FileNotFoundError(f"project has no model folder: {model_dir}")
+
+    cleaned_ports: list[dict[str, Any]] = []
+    for port in ports:
+        direction = str(port.get("direction", "input")).lower()
+        if direction not in PORT_DIRECTIONS:
+            raise ValueError(f"invalid direction: {direction}")
+        if not PORT_NAME_RE.match(str(port["name"])):
+            raise ValueError(f"invalid port name: {port['name']!r}")
+        cleaned_ports.append(
+            {
+                "name": str(port["name"]),
+                "direction": direction,
+                "width": int(port.get("width", 1)),
+                "datatype": str(port.get("datatype", "wire")).lower(),
+                "side": str(port.get("side") or ("left" if direction == "input" else "right")).lower(),
+            }
+        )
+    top_ports = {p["name"] for p in cleaned_ports}
+
+    placed: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(instances):
+        inst_name = str(item.get("name") or f"u{index + 1}")
+        if not MODEL_NAME_RE.match(inst_name):
+            raise ValueError(f"invalid instance name: {inst_name!r}")
+        if inst_name in seen:
+            raise ValueError(f"duplicate instance name: {inst_name!r}")
+        seen.add(inst_name)
+        model_stem = str(item.get("model") or "").strip()
+        if model_stem.lower().endswith(".model"):
+            model_stem = model_stem[:-6]
+        if not MODEL_NAME_RE.match(model_stem):
+            raise ValueError(f"invalid model reference for {inst_name}: {model_stem!r}")
+        source = model_dir / f"{model_stem}.model"
+        if not source.is_file():
+            available = sorted(p.stem for p in model_dir.glob("*.model"))
+            raise FileNotFoundError(f"model {model_stem!r} not found (available: {available})")
+        target_model = parse_robei_model(source)
+        placed.append(
+            {
+                "instance": inst_name,
+                "model": model_stem,
+                # Robei writes the referenced model name as the instance Class
+                "class": model_stem,
+                "x": int(item.get("x", 200 + index * 320)),
+                "y": int(item.get("y", 120)),
+                "ports": [
+                    {
+                        "name": p["name"],
+                        "direction": p["inout"] or "input",
+                        "datatype": p["datatype"] or "wire",
+                        "width": p["datasize"] or 1,
+                    }
+                    for p in target_model["ports"]
+                ],
+            }
+        )
+
+    by_instance = {item["instance"]: item for item in placed}
+    cleaned_wires: list[dict[str, str]] = []
+    for index, wire in enumerate(wires):
+        frm = str(wire.get("from") or "").strip()
+        to = str(wire.get("to") or "").strip()
+        for ref in (frm, to):
+            if "." in ref:
+                inst, _, port = ref.partition(".")
+                if inst not in by_instance:
+                    raise ValueError(f"wire references unknown instance {inst!r}")
+                if port not in {p["name"] for p in by_instance[inst]["ports"]}:
+                    raise ValueError(f"instance {inst!r} has no port {port!r}")
+            elif ref not in top_ports:
+                raise ValueError(f"wire references unknown top-level port {ref!r}")
+        cleaned_wires.append(
+            {
+                "net": str(wire.get("net") or f"{name}_n{index}"),
+                "from": _canvas_endpoint(name, frm),
+                "to": _canvas_endpoint(name, to),
+                "datasize": str(wire.get("datasize") or 1),
+            }
+        )
+
+    lines = ["<!DOCTYPE Robei>"]
+    lines.append(
+        f'<Module Name="{_attr(name)}" Type="module" Width="900" Class="module" '
+        f'Comment="{_attr(comment)}" X="0" Parameters="" Y="0" Parent="0" Height="600" '
+        f'Color="#d3d3d3" Include="" File="Current/{_attr(name)}.model" Code="">'
+    )
+    for item in placed:
+        lines.append(
+            f' <Module Name="{_attr(item["instance"])}" Type="model" Width="160" '
+            f'Class="{_attr(item["class"])}" Comment="" X="{item["x"]}" Parameters="" Y="{item["y"]}" '
+            f'Parent="{_attr(name)}" Height="160" Color="#d3d3d3" Include="" '
+            f'File="Current/{_attr(item["model"])}.model" Code="">'
+        )
+        for index, port in enumerate(item["ports"]):
+            lines.append(_canvas_port_xml(item["instance"], port, index, len(item["ports"]), True))
+        lines.append(" </Module>")
+    for index, port in enumerate(cleaned_ports):
+        lines.append(_canvas_port_xml(name, port, index, len(cleaned_ports), False))
+    for wire in cleaned_wires:
+        lines.append(
+            f' <Wire Name="{_attr(wire["net"])}" To="{wire["to"]}" From="{wire["from"]}" '
+            f'Datatype="wire" Parent="{_attr(name)}" Datasize="{wire["datasize"]}"/>'
+        )
+    lines.append("</Module>")
+    xml_text = "\n".join(lines) + "\n"
+    ET.fromstring(xml_text)
+
+    target = model_dir / f"{name}.model"
+    if target.exists() and not overwrite:
+        raise FileExistsError(f"model already exists: {target}")
+    backup = _backup_file(target)
+    target.write_text(xml_text, encoding="utf-8", newline="\n")
+    registration = _register_model_in_project(proj, name)
+    parsed = parse_robei_model(target)
+    return {
+        "ok": True,
+        "model": name,
+        "path": str(target),
+        "relative_path": _rel(target),
+        "project": str(proj),
+        "registered_in_project": registration in ("created", "exists"),
+        "registration": registration,
+        "backup": str(backup) if backup else None,
+        "sha256": _sha256(target),
+        "ports": parsed["ports"],
+        "instances": parsed["instances"],
+        "wires": parsed["wires"],
+        "netlist": parsed["netlist"],
+    }
+
+
 def create_robei_test(
     proj_path: str,
     name: str,
