@@ -510,6 +510,85 @@ def simulate(
     }
 
 
+def simulate_project(
+    proj_path: str,
+    test_name: str,
+    timeout_s: int = 30,
+    render: bool = False,
+) -> dict[str, Any]:
+    """Run a Robei ``test/*.test`` model with the bundled iverilog — no IDE needed.
+
+    Robei only compiles ``build/<test>.v`` inside its own process; this rebuilds
+    the same source (test Code + every model exported to Verilog) and simulates
+    it headlessly, so experiments still run when the desktop is locked or the
+    UIA bridge is dead.
+    """
+    proj = resolve_project_path(proj_path)
+    if not is_within(proj, SETTINGS.workspace):
+        raise ValueError("refusing to simulate a project outside the workspace")
+    project_dir = proj.parent
+    stem = test_name[:-5] if test_name.lower().endswith(".test") else test_name
+    if not MODEL_NAME_RE.match(stem):
+        raise ValueError(f"invalid test name: {test_name!r}")
+    test_path = project_dir / "test" / f"{stem}.test"
+    if not test_path.is_file():
+        available = sorted(p.stem for p in (project_dir / "test").glob("*.test"))
+        raise FileNotFoundError(f"test model not found: {test_path} (available: {available})")
+
+    test_model = parse_robei_model(test_path)
+    out_dir = SETTINGS.workspace / "build" / "headless" / f"{project_dir.name}-{stem}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tb_src = out_dir / f"{stem}.v"
+    timescale = test_model.get("timescale") or "1ns/1ns"
+    body = test_model["code"]
+    tb_src.write_text(
+        "`timescale " + timescale + "\n"
+        + "// generated from " + test_path.name + " by simulate_project\n"
+        + "module " + stem + "();\n"
+        + body + "\n"
+        + "  initial begin\n"
+        + '    $dumpfile("' + stem + '.vcd");\n'
+        + "    $dumpvars;\n"
+        + "  end\n"
+        + "endmodule\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    deps: list[Path] = []
+    deps_dir = out_dir / "deps"
+    deps_dir.mkdir(exist_ok=True)
+    for model_file in sorted((project_dir / "model").glob("*.model")):
+        model = parse_robei_model(model_file)
+        target = deps_dir / f"{model['name']}.v"
+        target.write_text(model_to_verilog(model), encoding="utf-8", newline="\n")
+        deps.append(target)
+
+    result = simulate(files=[str(tb_src), *[str(d) for d in deps]], top=stem, timeout_s=timeout_s)
+    result["headless"] = {
+        "project": str(proj),
+        "test": stem,
+        "tb_source": str(tb_src),
+        "tb_source_rel": _rel(tb_src),
+        "dependencies": [_rel(d) for d in deps],
+        "timescale": timescale,
+    }
+    vcds = result.get("vcd_paths") or []
+    if render and vcds:
+        try:
+            listing = read_waveform(vcds[0])
+            names = [s["name"] for s in listing.get("signals", [])][:16]
+            png = render_waveform(vcds[0], names, title=f"{stem} (headless iverilog)")
+            result["plot"] = {
+                "ok": png.get("ok"),
+                "path": png.get("path"),
+                "relative_path": png.get("relative_path"),
+            }
+        except Exception as exc:
+            result["plot"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    return result
+
+
 def read_waveform(
     vcd_path: str,
     signals: list[str] | None = None,

@@ -189,3 +189,23 @@ Robei 原话（模型 `Type="model"` 时）：
 本轮试过在 `test/` 下放 `Type="test"` 的 `tb_and_gate.model` 并在 `.proj` 的 `<test>` 里登记，
 Robei 重新打开工程后仍未把它当作可运行的测试模型（Run 依旧报 `and_gate is not test`），
 所以 **Robei 原生 Run/Wave 还没打通**；波形仍由 `simulate` + `read_waveform` / `render_waveform`（同一套 iverilog/vvp）提供。
+
+## 画布编辑：试过但没打通（2026-10-22）
+
+目标：用 UIA 在画布上放两个实例并连线，拿到 `<Instance>` / 连线的真实 XML schema
+（`two_level` 里的实例目前是写在 `Code` 字段里的，不是画布拖出来的）。
+
+三条路都失败，记录在此以免重复劳动：
+
+1. **右键 `model` 文件夹 → `Add model`**：确实弹出了原生 "Select File" 对话框，
+   把 `and2.model` 的绝对路径打进去后对话框正常关闭，但 `top_two.model`
+   字节数（1073）和内容都不变，没有出现 `<Instance>` 子节点。
+2. **ToolBox 列表**：`QApplication.Romain.ToolBox.QToolBox` 里只有一个 `QList`，
+   UIA 完全不暴露 `ListItem`（`children()` 为空），拿不到条目名和坐标。
+3. **按估算坐标从 ToolBox 拖到画布**（`mouse.press/move/release` 分 10 步）：
+   拖拽动作本身返回成功，模型文件仍然不变。
+
+结论：这个版本的 Robei 没有可用的画布编辑自动化入口。要用 MCP 生成"画布级"
+层次化设计，只能沿用 `Code` 字段写实例化——那条路已经验证可编译
+（`two_level` 的 `top_two` 在 `compile_all` 里 2/2 通过）。
+`<Instance>` / `Wire` 的 schema 仍然需要一个真人拖出来的样例才能补。

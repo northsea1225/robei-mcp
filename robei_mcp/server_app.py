@@ -53,6 +53,27 @@ def simulate(files: list[str], top: str, timeout_s: int = 30) -> dict[str, Any]:
 
 
 @mcp.tool()
+def simulate_project(
+    proj_path: str,
+    test_name: str,
+    timeout_s: int = 30,
+    render: bool = False,
+) -> dict[str, Any]:
+    """Run a Robei test/*.test model headlessly with the bundled iverilog (no IDE, no desktop).
+
+    Rebuilds build/headless/<project>-<test>/<test>.v from the .test Code plus every
+    model exported to Verilog, then compiles and runs it. Set render=True to also
+    get a PNG of the produced VCD.
+    """
+    try:
+        return tools.simulate_project(
+            proj_path=proj_path, test_name=test_name, timeout_s=timeout_s, render=render
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
 def read_waveform(
     vcd_path: str,
     signals: list[str] | None = None,

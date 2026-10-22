@@ -59,6 +59,14 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
   `<Module Type="const" Vendor="AMD" Device="" Family="" Code="" .../>`，
   与 `.model`/`.test` 同一个 `<Module>` 根，因此复用同一个解析器
 
+已验证（阶段 14，`tests/stage14_headless.py`，9/9 PASS）：
+
+- `simulate_project` 不需要 IDE：Robei 关掉的情况下，用同一份 `.test` 的 Code +
+  每个 `.model` 导出出的 Verilog，自己编译跑出 26 行 `t=… count=…`
+- 期望序列是**按 testbench 语义独立推导**的（10 ns 周期、t>12 释放复位、4 位回绕），
+  与真实输出逐行相等；`find_events(count == 4'b1111)` 同样是 `t=155`，和 IDE 内跑的一致
+- `render=true` 同时产出 PNG；未知 test 名会返回可用列表
+
 仅可见 / 待定：
 
 - Robei GUI 打开和编译：当前 SSH 在 Session 0，交互桌面在 Session 1，无法从 SSH 看到/点击 GUI；已准备 `workspace\robei_counter4_project` 和手动步骤，待人工验证。
@@ -338,6 +346,23 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
 不会启动 `iverilog`。通过后执行 `iverilog` 编译和 `vvp` 运行，
 返回 `$display`、VCD 绝对/相对路径。超时会终止子进程并返回 `simulation.timeout=true`。
 
+### `simulate_project`
+
+```json
+{"proj_path": "counter4_native/counter4_native.proj",
+ "test_name": "tb_counter4.test", "render": true}
+```
+
+**无 GUI、无桌面**地把一个 Robei 实验跑起来：读 `test/<name>.test` 的 `Code`，
+包成 `` `timescale … module <name>(); … endmodule ``（并补 `$dumpfile`/`$dumpvars`），
+把 `model/*.model` 全部导出到 `build/headless/<工程>-<test>/deps/`，再交给
+`iverilog` + `vvp` 跑。
+
+- 输出结构与 `simulate` 相同（`compile` / `simulation` / `display_output` / `vcd_paths`），
+  另外多个 `headless` 段记录生成物路径
+- `render=true` 顺带把 VCD 画成 PNG
+- 适用场景：桌面锁屏、SSH 里没开 Session 1、或者 UIA 桥已经塌了
+
 ### `read_waveform`
 
 ```json
@@ -608,6 +633,9 @@ C:\dev\robei-mcp\workspace\robei_counter4_project\
   而不是"窗口在不在"。
 - 层次化 `.model` 的实例/连线 schema 未用真实 Robei 工程验证：当前只做通用节点树保留，
   不解释 `Instance`/`netlist` 的语义；等 Robei 里画出的两层样例补齐后再定。
+- **画布编辑无法自动化**：右键 `Add model`、ToolBox 列表、按坐标拖拽三条路都试过，
+  模型文件都不变（细节见 `docs/gui-tools.md` 末节）。要层次化设计只能写 `Code` 字段，
+  这条已验证可编译。
 - `read_robei_project` 现在解析 `.model` / `.test` / `.const` 三类，但只到属性层
   （名称、Type、Code、端口、Vendor/Device/Family）；画布上的 `Instance`/连线语义仍未解释。
 - 没有创建 `.const` 的工具：真机生成的空 const 只有 `<Module Type="const">`，
@@ -642,7 +670,7 @@ Robei 原生闭环已接入：`create_robei_test` + `sync_robei_verilog` + `robe
 - `robei_gui_experiment(plot=True)`：跑完自动把 VCD 画成 PNG 放到
   `workspace/build/waveforms/`，一次调用拿到 输出 + 波形 + 信号列表
 
-回归：`tests\stage5_gui_cases.py`（10 项）、`tests\stage6_gui_code.py`（11 项）、`tests\stage7_model_ports.py`（10 项）、`tests\stage8_create_flow.py`（10 项）、`tests\stage9_native_run.py`、`tests\stage10_counter_native.py`、`tests\stage11_mcp_native.py`（14 项）、`tests\stage12_ops.py`（17 项）、`tests\stage13_doctor.py`（18 项），都走真实 stdio MCP 客户端，全部 PASS。
+回归：`tests\stage5_gui_cases.py`（10 项）、`tests\stage6_gui_code.py`（11 项）、`tests\stage7_model_ports.py`（10 项）、`tests\stage8_create_flow.py`（10 项）、`tests\stage9_native_run.py`、`tests\stage10_counter_native.py`、`tests\stage11_mcp_native.py`（14 项）、`tests\stage12_ops.py`（17 项）、`tests\stage13_doctor.py`（18 项）、`tests\stage14_headless.py`（9 项），都走真实 stdio MCP 客户端（stage14 连 IDE 都不需要），全部 PASS。
 
 ## 从 SSH 会话推送仓库
 

@@ -141,6 +141,7 @@ async def main():
                 "create_robei_test",
                 "robei_gui_experiment",
                 "robei_gui_wave_load",
+                "simulate_project",
                 "robei_doctor",
                 "list_projects",
                 "robei_gui_health",
