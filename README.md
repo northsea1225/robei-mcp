@@ -568,3 +568,26 @@ Robei 原生闭环已接入：`create_robei_test` + `sync_robei_verilog` + `robe
 工程脚手架：`create_robei_project` 建目录与 .proj，`create_robei_model` 生成带端口+Code 的 .model 并登记进工程。
 
 回归：`tests\stage5_gui_cases.py`（10 项）、`tests\stage6_gui_code.py`（11 项）、`tests\stage7_model_ports.py`（10 项）、`tests\stage8_create_flow.py`（10 项），都走真实 stdio MCP 客户端，全部 PASS。
+
+## 从 SSH 会话推送仓库
+
+SSH 跑在 Session 0，`git push` 会失败：GCM 的凭据在交互会话的 Windows
+Credential Manager 里，Session 0 读写不到（`Unable to persist credentials with the
+'wincredman' credential store`）。
+
+办法是把 push 交给交互会话（和 GUI 工具共用同一个 schtasks 桥）：
+
+```powershell
+# 在 Windows 交互桌面上
+C:\dev\robei-mcp\.venv\Scripts\python.exe C:\dev\robei-mcp\tools\gui\probe_push.py
+
+# 或从 SSH 触发
+echo probe_push > C:\dev\robei-mcp\tools\gui\agent-args.txt
+schtasks /Run /TN RobeiMCP_GuiAgent
+```
+
+脚本设置 `GIT_TERMINAL_PROMPT=0`、`GCM_INTERACTIVE=never`，避免卡在登录窗口，
+并对返回文本里的 token 做脱敏。
+
+回归补充：`tests\stage9_native_run.py`、`tests\stage10_counter_native.py`（Robei
+原生闭环）、`tests\stage11_mcp_native.py`（29 个工具的 stdio 端到端，14/14 PASS）。
