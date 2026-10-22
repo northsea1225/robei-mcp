@@ -120,6 +120,7 @@ async def main():
                 "render_waveform",
                 "read_robei_model",
                 "read_robei_project",
+                "set_robei_port",
                 "export_robei_verilog",
                 "generate_testbench",
                 "robei_gui_status",

@@ -17,6 +17,7 @@ from typing import Any
 from .config import SETTINGS, file_version
 from .model import _attr_ci, generic_node, model_to_verilog, parse_robei_model
 from .security import (
+    is_within,
     resolve_model_path,
     resolve_project_path,
     resolve_source_files,
@@ -753,4 +754,126 @@ def generate_testbench(
             "files": [_rel(source), _rel(target)],
             "top": tb_name,
         },
+    }
+
+
+# ---------------------------------------------------------------------------
+# .model editing: ports
+# ---------------------------------------------------------------------------
+
+PORT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+PORT_DIRECTIONS = {"input", "output", "inout"}
+PORT_DATATYPES = {"wire", "reg"}
+PORT_SIDES = {"left", "right", "top", "bottom"}
+
+
+def _port_geometry(side: str, index: int) -> tuple[str, str]:
+    if side == "left" or side == "right":
+        x = "-0.01875" if side == "left" else "0.98125"
+        y = 0.163889 + 0.145 * index
+        return x, f"{y:.6f}"
+    y = "-0.0277778" if side == "top" else "1.02778"
+    x = 0.21875 + 0.15625 * index
+    return f"{x:.6f}", y
+
+
+def _port_tag(
+    module: str,
+    name: str,
+    direction: str,
+    width: int,
+    datatype: str,
+    side: str,
+    index: int,
+) -> str:
+    color = "#faebd7" if direction == "input" else ("#f0ffff" if direction == "output" else "#e0ffff")
+    x, y = _port_geometry(side, index)
+    return (
+        f'<Port Color="{color}" Connect="" Datasize="{width}" Datatype="{datatype}" '
+        f'Description="" Height="30" Inout="{direction}" Name="{name}" Parent="{module}" '
+        f'Side="{side}" Width="30" X="{x}" Y="{y}"/>'
+    )
+
+
+def set_port(
+    model_path: str,
+    name: str,
+    direction: str = "input",
+    width: int = 1,
+    datatype: str = "wire",
+    side: str | None = None,
+) -> dict[str, Any]:
+    """Add or update one <Port> in a .model file (backup + XML validation, no GUI).
+
+    Robei's canvas click-to-add-port only creates default names and is fragile to
+    drive; editing the port node directly is deterministic and Robei reloads it.
+    """
+    path = resolve_model_path(model_path)
+    if not is_within(path, SETTINGS.workspace):
+        raise ValueError("refusing to modify a .model outside the workspace")
+    if not PORT_NAME_RE.match(name):
+        raise ValueError(f"invalid port name: {name!r}")
+    direction = direction.strip().lower()
+    datatype = datatype.strip().lower()
+    if direction not in PORT_DIRECTIONS:
+        raise ValueError(f"direction must be one of {sorted(PORT_DIRECTIONS)}")
+    if datatype not in PORT_DATATYPES:
+        raise ValueError(f"datatype must be one of {sorted(PORT_DATATYPES)}")
+    width = int(width)
+    if not 1 <= width <= 1024:
+        raise ValueError("width must be between 1 and 1024")
+    if side is None:
+        side = "left" if direction == "input" else ("right" if direction == "output" else "left")
+    side = side.strip().lower()
+    if side not in PORT_SIDES:
+        raise ValueError(f"side must be one of {sorted(PORT_SIDES)}")
+
+    with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+        text = handle.read()
+    module_match = re.search(r"<Module\b[^>]*>", text)
+    if module_match is None:
+        raise ValueError(f"no <Module> element in {path}")
+    module_tag = module_match.group(0)
+    name_match = re.search(r'\bName="([^"]+)"', module_tag)
+    if name_match is None:
+        raise ValueError("module has no Name attribute")
+    module = name_match.group(1)
+
+    existing_tags = re.findall(r"<Port\b[^>]*/>", text)
+    index = len(existing_tags)
+    replacement = _port_tag(module, name, direction, width, datatype, side, index)
+    pattern = re.compile(r'<Port\b[^>]*\bName="%s"[^>]*/>' % re.escape(name))
+    replaced = False
+    if pattern.search(text):
+        for position, tag in enumerate(existing_tags):
+            if re.search(r'\bName="%s"' % re.escape(name), tag):
+                index = position
+                break
+        replacement = _port_tag(module, name, direction, width, datatype, side, index)
+        new_text = pattern.sub(replacement, text, count=1)
+        replaced = True
+    else:
+        insert_at = module_match.end()
+        new_text = text[:insert_at] + "\n " + replacement + text[insert_at:]
+
+    ET.fromstring(new_text)  # raises on malformed XML
+
+    sha_before = _sha256(path)
+    backup = path.with_name(path.name + ".bak-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
+    backup.write_text(text, encoding="utf-8", newline="")
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(new_text)
+
+    parsed = parse_robei_model(path)
+    return {
+        "ok": True,
+        "model": module,
+        "path": str(path),
+        "relative_path": _rel(path),
+        "port": {"name": name, "direction": direction, "width": width, "datatype": datatype, "side": side},
+        "replaced": replaced,
+        "backup": str(backup),
+        "sha256_before": sha_before,
+        "sha256_after": _sha256(path),
+        "ports": parsed.get("ports"),
     }

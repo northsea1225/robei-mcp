@@ -105,3 +105,42 @@ compile  ok  generated=[".../build/and2.v"]
 7. **Files 树只列 `.proj` 里声明过的模型**。`_synthetic/sample.proj` 没有 `<file>` 节点，
    所以磁盘上的 `model/top.model` 在树上不出现，`robei_gui_open_model` 也找不到——这不是展开失败。
 8. 切换工程不会关闭旧页签，`models` 里可能残留上一个工程的模型名；以 `active` 为准。
+
+## 端口：为什么不用 GUI 点，而用 `set_robei_port`
+
+实测过 GUI 那条路（`probe19/20`）：点工具栏 `Port` 后在画布边缘点击确实会生成一个端口节点，但
+
+- 名字固定是 `p1`、方向默认、`Side` 由落点决定（点到右边缘却生成了 `Side="top"`）；
+- 想改名字/方向/位宽要再选中该端口，让 `Property` 表格出现对应行，再进单元格编辑——
+  表格子项在 UIA 里只有文本，没有可写的 Value 模式，实测枚举不到稳定句柄。
+
+所以改成**直接写 `.model` 的 `<Port>` 节点**，再用 Robei 编译来验证它认不认：
+
+```json
+{"ok": true, "model": "blank", "port": {"name": "a", "direction": "input", "width": 1,
+ "datatype": "wire", "side": "left"}, "replaced": false,
+ "backup": "...\\blank.model.bak-20261022-103500", "sha256_before": "...", "sha256_after": "..."}
+```
+
+规则：
+- 只允许改 `workspace` 下的 `.model`（`C:\ProgramData\Robei` 里的模型是只读的）；
+- 写前先备份成 `<name>.bak-<时间戳>`，写完用 `ElementTree` 验一遍 XML；
+- 同名端口已存在就替换（`replaced: true`），否则插到 `<Module>` 之后；
+- `direction ∈ {input,output,inout}`、`datatype ∈ {wire,reg}`、`1 ≤ width ≤ 1024`、`side ∈ {left,right,top,bottom}`。
+
+闭环实测（`tests/stage7_model_ports.py`，10/10 PASS）：三行 `set_robei_port` 造出 `a/clk/y`，
+Robei 打开该工程编译后生成的 `blank.v`：
+
+```verilog
+module blank(
+output wire y,
+input wire clk,
+input wire a
+);
+  //----Code starts here: integrated by Robei-----
+  assign y = a;
+endmodule    //blank
+```
+
+也就是说「端口（`set_robei_port`）+ 逻辑（`robei_gui_code_write`）+ 编译验证（`robei_gui_compile`）」
+已经能纯脚本造出一个 Robei 能编译的模型。

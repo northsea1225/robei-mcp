@@ -7,3 +7,5 @@ workspace/gui_shots/
 tools/gui/agent-job.json
 workspace/**/build/
 tools/gui/agent-args.txt
+*.bak-*
+*.model.bak*

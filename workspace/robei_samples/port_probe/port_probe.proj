@@ -1,0 +1,8 @@
+<port_probe name="port_probe" parent="0" type="proj">
+ <model name="model" parent="port_probe" type="folder">
+  <blank.model name="blank.model" parent="model" type="model"/>
+ </model>
+ <test name="test" parent="port_probe" type="folder"/>
+ <const name="const" parent="port_probe" type="folder"/>
+ <verilog name="verilog" parent="port_probe" type="folder"/>
+</port_probe>

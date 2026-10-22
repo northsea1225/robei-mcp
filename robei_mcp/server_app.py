@@ -112,6 +112,29 @@ def read_robei_project(proj_path: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def set_robei_port(
+    model_path: str,
+    name: str,
+    direction: str = "input",
+    width: int = 1,
+    datatype: str = "wire",
+    side: str | None = None,
+) -> dict[str, Any]:
+    """Add or update one port in a .model (workspace only, backup + XML validation)."""
+    try:
+        return tools.set_port(
+            model_path=model_path,
+            name=name,
+            direction=direction,
+            width=width,
+            datatype=datatype,
+            side=side,
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
 def export_robei_verilog(
     model_path: str,
     out_name: str | None = None,
