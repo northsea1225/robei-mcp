@@ -1,2 +1,2 @@
 <!DOCTYPE Robei>
-<Module Category="Current" Class="module" Code="" Color="#d3d3d3" Comment="" Height="1080" Name="tb_and_gate" Parent="0" Timescale="1ns/1ns" Type="test" Width="1600" X="0" Y="0"/>
+<Module Category="Current" Class="module" Code="reg a; reg b; wire y;&#xa;and_gate dut (.a(a), .b(b), .y(y));&#xa;initial begin&#xa;  a = 0; b = 0; #10;&#xa;  a = 0; b = 1; #10;&#xa;  a = 1; b = 0; #10;&#xa;  a = 1; b = 1; #10;&#xa;  $finish;&#xa;end&#xa;" Color="#d3d3d3" Comment="" Height="1080" Name="tb_and_gate" Parent="0" Timescale="1ns/1ns" Type="test" Width="1600" X="0" Y="0"/>
