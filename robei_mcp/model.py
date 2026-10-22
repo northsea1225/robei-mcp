@@ -74,6 +74,7 @@ def parse_robei_model(path: Path) -> dict[str, Any]:
         "root_tag": root.tag,
         "name": _attr_ci(root, "Name") or root.tag,
         "type": _attr_ci(root, "Type") or "",
+        "timescale": _attr_ci(root, "Timescale") or "",
         "class": _attr_ci(root, "Class") or "",
         "category": _attr_ci(root, "Category") or "",
         "comment": _attr_ci(root, "Comment") or "",

@@ -1,0 +1,11 @@
+<exp3_write name="exp3_write" parent="0" type="proj">
+ <model name="model" parent="exp3_write" type="folder">
+
+   <and_gate.model name="and_gate.model" parent="model" type="model"/>
+ </model>
+ <test name="test" parent="exp3_write" type="folder">
+  <tb_and_gate.test name="tb_and_gate.test" parent="test" type="test"/>
+ </test>
+ <const name="const" parent="exp3_write" type="folder"/>
+ <verilog name="verilog" parent="exp3_write" type="folder"/>
+</exp3_write>

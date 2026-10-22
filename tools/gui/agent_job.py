@@ -25,6 +25,17 @@ OPS = {
     "code_write": lambda a: robei_ui.code_write(a["code"], bool(a.get("save", True))),
     "launch": lambda a: robei_ui.launch(a["exe"], float(a.get("wait_s", 20))),
     "close": lambda a: robei_ui.close(),
+    "experiment": lambda a: robei_ui.experiment(
+        a.get("exe"),
+        a["path"],
+        a["test"],
+        bool(a.get("restart", False)),
+        bool(a.get("wave", True)),
+        float(a.get("compile_timeout", 45)),
+        float(a.get("run_timeout", 45)),
+        a.get("signals"),
+    ),
+    "wave_load": lambda a: robei_ui.wave_load(a.get("signals"), int(a.get("max_signals", 12))),
 }
 
 

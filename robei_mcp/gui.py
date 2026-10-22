@@ -28,7 +28,7 @@ ARGS_FILE = GUI_DIR / "agent-args.txt"
 LAST_JSON = SETTINGS.workspace / "gui_shots" / "last.json"
 
 DEFAULT_TIMEOUT_S = 90
-MAX_TIMEOUT_S = 180
+MAX_TIMEOUT_S = 300
 
 
 def _session_id() -> int:
@@ -112,6 +112,29 @@ def _run_direct(op: str, args: dict[str, Any]) -> dict[str, Any]:
         payload = module.open_model(args["name"])
     elif op == "launch":
         payload = module.launch(args["exe"], float(args.get("wait_s", 20)))
+    elif op == "run":
+        payload = module.run_simulation(float(args.get("timeout_s", 25)))
+    elif op == "wave":
+        payload = module.open_wave(float(args.get("timeout_s", 15)))
+    elif op == "refresh":
+        payload = module.refresh()
+    elif op == "code_read":
+        payload = module.code_read()
+    elif op == "code_write":
+        payload = module.code_write(args["code"], bool(args.get("save", True)))
+    elif op == "experiment":
+        payload = module.experiment(
+            args["exe"],
+            args["path"],
+            args["test"],
+            bool(args.get("restart", False)),
+            bool(args.get("wave", True)),
+            float(args.get("compile_timeout", 45)),
+            float(args.get("run_timeout", 45)),
+            args.get("signals"),
+        )
+    elif op == "wave_load":
+        payload = module.wave_load(args.get("signals"), int(args.get("max_signals", 12)))
     elif op == "close":
         payload = module.close()
     else:
@@ -226,3 +249,40 @@ def code_write(code: str, save: bool = True, timeout_s: int = 90) -> dict[str, A
 
 def close(timeout_s: int = 60) -> dict[str, Any]:
     return call("close", {}, timeout_s=timeout_s)
+
+
+def experiment(
+    proj_path: str,
+    test_name: str,
+    restart: bool = False,
+    wave: bool = False,
+    compile_timeout: int = 45,
+    run_timeout: int = 45,
+    signals: list[str] | None = None,
+    timeout_s: int = 240,
+) -> dict[str, Any]:
+    path = resolve_project_path(proj_path)
+    # The Wave dock is opened in a second job: creating it invalidates the UIA
+    # element cache of the process that opened it, so wave_load needs a fresh one.
+    result = call(
+        "experiment",
+        {
+            "exe": str(SETTINGS.robei_gui_exe),
+            "path": str(path),
+            "test": test_name,
+            "restart": restart,
+            "wave": False,
+            "compile_timeout": compile_timeout,
+            "run_timeout": run_timeout,
+            "signals": signals,
+        },
+        timeout_s=timeout_s,
+    )
+    if wave and result.get("ok"):
+        result["wave"] = call("wave_load", {"signals": signals, "max_signals": 12}, timeout_s=120)
+        result["wave_transport"] = result["wave"].get("transport")
+    return result
+
+
+def wave_load(signals: list[str] | None = None, max_signals: int = 12, timeout_s: int = 120) -> dict[str, Any]:
+    return call("wave_load", {"signals": signals, "max_signals": max_signals}, timeout_s=timeout_s)

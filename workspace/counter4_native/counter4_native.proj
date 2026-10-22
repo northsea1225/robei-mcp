@@ -1,0 +1,11 @@
+<counter4_native name="counter4_native" parent="0" type="proj">
+ <model name="model" parent="counter4_native" type="folder">
+
+   <counter4.model name="counter4.model" parent="model" type="model"/>
+ </model>
+ <test name="test" parent="counter4_native" type="folder">
+  <tb_counter4.test name="tb_counter4.test" parent="test" type="test"/>
+ </test>
+ <const name="const" parent="counter4_native" type="folder"/>
+ <verilog name="verilog" parent="counter4_native" type="folder"/>
+</counter4_native>

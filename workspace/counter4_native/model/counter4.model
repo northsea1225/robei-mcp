@@ -1,0 +1,6 @@
+<!DOCTYPE Robei>
+<Module Category="Current" Class="module" Code="  always @(posedge clk or negedge rst_n) begin&#xa;    if (!rst_n) count &lt;= 4'b0000;&#xa;    else count &lt;= count + 4'b0001;&#xa;  end" Color="#d3d3d3" Comment="4-bit binary counter" Height="1080" Name="counter4" Parameters="" Parent="0" Type="model" Width="1600" X="0" Y="0">
+ <Port Color="#faebd7" Connect="" Datasize="1" Datatype="wire" Description="" Height="30" Inout="input" Name="clk" Parent="counter4" Side="left" Width="30" X="-0.01875" Y="0.163889"/>
+ <Port Color="#faebd7" Connect="" Datasize="1" Datatype="wire" Description="" Height="30" Inout="input" Name="rst_n" Parent="counter4" Side="left" Width="30" X="-0.01875" Y="0.308889"/>
+ <Port Color="#f0ffff" Connect="" Datasize="4" Datatype="reg" Description="" Height="30" Inout="output" Name="count" Parent="counter4" Side="right" Width="30" X="0.98125" Y="0.453889"/>
+</Module>

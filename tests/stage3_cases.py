@@ -70,6 +70,10 @@ async def main():
                 "robei_gui_code_read",
                 "robei_gui_code_write",
                 "robei_gui_close",
+                "sync_robei_verilog",
+                "create_robei_test",
+                "robei_gui_experiment",
+                "robei_gui_wave_load",
             ]
             for name in required:
                 assert name in names, f"missing tool: {name}"

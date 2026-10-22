@@ -97,8 +97,17 @@ def main_window():
     for win in candidates:
         try:
             dlg = attach(win["hwnd"])
-            if dlg.child_window(auto_id="QApplication.Romain.QMenuBar").exists(timeout=0.3):
+            if dlg.child_window(auto_id="QApplication.Romain.QMenuBar").exists(timeout=1.5):
                 return dlg, win
+        except Exception:
+            continue
+    # Opening the Wave dock makes Robei's accessibility tree very large; the menu
+    # bar probe can then time out even though the window is the real main window.
+    for win in candidates:
+        if not win["title"].strip() or "Popup" in win["class"]:
+            continue
+        try:
+            return attach(win["hwnd"]), win
         except Exception:
             continue
     return None, None
@@ -485,6 +494,140 @@ def open_wave(timeout_s: float = 15.0) -> dict:
     }
 
 
+def _wave_tree(dlg):
+    for ctrl in dlg.descendants(control_type="Tree"):
+        try:
+            if (ctrl.element_info.automation_id or "").endswith("WaveTree"):
+                return ctrl
+        except Exception:
+            continue
+    return None
+
+
+def _wave_rows(dlg) -> list[dict]:
+    tree = _wave_tree(dlg)
+    if tree is None:
+        return []
+    rows = []
+    for item in tree.descendants(control_type="TreeItem")[:80]:
+        try:
+            text = item.window_text()
+        except Exception:
+            continue
+        try:
+            state = int(item.get_expand_state())
+        except Exception:
+            state = None
+        try:
+            rect = _rect(item.element_info.rectangle)
+        except Exception:
+            rect = [0, 0, 0, 0]
+        rows.append({"text": text, "state": state, "rect": rect, "item": item})
+    return rows
+
+
+def _signal_table_rows(dlg) -> list[str]:
+    for ctrl in dlg.descendants():
+        try:
+            if not (ctrl.element_info.automation_id or "").endswith("SignalTable"):
+                continue
+            texts = [c.window_text() for c in ctrl.children(control_type="DataItem")]
+            return [t for t in texts if t]
+        except Exception:
+            continue
+    return []
+
+
+def wave_load(signals: list[str] | None = None, max_signals: int = 12) -> dict:
+    """Open the Wave dock, expand the VCD tree and click signals into the viewer.
+
+    Robei fills ``SignalTree.WaveTree`` from the last ``build/<model>.vcd``; each
+    single click on a signal row adds it to ``WaveViewer.SignalTable``.
+    """
+    from pywinauto import mouse
+
+    def attach_retry(tries: int = 6, delay: float = 1.0):
+        for _ in range(tries):
+            dlg, win = main_window()
+            if dlg is not None:
+                return dlg, win
+            time.sleep(delay)
+        return None, None
+
+    dlg, win = attach_retry()
+    if dlg is None:
+        return {"ok": False, "error": "Robei is not running"}
+    steps: dict = {}
+    steps["wave_menu"] = open_wave()
+    time.sleep(1.0)
+    if _wave_tree(dlg) is None:
+        steps["waveview_menu"] = click_menu(dlg, "Window", "Waveview")
+        time.sleep(1.0)
+    if _wave_tree(dlg) is None:
+        dlg, win = attach_retry()
+        if dlg is not None and _wave_tree(dlg) is None:
+            steps["waveview_retry"] = click_menu(dlg, "Window", "Waveview")
+            time.sleep(1.0)
+
+    tried: set[str] = set()
+    for _ in range(4):
+        dlg, win = attach_retry()
+        if dlg is None:
+            return {"ok": False, "error": "Robei window lost", "steps": steps}
+        rows = _wave_rows(dlg)
+        if not rows:
+            break
+        todo = [r for r in rows if r["state"] != 1 and r["text"] not in tried]
+        if not todo:
+            break
+        if not todo:
+            break
+        for row in todo[:6]:
+            try:
+                mouse.double_click(button="left", coords=_center(row["rect"]))
+                tried.add(row["text"])
+                time.sleep(0.5)
+            except Exception:
+                continue
+    rows = _wave_rows(dlg)
+
+    wanted = [s.split(".")[-1].lower() for s in signals] if signals else None
+    clicked: list[str] = []
+    for _ in range(max_signals):
+        dlg, win = attach_retry()
+        if dlg is None:
+            break
+        rows = _wave_rows(dlg)
+        leaves = [r for r in rows if r["state"] != 1 and (wanted is None or r["text"].lower() in wanted)]
+        leaf = next((r for r in leaves if r["text"].lower() not in [c.lower() for c in clicked]), None)
+        if leaf is None:
+            break
+        try:
+            mouse.click(button="left", coords=_center(leaf["rect"]))
+            clicked.append(leaf["text"])
+            time.sleep(0.4)
+        except Exception:
+            break
+    dlg, win = attach_retry()
+    if dlg is None:
+        return {"ok": False, "error": "Robei window lost", "steps": steps}
+    time.sleep(1.0)
+    table = _signal_table_rows(dlg)
+    tree_names = [r["text"] for r in _wave_rows(dlg)]
+    return {
+        "ok": bool(clicked) or bool(table),
+        "steps": steps,
+        "tree": tree_names,
+        "clicked": clicked,
+        "signal_table": table,
+        "rendered": bool(table),
+        "hint": None
+        if table
+        else "Robei's wave viewer lists the VCD signals but did not add them to the canvas; "
+        "use read_waveform/render_waveform for numeric/PNG output",
+    }
+
+
 def refresh() -> dict:
     """Build > Refresh: make Robei reload models/projects that changed on disk."""
     dlg, win = main_window()
@@ -740,3 +883,91 @@ def close() -> dict:
 
     proc = subprocess.run(["taskkill", "/F", "/IM", PROCESS], capture_output=True, text=True)
     return {"ok": proc.returncode == 0, "stdout": proc.stdout.strip(), "stderr": proc.stderr.strip()}
+
+
+def _wait_exit(timeout_s: float = 15.0) -> bool:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if not any(w["class"].startswith("Qt") for w in windows()):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def experiment(
+    exe: str,
+    proj_path: str,
+    test_name: str,
+    restart: bool = False,
+    open_wave_after: bool = False,
+    compile_timeout: float = 45.0,
+    run_timeout: float = 45.0,
+    signals: list[str] | None = None,
+) -> dict:
+    """Whole native loop: (re)start Robei -> open project -> open test model ->
+    Compile -> Run -> Wave. Returns one report with every step's raw output."""
+    steps: dict = {}
+    if restart:
+        steps["close"] = close()
+        steps["closed"] = _wait_exit()
+        time.sleep(1.5)
+    dlg, win = main_window()
+    if dlg is None:
+        steps["launch"] = launch(exe, 40.0)
+        dlg, win = main_window()
+        if dlg is None:
+            return {"ok": False, "error": "Robei did not start", "steps": steps}
+
+    opened = open_project(proj_path)
+    steps["open_project"] = {k: opened.get(k) for k in ("ok", "project", "attempts", "error")}
+    if not opened.get("ok"):
+        return {"ok": False, "error": "project did not open", "steps": steps}
+
+    # A freshly opened project leaves the Files tree collapsed and the UIA cache
+    # stale for a moment; refresh + re-attach before looking for the test entry.
+    time.sleep(1.5)
+    steps["refresh"] = refresh()
+    dlg, win = main_window()
+    if dlg is None:
+        return {"ok": False, "error": "Robei window disappeared after refresh", "steps": steps}
+
+    model = open_model(test_name)
+    steps["open_model"] = {k: model.get(k) for k in ("ok", "opened", "active", "models", "error")}
+    if not model.get("ok"):
+        time.sleep(1.5)
+        steps["refresh"] = refresh()
+        dlg, win = main_window()
+        model = open_model(test_name)
+        steps["open_model_retry"] = {
+            k: model.get(k) for k in ("ok", "opened", "active", "models", "error")
+        }
+    if not model.get("ok"):
+        return {"ok": False, "error": "test model did not open", "steps": steps}
+
+    compiled = compile_model(compile_timeout)
+    steps["compile"] = {
+        k: compiled.get(k)
+        for k in ("ok", "compiled", "check_warnings", "error_count", "errors", "warnings", "generated", "missing_modules", "delta")
+    }
+    if not compiled.get("compiled"):
+        return {"ok": False, "error": "compile failed", "steps": steps}
+
+    ran = run_simulation(run_timeout)
+    steps["run"] = {k: ran.get(k) for k in ("ok", "active", "delta", "hint")}
+
+    build = Path(proj_path).parent / "build"
+    vcds = sorted(p.name for p in build.glob("*.vcd")) if build.is_dir() else []
+    result = {
+        "ok": bool(compiled.get("ok")) and bool(ran.get("ok")) and bool(vcds),
+        "project": str(proj_path),
+        "test": test_name,
+        "steps": steps,
+        "build_dir": str(build),
+        "build_files": sorted(p.name for p in build.glob("*")) if build.is_dir() else [],
+        "vcd": [str(build / name) for name in vcds],
+    }
+    if open_wave_after and vcds:
+        result["wave"] = wave_load(signals=signals)
+        result["windows"] = [w["title"] for w in windows()]
+        result["tabs"] = tab_groups(dlg)
+    return result

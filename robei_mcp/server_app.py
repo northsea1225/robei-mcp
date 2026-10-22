@@ -184,6 +184,42 @@ def export_robei_verilog(
 
 
 @mcp.tool()
+def sync_robei_verilog(proj_path: str, overwrite: bool = True) -> dict[str, Any]:
+    """Export every model of a project to <proj>/verilog/<model>.v (Robei's iverilog -y library dir)."""
+    try:
+        return tools.sync_robei_verilog(proj_path=proj_path, overwrite=overwrite)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def create_robei_test(
+    proj_path: str,
+    name: str,
+    code: str,
+    timescale: str = "1ns/1ns",
+    overwrite: bool = False,
+    sync_deps: bool = True,
+) -> dict[str, Any]:
+    """Create a Robei test model (test/<name>.test, Type="test") and register it in the .proj.
+
+    ``code`` is the testbench body only; Robei wraps it into ``module <name>();`` and adds
+    the $dumpfile/$dumpvars block when it generates build/<name>.v.
+    """
+    try:
+        return tools.create_robei_test(
+            proj_path=proj_path,
+            name=name,
+            code=code,
+            timescale=timescale,
+            overwrite=overwrite,
+            sync_deps=sync_deps,
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
 def generate_testbench(
     verilog_path: str,
     top: str,
@@ -306,5 +342,45 @@ def robei_gui_close() -> dict[str, Any]:
     """Force-close the Robei IDE. Unsaved model edits are lost."""
     try:
         return gui.close()
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def robei_gui_experiment(
+    proj_path: str,
+    test_name: str,
+    restart: bool = False,
+    wave: bool = False,
+    compile_timeout: int = 45,
+    run_timeout: int = 45,
+    signals: list[str] | None = None,
+    timeout_s: int = 240,
+) -> dict[str, Any]:
+    """Run the whole Robei loop: open project -> open test model -> Compile -> Run -> Wave.
+
+    Returns every step's raw output plus the produced VCD path. Set restart=True after
+    new models/tests were written to disk so the IDE reloads the .proj manifest.
+    """
+    try:
+        return gui.experiment(
+            proj_path=proj_path,
+            test_name=test_name,
+            restart=restart,
+            wave=wave,
+            compile_timeout=compile_timeout,
+            run_timeout=run_timeout,
+            signals=signals,
+            timeout_s=timeout_s,
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def robei_gui_wave_load(signals: list[str] | None = None, max_signals: int = 12) -> dict[str, Any]:
+    """Open the Wave dock, expand the VCD signal tree and click signals into the viewer."""
+    try:
+        return gui.wave_load(signals=signals, max_signals=max_signals)
     except Exception as exc:
         return _error(exc)

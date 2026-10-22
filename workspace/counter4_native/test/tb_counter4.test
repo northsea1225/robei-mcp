@@ -1,0 +1,2 @@
+<!DOCTYPE Robei>
+<Module Category="Current" Class="module" Code="reg clk; reg rst_n; wire [3:0] count;&#xa;counter4 dut (.clk(clk), .rst_n(rst_n), .count(count));&#xa;initial begin&#xa;  clk = 0; rst_n = 0;&#xa;  #12 rst_n = 1;&#xa;end&#xa;always #5 clk = ~clk;&#xa;always @(posedge clk) $display(&quot;t=%0t count=%b&quot;, $time, count);&#xa;initial begin&#xa;  #260 $finish;&#xa;end" Color="#d3d3d3" Comment="" Height="1080" Name="tb_counter4" Parent="0" Timescale="1ns/1ns" Type="test" Width="1600" X="0" Y="0"/>

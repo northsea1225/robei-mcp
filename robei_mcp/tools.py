@@ -622,6 +622,17 @@ def read_robei_project(proj_path: str) -> dict[str, Any]:
         except Exception as exc:
             model_errors.append({"file": str(model_path), "error": f"{type(exc).__name__}: {exc}"})
 
+    tests: list[dict[str, Any]] = []
+    test_errors: list[dict[str, str]] = []
+    for entry in (folders.get("test") or {}).get("files", []):
+        if entry["extension"] != ".test":
+            continue
+        test_path = Path(entry.get("path") or (project_dir / entry["name"]))
+        try:
+            tests.append(parse_robei_model(test_path))
+        except Exception as exc:
+            test_errors.append({"file": str(test_path), "error": f"{type(exc).__name__}: {exc}"})
+
     sha_after = _sha256(path)
     return {
         "ok": True,
@@ -635,6 +646,8 @@ def read_robei_project(proj_path: str) -> dict[str, Any]:
         "node_tree": generic_node(root),
         "models": models,
         "model_errors": model_errors,
+        "tests": tests,
+        "test_errors": test_errors,
         "sha256_before": sha_before,
         "sha256_after": sha_after,
         "unchanged": sha_before == sha_after,
@@ -918,29 +931,149 @@ def _model_xml(name: str, ports: list[dict] | None, code: str, comment: str) -> 
     return "\n".join(lines) + "\n"
 
 
-def _register_model_in_project(proj_path: Path, model_name: str) -> bool:
-    """Append a model entry to the <model> folder of a .proj, text-preserving."""
+def _register_entry_in_project(proj_path: Path, folder: str, name: str, extension: str, node_type: str) -> bool:
+    """Append one file entry to a folder block of a .proj, text-preserving."""
     with proj_path.open("r", encoding="utf-8", newline="") as handle:
         text = handle.read()
-    entry = f'<{model_name}.model name="{model_name}.model" parent="model" type="model"/>'
-    if f'<{model_name}.model ' in text:
+    file_name = f"{name}.{extension}"
+    entry = f'<{file_name} name="{file_name}" parent="{folder}" type="{node_type}"/>'
+    if f'<{file_name} ' in text:
         return False
-    folder = re.search(r"<model\b[^>]*>", text)
-    if folder is None:
-        raise ValueError("project has no <model> folder")
-    tag = folder.group(0)
+    folder_tag = re.search(rf"<{folder}\b[^>]*>", text)
+    if folder_tag is None:
+        raise ValueError(f"project has no <{folder}> folder")
+    tag = folder_tag.group(0)
     if tag.endswith("/>"):
-        block = tag[:-2] + ">\n  " + entry + "\n </model>"
-        new_text = text[: folder.start()] + block + text[folder.end():]
+        block = tag[:-2] + ">\n  " + entry + f"\n </{folder}>"
+        new_text = text[: folder_tag.start()] + block + text[folder_tag.end():]
     else:
-        close = text.find("</model>", folder.end())
+        close = text.find(f"</{folder}>", folder_tag.end())
         if close == -1:
-            raise ValueError("unterminated <model> folder")
+            raise ValueError(f"unterminated <{folder}> folder")
         new_text = text[:close] + "  " + entry + "\n " + text[close:]
     ET.fromstring(new_text)
     with proj_path.open("w", encoding="utf-8", newline="") as handle:
         handle.write(new_text)
     return True
+
+
+def _register_model_in_project(proj_path: Path, model_name: str) -> bool:
+    return _register_entry_in_project(proj_path, "model", model_name, "model", "model")
+
+
+def _backup_file(target: Path) -> Path | None:
+    if not target.exists():
+        return None
+    backup = target.with_name(target.name + ".bak-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
+    backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+    return backup
+
+
+def sync_robei_verilog(proj_path: str, overwrite: bool = True) -> dict[str, Any]:
+    """Regenerate <proj>/verilog/<model>.v for every model in the project.
+
+    Robei compiles a simulation with ``iverilog -o ... filelist.vf -y <proj>/verilog``,
+    i.e. instantiated modules are resolved from this directory by module name.
+    Without the exported file a hierarchical test model fails with
+    ``Unable to open input file`` at run time.
+    """
+    proj = resolve_project_path(proj_path)
+    if not is_within(proj, SETTINGS.workspace):
+        raise ValueError("refusing to modify a project outside the workspace")
+    model_dir = proj.parent / "model"
+    if not model_dir.is_dir():
+        raise FileNotFoundError(f"project has no model folder: {model_dir}")
+    verilog_dir = proj.parent / "verilog"
+    verilog_dir.mkdir(parents=True, exist_ok=True)
+
+    written: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    errors: list[dict[str, str]] = []
+    for model_file in sorted(model_dir.glob("*.model")):
+        try:
+            model = parse_robei_model(model_file)
+            text = model_to_verilog(model)
+        except Exception as exc:
+            errors.append({"file": str(model_file), "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        target = verilog_dir / f"{model['name']}.v"
+        if target.exists() and not overwrite:
+            skipped.append(str(target))
+            continue
+        target.write_text(text, encoding="utf-8", newline="\n")
+        written.append(
+            {
+                "path": str(target),
+                "relative_path": _rel(target),
+                "module": model["name"],
+                "size_bytes": target.stat().st_size,
+                "sha256": _sha256(target),
+            }
+        )
+    return {
+        "ok": not errors,
+        "verilog_dir": str(verilog_dir),
+        "written": written,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
+def _test_xml(name: str, code: str, timescale: str = "1ns/1ns") -> str:
+    head = (
+        f'<Module Category="Current" Class="module" Code="{_attr(code)}" Color="#d3d3d3" '
+        f'Comment="" Height="1080" Name="{name}" Parent="0" Timescale="{_attr(timescale)}" '
+        f'Type="test" Width="1600" X="0" Y="0"/>'
+    )
+    return "<!DOCTYPE Robei>\n" + head + "\n"
+
+
+def create_robei_test(
+    proj_path: str,
+    name: str,
+    code: str,
+    timescale: str = "1ns/1ns",
+    overwrite: bool = False,
+    sync_deps: bool = True,
+) -> dict[str, Any]:
+    """Create a ``test/<name>.test`` (Type="test") model and register it in the .proj.
+
+    ``code`` is the testbench body only: Robei wraps it in ``module <name>();`` and
+    appends the ``$dumpfile``/``$dumpvars`` block itself when it generates
+    ``build/<name>.v``. With ``sync_deps`` every project model is re-exported to
+    ``verilog/<model>.v`` so the instantaneous submodules resolve through ``-y``.
+    """
+    proj = resolve_project_path(proj_path)
+    if not is_within(proj, SETTINGS.workspace):
+        raise ValueError("refusing to modify a project outside the workspace")
+    if not MODEL_NAME_RE.match(name):
+        raise ValueError(f"invalid test name: {name!r}")
+    if not timescale or any(ch in timescale for ch in '"<>&'):
+        raise ValueError("invalid timescale")
+    test_dir = proj.parent / "test"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    target = test_dir / f"{name}.test"
+    if target.exists() and not overwrite:
+        raise FileExistsError(f"test already exists: {target}")
+
+    xml_text = _test_xml(name, code, timescale)
+    ET.fromstring(xml_text)
+    backup = _backup_file(target)
+    target.write_text(xml_text, encoding="utf-8", newline="\n")
+    registered = _register_entry_in_project(proj, "test", name, "test", "test")
+    deps = sync_robei_verilog(str(proj)) if sync_deps else None
+    return {
+        "ok": True,
+        "test": name,
+        "path": str(target),
+        "relative_path": _rel(target),
+        "project": str(proj),
+        "registered_in_project": registered,
+        "backup": str(backup) if backup else None,
+        "sha256": _sha256(target),
+        "code": code,
+        "verilog_dependencies": deps,
+    }
 
 
 def create_robei_project(name: str, models: list[str] | None = None) -> dict[str, Any]:

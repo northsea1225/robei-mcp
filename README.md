@@ -26,6 +26,16 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
 - 路径逃逸（`` `include ``、`$fopen`、`$readmemh` 指向工作区外）在编译前被拒绝；工作区内路径正常放行
 - 覆盖写拒绝：export / testbench / PNG 同名第二次调用返回 `FileExistsError`
 
+已验证（阶段 9/10，Robei 原生闭环，`tests/stage9_native_run.py` + `tests/stage10_counter_native.py`）：
+
+- 纯 Python 生成的 `test/<name>.test`（`Type="test"`、`Timescale="1ns/1ns"`、Verilog 写在 `Code` 属性里）被 Robei 接受，不需要 GUI 的 New 对话框
+- `sync_robei_verilog` 把每个 `.model` 导出成 `<工程>/verilog/<model>.v`；Robei 用 `iverilog -o build/<test> build/filelist.vf -y <工程>/verilog` 编译，子模块因此能被解析
+- `robei_gui_experiment` 一次跑完「打开工程 → 打开 test 模型 → Compile → Run」，返回 Robei 自己的输出和 `build/<test>.vcd`
+- 与门实验：`t=40 a=1 b=1 y=1`、`$finish called at 50 (1ns)`；VCD 由 `read_waveform` 读到 6 个信号（`y/a/b` 与 `dut.y/a/b`），`find_events(y == 1'b1)` 命中 `t=30`
+- 4 位计数器：`t=25 count=0001 … t=165 count=1111 … t=255 count=1000`，`$finish called at 260`；`find_events(count == 4'b1111)` 命中 `t=155`，PNG 落在 `workspace/build/waveforms/`
+- 注册型输出端口必须写成 `datatype="reg"`（否则导出 `output wire` 后报 `count is not a valid l-value`），这条是实测出来的
+- `read_robei_project` 现在同时解析 `model/*.model` 与 `test/*.test`（含 `code`、`timescale`）
+
 仅可见 / 待定：
 
 - Robei GUI 打开和编译：当前 SSH 在 Session 0，交互桌面在 Session 1，无法从 SSH 看到/点击 GUI；已准备 `workspace\robei_counter4_project` 和手动步骤，待人工验证。
@@ -333,6 +343,35 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
 - `parameter_overrides` 用于修正 `mux.model` 的 `LEN = 0`（直接导出会得到非法的 `[-1:0]`）
 - 返回 `model_sha256_before/after`，证明 `.model` 未被改动
 
+### `sync_robei_verilog`
+
+```json
+{"proj_path": "counter4_native/counter4_native.proj", "overwrite": true}
+```
+
+把工程 `model/` 下每个 `.model` 的 `Parameters + Port + Code` 导成
+`<工程>/verilog/<model>.v`（模块名与文件名一致）。这是 Robei 仿真能解析被实例化
+子模块的前提——它的编译命令只把当前 test 模型写进 `filelist.vf`，其余模块靠
+`-y <工程>/verilog` 目录查找。
+
+- 只写工程自己的 `verilog/` 目录（工程必须位于 workspace 内）
+- 返回每个文件的 `sha256`、大小与出错列表
+
+### `create_robei_test`
+
+```json
+{"proj_path": "counter4_native/counter4_native.proj",
+ "name": "tb_counter4",
+ "code": "reg clk; reg rst_n; wire [3:0] count;\ncounter4 dut (...);\n..."}
+```
+
+生成 `test/<name>.test` 并登记进 `.proj` 的 `<test>` 目录。
+
+- `code` 只写 **module body**：Robei 自己补 `module <name>();`、`endmodule` 和
+  `$dumpfile("./build/<name>.vcd"); $dumpvars;`
+- 默认 `sync_deps=true`，顺带刷新 `verilog/` 依赖库
+- 目标已存在时 `FileExistsError`（`overwrite=true` 才覆盖，并留 `.bak-<时间戳>`）
+
 ### `generate_testbench`
 
 ```json
@@ -367,6 +406,32 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
 
 用 venv 内的 matplotlib（Agg 后端）逐信号阶梯图，写入
 `workspace/build/waveforms/`，返回路径和字节数。已存在则拒绝覆盖；`x`/`z` 记为 NaN。
+
+## Robei 原生仿真闭环
+
+不用 GUI 也能让 Robei 自己编译、自己跑 vvp、自己出 VCD，全流程只碰 workspace：
+
+```text
+create_robei_project(name)                    建 model/ test/ const/ verilog/ + .proj
+create_robei_model(..., datatype="reg")       写 .model（端口 + Code）
+create_robei_test(proj, name, code)           写 .test（Type="test"）+ 自动导出 verilog/
+robei_gui_experiment(proj, "tb_x.test")       File→Open → 双击 test → Compile → Run
+read_waveform / find_events / render_waveform 读 build/<test>.vcd
+```
+
+几个实测出来的硬约束：
+
+1. **扩展名与 Type 必须配对**：测试模型是 `test/*.test` 且 `Type="test"`；写成
+   `.model` 或 `Type="model"` 时 Run 会回 `is not test, so there is no waveform generated`。
+2. **Compile 会清空 `build/`**：每次 Compile 重新生成 `filelist.vf` 与可执行文件，
+   所以「先编 DUT 再编 TB」会把 DUT 产物冲掉；正确做法是把子模块放进
+   `<工程>/verilog/`，让 `-y` 去解析。
+3. **Run 不会隐式编译**：只点 Run 会执行上一次留下的可执行文件，缺失时报
+   `build/<name>: Unable to open input file`。顺序必须是 Compile → Run。
+4. **注册型输出要 `datatype="reg"`**：`output wire` 上做非阻塞赋值会报
+   `count is not a valid l-value`。
+5. `.proj` 是登记表：手工放进去的文件必须同时写进 `.proj` 对应目录块，否则
+   Files 树里看不到，`robei_gui_open_model` 会返回 not found。
 
 ## 安全边界
 
@@ -406,6 +471,14 @@ C:\dev\robei-mcp\.venv\Scripts\python.exe C:\dev\robei-mcp\tests\stage4_cases.py
 8. `render_waveform` 出 PNG；重复渲染被拒绝
 9. 三类路径逃逸被拒 + 工作区内路径放行
 10. 1 秒超时后残留 `vvp.exe = 0`
+
+`stage9_native_run.py` / `stage10_counter_native.py` 覆盖（Robei 原生闭环）：
+
+1. 用 `create_robei_project` + `create_robei_model` + `create_robei_test` 造工程
+2. `robei_gui_experiment(restart=True)` 在 Robei 里 Compile + Run，返回原始输出
+3. `read_waveform` 列信号、按时间取值；`find_events` 命中条件
+4. `render_waveform` 出 PNG
+5. `read_robei_project` 的 `sha256_before == sha256_after`
 
 `stage3_cases.py` 覆盖：
 
@@ -449,7 +522,16 @@ C:\dev\robei-mcp\workspace\robei_counter4_project\
 - Yosys 厂商构建不返回可靠版本号。
 - Yosys 只做可综合性粗检，不替代完整时序/面积验证。
 - 没有写回 `.model` / `.proj` 的能力。
-- 没有 Robei GUI 自动化。
+- 没有写回 `.model` / `.proj` 以外的 Robei 状态；`E:\Robei` 全程只读。
+- **打开 Wave dock 会让 Robei 的 UIA 树塌掉**（`descendants()` 变 0，新进程也读不到），
+  必须重启 Robei 才能恢复。因此 `robei_gui_experiment` 默认 `wave=false`，
+  `robei_gui_wave_load` 只在明确需要 GUI 波形时手动调用。
+- Robei 的 Wave 面板确实能载入我们生成的 VCD（实测截图里 `SignalTree` 出现
+  `Waves → tb_and_gate → y/a/b/dut`，点 `y` 后波形画布出现绿色轨迹），但自动把
+  信号批量加入画布不稳定，属于 **待定**。数值/图形证据请用 `read_waveform` /
+  `find_events` / `render_waveform`。
+- Robei 的 Wave dock 打开后 `main_window()` 的菜单栏探测会超时，已加"最大 Qt 窗口"
+  兜底，但兜底窗口的控件树可能为空。
 - 层次化 `.model` 的实例/连线 schema 未用真实 Robei 工程验证：当前只做通用节点树保留，
   不解释 `Instance`/`netlist` 的语义；等 Robei 里画出的两层样例补齐后再定。
 - `.test`、`.const` 目录只列文件，不解析内容。
@@ -468,7 +550,10 @@ python tools\gui\register_task.py
 
 服务器跑在 SSH（Session 0）时会自动把请求排给该任务；在桌面直接运行时就地执行。完整说明与已知限制见 `docs/gui-tools.md`，桥的存在性与探测过程见 `docs/L1-uia-bridge.md`。
 
-Robei 原生 Run/Wave 已接入（`robei_gui_run` / `robei_gui_wave`），但 Robei 只对 Type=test 的模型出波形，普通模块会返回它自己的告警；波形仍走 `simulate` + `read_waveform`。
+Robei 原生闭环已接入：`create_robei_test` + `sync_robei_verilog` + `robei_gui_experiment`
+（Compile → Run → VCD），普通模块 Run 会被 Robei 拒绝（`is not test`），波形数值走
+`read_waveform` / `find_events` / `render_waveform`。`robei_gui_wave_load` 可打开 Robei
+自带的 Wave 面板，但它会破坏 UIA 树，见「已知限制」。
 
 工程脚手架：`create_robei_project` 建目录与 .proj，`create_robei_model` 生成带端口+Code 的 .model 并登记进工程。
 
