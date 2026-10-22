@@ -135,6 +135,12 @@ def _run_direct(op: str, args: dict[str, Any]) -> dict[str, Any]:
         )
     elif op == "wave_load":
         payload = module.wave_load(args.get("signals"), int(args.get("max_signals", 12)))
+    elif op == "health":
+        payload = module.uia_health()
+    elif op == "compile_all":
+        payload = module.compile_all(
+            float(args.get("compile_timeout", 45)), args.get("models")
+        )
     elif op == "close":
         payload = module.close()
     else:
@@ -259,6 +265,8 @@ def experiment(
     compile_timeout: int = 45,
     run_timeout: int = 45,
     signals: list[str] | None = None,
+    heal: bool = True,
+    plot: bool = True,
     timeout_s: int = 240,
 ) -> dict[str, Any]:
     path = resolve_project_path(proj_path)
@@ -275,14 +283,45 @@ def experiment(
             "compile_timeout": compile_timeout,
             "run_timeout": run_timeout,
             "signals": signals,
+            "heal": heal,
         },
         timeout_s=timeout_s,
     )
     if wave and result.get("ok"):
         result["wave"] = call("wave_load", {"signals": signals, "max_signals": 12}, timeout_s=120)
         result["wave_transport"] = result["wave"].get("transport")
+    if plot and result.get("ok") and result.get("vcd"):
+        result["plot"] = _plot(result["vcd"][0], test_name)
     return result
 
 
 def wave_load(signals: list[str] | None = None, max_signals: int = 12, timeout_s: int = 120) -> dict[str, Any]:
     return call("wave_load", {"signals": signals, "max_signals": max_signals}, timeout_s=timeout_s)
+
+
+def health() -> dict[str, Any]:
+    """Check whether Robei's UIA bridge is alive (it goes silent after Wave)."""
+    return call("health", {}, timeout_s=45)
+
+
+def compile_all(models: list[str] | None = None, timeout_s: int = 240) -> dict[str, Any]:
+    """Compile every .model of the open project inside Robei."""
+    return call("compile_all", {"models": models, "compile_timeout": 45}, timeout_s=timeout_s)
+
+
+def _plot(vcd_path: str, label: str) -> dict[str, Any]:
+    """Render the VCD Robei just produced into workspace/build/waveforms."""
+    try:
+        from . import tools as _tools
+
+        listing = _tools.read_waveform(vcd_path)
+        names = [s["name"] for s in listing.get("signals", [])][:16]
+        png = _tools.render_waveform(vcd_path, names, title=f"{label} (Robei vvp)")
+        return {
+            "ok": png.get("ok"),
+            "path": png.get("path"),
+            "relative_path": png.get("relative_path"),
+            "signals": names,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}

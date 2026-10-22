@@ -594,6 +594,65 @@ def _folder_listing(folder: Path, limit: int = 500) -> dict[str, Any]:
     return info
 
 
+def list_projects(limit: int = 200) -> dict[str, Any]:
+    """Enumerate every Robei project inside the workspace (read-only).
+
+    Answers the first question an agent usually has: which project am I working
+    on, what models/tests does it have, and is there a build output already.
+    """
+    root = SETTINGS.workspace
+    projects: list[dict[str, Any]] = []
+    problems: list[dict[str, str]] = []
+    for proj in sorted(root.rglob("*.proj")):
+        if not is_within(proj, root):
+            continue
+        entry: dict[str, Any] = {
+            "name": proj.stem,
+            "proj": str(proj),
+            "relative": _rel(proj),
+            "dir": str(proj.parent),
+        }
+        try:
+            tree = ET.parse(proj).getroot()
+        except Exception as exc:
+            problems.append({"proj": str(proj), "error": f"{type(exc).__name__}: {exc}"})
+            projects.append({**entry, "ok": False, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        entry["ok"] = True
+        entry["project_name"] = _attr_ci(tree, "Name") or tree.tag
+        declared: dict[str, int] = {}
+        for child in tree:
+            tag = child.tag.lower()
+            if tag in ("model", "test", "const", "verilog"):
+                declared[tag] = len(list(child))
+        entry["declared_entries"] = declared
+        model_dir = proj.parent / "model"
+        test_dir = proj.parent / "test"
+        verilog_dir = proj.parent / "verilog"
+        build_dir = proj.parent / "build"
+        entry["models"] = sorted(p.stem for p in model_dir.glob("*.model")) if model_dir.is_dir() else []
+        entry["tests"] = sorted(p.stem for p in test_dir.glob("*.test")) if test_dir.is_dir() else []
+        entry["verilog"] = sorted(p.name for p in verilog_dir.glob("*.v")) if verilog_dir.is_dir() else []
+        entry["build"] = {
+            "exists": build_dir.is_dir(),
+            "vcd": sorted(p.name for p in build_dir.glob("*.vcd")) if build_dir.is_dir() else [],
+            "mtime": max((p.stat().st_mtime for p in build_dir.glob("*")), default=None)
+            if build_dir.is_dir()
+            else None,
+        }
+        projects.append(entry)
+        if len(projects) >= limit:
+            break
+    return {
+        "ok": True,
+        "workspace": str(root),
+        "count": len(projects),
+        "projects": projects,
+        "problems": problems,
+        "truncated": len(projects) >= limit,
+    }
+
+
 def read_robei_project(proj_path: str) -> dict[str, Any]:
     path = resolve_project_path(proj_path)
     sha_before = _sha256(path)

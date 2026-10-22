@@ -1,7 +1,7 @@
 <!DOCTYPE Robei>
 <Module Category="Current" Class="module" Code="wire t1;&#xa;and2 u1 (.a(a), .b(b), .y(t1));&#xa;and2 u2 (.a(t1), .b(c), .y(y));" Color="#d3d3d3" Comment="top level: two and2 instances wired a&amp;b -> t1, t1&amp;c -> y" Height="1080" Name="top_two" Parameters="" Parent="0" Type="model" Width="1600" X="0" Y="0">
- <Port Color="#faebd7" Connect="" Datasize="1" Datatype="wire" Description="" Height="30" Inout="input" Name="a" Parent="top_two" Side="left" Width="30" X="-0.01875" Y="0.133889"/>
- <Port Color="#faebd7" Connect="" Datasize="1" Datatype="wire" Description="" Height="30" Inout="input" Name="b" Parent="top_two" Side="left" Width="30" X="-0.01875" Y="0.313704"/>
- <Port Color="#faebd7" Connect="" Datasize="1" Datatype="wire" Description="" Height="30" Inout="input" Name="c" Parent="top_two" Side="left" Width="30" X="-0.01875" Y="0.493704"/>
+ <Port Color="#faebd7" Connect="" Datasize="1" Datatype="wire" Description="" Height="30" Inout="input" Name="a" Parent="top_two" Side="left" Width="30" X="-0.01875" Y="0.130556"/>
+ <Port Color="#faebd7" Connect="" Datasize="1" Datatype="wire" Description="" Height="30" Inout="input" Name="b" Parent="top_two" Side="left" Width="30" X="-0.01875" Y="0.312963"/>
+ <Port Color="#faebd7" Connect="" Datasize="1" Datatype="wire" Description="" Height="30" Inout="input" Name="c" Parent="top_two" Side="left" Width="30" X="-0.01875" Y="0.493519"/>
  <Port Color="#f0ffff" Connect="" Datasize="1" Datatype="wire" Description="" Height="30" Inout="output" Name="y" Parent="top_two" Side="right" Width="30" X="0.98125" Y="0.566667"/>
 </Module>

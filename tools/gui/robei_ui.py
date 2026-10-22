@@ -340,6 +340,42 @@ def status(output_lines: int = 20) -> dict:
     }
 
 
+def uia_health() -> dict:
+    """Is Robei's accessibility bridge actually serving a widget tree?
+
+    After the Wave dock is created the Qt accessibility bridge sometimes goes
+    silent: the window still exists but ``descendants()`` returns nothing. That
+    state cannot be repaired from outside, only by restarting the IDE.
+    """
+    alive = any(w["class"].startswith("Qt") for w in windows())
+    dlg, win = main_window()
+    if dlg is None:
+        return {
+            "ok": False,
+            "running": alive,
+            "main_window": False,
+            "reason": "no main window with a menu bar",
+        }
+    try:
+        widgets = len(dlg.descendants())
+    except Exception:
+        widgets = 0
+    try:
+        menu_items = len(dlg.descendants(control_type="MenuItem"))
+    except Exception:
+        menu_items = 0
+    healthy = widgets > 0 and menu_items > 0
+    return {
+        "ok": healthy,
+        "running": True,
+        "main_window": True,
+        "pid": win.get("pid"),
+        "widgets": widgets,
+        "menu_items": menu_items,
+        "reason": None if healthy else "UIA bridge returned no controls; Robei needs a restart",
+    }
+
+
 def _open_project_once(target: Path) -> dict:
     dlg, win = main_window()
     if dlg is None:
@@ -430,6 +466,71 @@ def compile_model(timeout_s: float = 25.0) -> dict:
         "missing_modules": missing,
         "delta": delta.strip()[:4000],
         "output_tail": _tail(after, 20),
+    }
+
+
+def compile_all(compile_timeout: float = 45.0, models: list[str] | None = None) -> dict:
+    """Compile every .model in the open project, one at a time.
+
+    Robei only compiles the model that owns the active canvas tab, so a
+    project-wide check has to open each model and press Compile.
+    """
+    dlg, win = main_window()
+    if dlg is None:
+        return {"ok": False, "error": "Robei is not running"}
+    names = [n for n in (models or []) if n.lower().endswith(".model")]
+    if not names:
+        # a freshly opened project keeps its folders collapsed
+        for _ in range(4):
+            tree = _file_tree(dlg)
+            names = [e["text"] for e in _tree_entries(tree)] if tree is not None else []
+            names = [n for n in names if n.lower().endswith(".model")]
+            if names:
+                break
+            rows = _tree_entries(tree) if tree is not None else []
+            folders = [r for r in rows if r["state"] != 1]
+            if not folders:
+                break
+            for folder in folders[:4]:
+                try:
+                    _expand_tree_item(folder["item"])
+                except Exception:
+                    continue
+            time.sleep(0.6)
+            dlg, win = main_window()
+            if dlg is None:
+                break
+    if not names:
+        return {
+            "ok": False,
+            "error": "no .model entries in the Files tree",
+            "tree": [e["text"] for e in _tree_entries(_file_tree(dlg))] if dlg else [],
+        }
+    results = []
+    for name in names:
+        opened = open_model(name)
+        if not opened.get("ok"):
+            results.append({"model": name, "ok": False, "error": opened.get("error")})
+            continue
+        compiled = compile_model(compile_timeout)
+        results.append(
+            {
+                "model": name,
+                "ok": bool(compiled.get("compiled")) and not compiled.get("errors"),
+                "check_warnings": compiled.get("check_warnings"),
+                "warnings": compiled.get("warnings", [])[:5],
+                "errors": compiled.get("errors", [])[:5],
+                "missing_modules": compiled.get("missing_modules", [])[:5],
+                "generated": compiled.get("generated", []),
+            }
+        )
+    passed = sum(1 for row in results if row.get("ok"))
+    return {
+        "ok": passed == len(results),
+        "project": next(iter(tree_items(dlg)), None),
+        "compiled": passed,
+        "total": len(results),
+        "results": results,
     }
 
 
@@ -903,10 +1004,21 @@ def experiment(
     compile_timeout: float = 45.0,
     run_timeout: float = 45.0,
     signals: list[str] | None = None,
+    heal: bool = True,
 ) -> dict:
     """Whole native loop: (re)start Robei -> open project -> open test model ->
-    Compile -> Run -> Wave. Returns one report with every step's raw output."""
+    Compile -> Run -> Wave. Returns one report with every step's raw output.
+
+    ``heal`` restarts a Robei whose UIA bridge went silent (see ``uia_health``)
+    instead of failing with "Robei did not start" on a live process.
+    """
     steps: dict = {}
+    if heal and not restart:
+        health = uia_health()
+        steps["health"] = health
+        if health.get("running") and not health.get("ok"):
+            steps["heal"] = "restarting Robei because the UIA bridge is silent"
+            restart = True
     if restart:
         steps["close"] = close()
         steps["closed"] = _wait_exit()
@@ -945,6 +1057,12 @@ def experiment(
         return {"ok": False, "error": "test model did not open", "steps": steps}
 
     compiled = compile_model(compile_timeout)
+    if not compiled.get("compiled") and not compiled.get("errors"):
+        # right after a restart the Output panel sometimes swallows the log;
+        # no errors + no "Compile done" means the log was missed, not that the build failed
+        steps["compile_retry"] = "no compile log captured; retrying once"
+        time.sleep(2.0)
+        compiled = compile_model(compile_timeout)
     steps["compile"] = {
         k: compiled.get(k)
         for k in ("ok", "compiled", "check_warnings", "error_count", "errors", "warnings", "generated", "missing_modules", "delta")

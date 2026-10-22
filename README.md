@@ -36,6 +36,17 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
 - 注册型输出端口必须写成 `datatype="reg"`（否则导出 `output wire` 后报 `count is not a valid l-value`），这条是实测出来的
 - `read_robei_project` 现在同时解析 `model/*.model` 与 `test/*.test`（含 `code`、`timescale`）
 
+已验证（阶段 12，`tests/stage12_ops.py`，17/17 PASS，全部走 stdio MCP）：
+
+- `list_projects`：一次列出 8 个工程及其 models/tests/verilog/VCD
+- `robei_gui_health`：正常时 `widgets=133`、`menu_items=9`；打开 Wave dock 后
+  `widgets=0` 并返回原因
+- `robei_gui_experiment(heal=True)`：检测到 UIA 静默会自动重启 Robei 再跑，实测
+  `heal: "restarting Robei because the UIA bridge is silent"`，随后 Compile+Run 正常
+- `robei_gui_experiment(plot=True)`：一次调用返回 `steps.compile/run` + VCD + PNG
+- `robei_gui_compile_all`：`two_level` 两个模型 2/2 通过，层次化 `top_two` 靠
+  `iverilog -y <工程>/verilog` 找到 `and2`
+
 仅可见 / 待定：
 
 - Robei GUI 打开和编译：当前 SSH 在 Session 0，交互桌面在 Session 1，无法从 SSH 看到/点击 GUI；已准备 `workspace\robei_counter4_project` 和手动步骤，待人工验证。
@@ -313,6 +324,16 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
 只读解析 `.model` 的模块名、类型、参数、端口、`parameter_list` 和 `Code`。
 非 `Port` 的子节点（例如 `Instance`）以通用节点树放进 `other_children`，不猜测含义。不写回。
 
+### `list_projects`
+
+```json
+{"limit": 200}
+```
+
+列出 workspace 里所有 `.proj`（含递归子目录）：工程名、`model/` 下的模型、`test/` 下的
+test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.proj` 里声明的条目数。
+只读，用来回答「我现在有哪些工程、哪个已经跑过」。
+
 ### `read_robei_project`
 
 ```json
@@ -531,17 +552,17 @@ C:\dev\robei-mcp\workspace\robei_counter4_project\
 - Icarus 12.0 `-Wall` 不报告未使用信号。
 - Yosys 厂商构建不返回可靠版本号。
 - Yosys 只做可综合性粗检，不替代完整时序/面积验证。
-- 没有写回 `.model` / `.proj` 的能力。
-- 没有写回 `.model` / `.proj` 以外的 Robei 状态；`E:\Robei` 全程只读。
+- 不写回 `.model` / `.proj` 以外的 Robei 状态；`E:\Robei` 全程只读。
 - **打开 Wave dock 会让 Robei 的 UIA 树塌掉**（`descendants()` 变 0，新进程也读不到），
-  必须重启 Robei 才能恢复。因此 `robei_gui_experiment` 默认 `wave=false`，
-  `robei_gui_wave_load` 只在明确需要 GUI 波形时手动调用。
+  只能重启 IDE 恢复。`robei_gui_health` 能识别这种状态，`robei_gui_experiment`
+  默认 `heal=true`，会自动重启后再跑；`wave_load` 仍是显式可选项。
 - Robei 的 Wave 面板确实能载入我们生成的 VCD（实测截图里 `SignalTree` 出现
   `Waves → tb_and_gate → y/a/b/dut`，点 `y` 后波形画布出现绿色轨迹），但自动把
   信号批量加入画布不稳定，属于 **待定**。数值/图形证据请用 `read_waveform` /
   `find_events` / `render_waveform`。
 - Robei 的 Wave dock 打开后 `main_window()` 的菜单栏探测会超时，已加"最大 Qt 窗口"
-  兜底，但兜底窗口的控件树可能为空。
+  兜底，但兜底窗口的控件树可能为空——所以判断健康度要看 `robei_gui_health`，
+  而不是"窗口在不在"。
 - 层次化 `.model` 的实例/连线 schema 未用真实 Robei 工程验证：当前只做通用节点树保留，
   不解释 `Instance`/`netlist` 的语义；等 Robei 里画出的两层样例补齐后再定。
 - `.test`、`.const` 目录只列文件，不解析内容。
@@ -567,7 +588,15 @@ Robei 原生闭环已接入：`create_robei_test` + `sync_robei_verilog` + `robe
 
 工程脚手架：`create_robei_project` 建目录与 .proj，`create_robei_model` 生成带端口+Code 的 .model 并登记进工程。
 
-回归：`tests\stage5_gui_cases.py`（10 项）、`tests\stage6_gui_code.py`（11 项）、`tests\stage7_model_ports.py`（10 项）、`tests\stage8_create_flow.py`（10 项），都走真实 stdio MCP 客户端，全部 PASS。
+运维类补充：
+
+- `robei_gui_health`：返回 `widgets` / `menu_items` / `pid`，判断 UIA 桥是否还活着
+- `robei_gui_compile_all`：把工程里每个 `.model` 依次打开并 Compile，逐模型报告
+  `warnings` / `errors` / `missing_modules`（层次化工程先跑 `sync_robei_verilog`）
+- `robei_gui_experiment(plot=True)`：跑完自动把 VCD 画成 PNG 放到
+  `workspace/build/waveforms/`，一次调用拿到 输出 + 波形 + 信号列表
+
+回归：`tests\stage5_gui_cases.py`（10 项）、`tests\stage6_gui_code.py`（11 项）、`tests\stage7_model_ports.py`（10 项）、`tests\stage8_create_flow.py`（10 项）、`tests\stage9_native_run.py`、`tests\stage10_counter_native.py`、`tests\stage11_mcp_native.py`（14 项）、`tests\stage12_ops.py`（17 项），都走真实 stdio MCP 客户端，全部 PASS。
 
 ## 从 SSH 会话推送仓库
 

@@ -103,6 +103,15 @@ def read_robei_model(path: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def list_projects(limit: int = 200) -> dict[str, Any]:
+    """List every Robei project in the workspace with its models, tests, verilog and VCDs."""
+    try:
+        return tools.list_projects(limit=limit)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
 def read_robei_project(proj_path: str) -> dict[str, Any]:
     """Read a Robei .proj project (read-only): folders, files and every model."""
     try:
@@ -355,6 +364,8 @@ def robei_gui_experiment(
     compile_timeout: int = 45,
     run_timeout: int = 45,
     signals: list[str] | None = None,
+    heal: bool = True,
+    plot: bool = True,
     timeout_s: int = 240,
 ) -> dict[str, Any]:
     """Run the whole Robei loop: open project -> open test model -> Compile -> Run -> Wave.
@@ -371,6 +382,8 @@ def robei_gui_experiment(
             compile_timeout=compile_timeout,
             run_timeout=run_timeout,
             signals=signals,
+            heal=heal,
+            plot=plot,
             timeout_s=timeout_s,
         )
     except Exception as exc:
@@ -382,5 +395,23 @@ def robei_gui_wave_load(signals: list[str] | None = None, max_signals: int = 12)
     """Open the Wave dock, expand the VCD signal tree and click signals into the viewer."""
     try:
         return gui.wave_load(signals=signals, max_signals=max_signals)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def robei_gui_health() -> dict[str, Any]:
+    """Check whether Robei's UIA bridge still answers (it goes silent after the Wave dock opens)."""
+    try:
+        return gui.health()
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def robei_gui_compile_all(models: list[str] | None = None) -> dict[str, Any]:
+    """Compile every .model of the open Robei project and report per-model warnings/errors."""
+    try:
+        return gui.compile_all(models=models)
     except Exception as exc:
         return _error(exc)

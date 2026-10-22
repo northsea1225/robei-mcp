@@ -34,8 +34,11 @@ OPS = {
         float(a.get("compile_timeout", 45)),
         float(a.get("run_timeout", 45)),
         a.get("signals"),
+        bool(a.get("heal", True)),
     ),
     "wave_load": lambda a: robei_ui.wave_load(a.get("signals"), int(a.get("max_signals", 12))),
+    "health": lambda a: robei_ui.uia_health(),
+    "compile_all": lambda a: robei_ui.compile_all(float(a.get("compile_timeout", 45)), a.get("models")),
 }
 
 
