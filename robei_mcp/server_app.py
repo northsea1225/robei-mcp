@@ -257,6 +257,24 @@ def robei_gui_output(lines: int = 80) -> dict[str, Any]:
 
 
 @mcp.tool()
+def robei_gui_run(timeout_s: int = 90) -> dict[str, Any]:
+    """Build > Run: let Robei compile and simulate the active model, returning the Output delta."""
+    try:
+        return gui.run_simulation(timeout_s=timeout_s)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def robei_gui_wave(timeout_s: int = 60) -> dict[str, Any]:
+    """Build > Wave: open Robei's wave viewer for the last run."""
+    try:
+        return gui.open_wave(timeout_s=timeout_s)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
 def robei_gui_refresh() -> dict[str, Any]:
     """Run Build > Refresh so Robei reloads changed .model/.proj files from disk."""
     try:

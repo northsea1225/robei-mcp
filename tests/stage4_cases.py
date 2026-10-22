@@ -132,6 +132,8 @@ async def main():
                 "robei_gui_compile",
                 "robei_gui_output",
                 "robei_gui_refresh",
+                "robei_gui_run",
+                "robei_gui_wave",
                 "robei_gui_code_read",
                 "robei_gui_code_write",
                 "robei_gui_close",

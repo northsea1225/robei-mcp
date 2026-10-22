@@ -419,6 +419,67 @@ def compile_model(timeout_s: float = 25.0) -> dict:
     }
 
 
+def run_simulation(timeout_s: float = 25.0) -> dict:
+    """Build > Run: Robei compiles and simulates the active model."""
+    dlg, win = main_window()
+    if dlg is None:
+        return {"ok": False, "error": "Robei is not running"}
+    models = model_tabs(dlg)
+    before = read_output(dlg)
+    click = click_menu(dlg, "Build", "Run")
+    if not click.get("ok"):
+        return {"ok": False, "error": "could not reach Build>Run", "detail": click}
+    deadline = time.time() + timeout_s
+    after = before
+    while time.time() < deadline:
+        after = read_output(dlg)
+        delta = after[len(before):] if after.startswith(before) else after
+        if "not test" in delta or "waveform" in delta or "error" in delta.lower():
+            break
+        time.sleep(0.5)
+    delta = (after[len(before):] if after.startswith(before) else after).strip()
+    needs_test = "is not test" in delta
+    return {
+        "ok": not needs_test,
+        "models": models,
+        "active": active_model(dlg),
+        "delta": delta[:2000],
+        "hint": (
+            "Robei only produces a waveform when the active model Type is 'test'; "
+            "this model is a normal module"
+        )
+        if needs_test
+        else None,
+        "windows": [{"title": w["title"], "class": w["class"]} for w in windows()],
+    }
+
+
+def open_wave(timeout_s: float = 15.0) -> dict:
+    """Build > Wave: open Robei's wave viewer for the last run."""
+    dlg, win = main_window()
+    if dlg is None:
+        return {"ok": False, "error": "Robei is not running"}
+    before = read_output(dlg)
+    click = click_menu(dlg, "Build", "Wave")
+    if not click.get("ok"):
+        return {"ok": False, "error": "could not reach Build>Wave", "detail": click}
+    deadline = time.time() + timeout_s
+    after = before
+    while time.time() < deadline:
+        after = read_output(dlg)
+        delta = after[len(before):] if after.startswith(before) else after
+        if delta.strip():
+            break
+        time.sleep(0.5)
+    delta = (after[len(before):] if after.startswith(before) else after).strip()
+    return {
+        "ok": not delta.strip(),
+        "delta": delta[:1000],
+        "tabs": tab_groups(dlg),
+        "screens": [w for w in windows() if w["class"] != "Qt680QWindowIcon"],
+    }
+
+
 def refresh() -> dict:
     """Build > Refresh: make Robei reload models/projects that changed on disk."""
     dlg, win = main_window()

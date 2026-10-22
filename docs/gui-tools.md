@@ -170,3 +170,22 @@ simulate + read_waveform                                → 真值表 4/4 正确
   t=30000 a=1 b=0 s=1 c=0
   t=40000 a=1 b=1 s=0 c=1
 ```
+
+## Robei 自带的 Run / Wave（有限接入）
+
+| 工具 | 作用 | 实测返回 |
+| --- | --- | --- |
+| `robei_gui_run(timeout_s=90)` | Build→Run | 普通模块：`ok=false` + `hint`，delta 为 Robei 原话 |
+| `robei_gui_wave(timeout_s=60)` | Build→Wave | 未跑过仿真：`Please run the project first to get the waveform.` |
+
+Robei 原话（模型 `Type="model"` 时）：
+
+```
+|>Check complete with 0 warnings.
+|>Warning:and_gate is not test, so there is no waveform generated. If you want to see the waveform, make sure you have the "Type" changed to "test"
+```
+
+即：**只有当前激活模型是 test 类型，Run 才会产出波形**。
+本轮试过在 `test/` 下放 `Type="test"` 的 `tb_and_gate.model` 并在 `.proj` 的 `<test>` 里登记，
+Robei 重新打开工程后仍未把它当作可运行的测试模型（Run 依旧报 `and_gate is not test`），
+所以 **Robei 原生 Run/Wave 还没打通**；波形仍由 `simulate` + `read_waveform` / `render_waveform`（同一套 iverilog/vvp）提供。

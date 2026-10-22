@@ -204,6 +204,14 @@ def output(lines: int = 80) -> dict[str, Any]:
     return call("output", {"lines": lines})
 
 
+def run_simulation(timeout_s: int = 90) -> dict[str, Any]:
+    return call("run", {"timeout_s": 25}, timeout_s=timeout_s)
+
+
+def open_wave(timeout_s: int = 60) -> dict[str, Any]:
+    return call("wave", {"timeout_s": 15}, timeout_s=timeout_s)
+
+
 def refresh() -> dict[str, Any]:
     return call("refresh", {})
 

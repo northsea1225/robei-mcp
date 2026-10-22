@@ -468,6 +468,8 @@ python tools\gui\register_task.py
 
 服务器跑在 SSH（Session 0）时会自动把请求排给该任务；在桌面直接运行时就地执行。完整说明与已知限制见 `docs/gui-tools.md`，桥的存在性与探测过程见 `docs/L1-uia-bridge.md`。
 
+Robei 原生 Run/Wave 已接入（`robei_gui_run` / `robei_gui_wave`），但 Robei 只对 Type=test 的模型出波形，普通模块会返回它自己的告警；波形仍走 `simulate` + `read_waveform`。
+
 工程脚手架：`create_robei_project` 建目录与 .proj，`create_robei_model` 生成带端口+Code 的 .model 并登记进工程。
 
 回归：`tests\stage5_gui_cases.py`（10 项）、`tests\stage6_gui_code.py`（11 项）、`tests\stage7_model_ports.py`（10 项）、`tests\stage8_create_flow.py`（10 项），都走真实 stdio MCP 客户端，全部 PASS。
