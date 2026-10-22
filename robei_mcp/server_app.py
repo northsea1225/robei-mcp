@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+import functools
+import inspect
 from typing import Any
 
-from mcp.server.mcpserver import MCPServer
+import anyio
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.types import ToolAnnotations
 
 from . import __version__
-from . import doctor, gui, tools
+from . import doctor, errors, gui, runstate, tools
 
 mcp = MCPServer(
     name="robei-mcp",
@@ -21,11 +26,66 @@ mcp = MCPServer(
 )
 
 
+# Tool annotations: MCP clients use these to decide what is safe to call without
+# a human in the loop and what can be retried.
+READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+READ_GUI = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
+ANALYZE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
+WRITE_GUI = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True)
+DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False)
+DESTRUCTIVE_GUI = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True)
+
+
 def _error(exc: Exception) -> dict[str, Any]:
-    return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    """Failures carry a stable ``code`` so clients can branch without parsing prose."""
+    return errors.payload(exc)
 
 
-@mcp.tool()
+async def _quiet_progress(ctx: Context | None, done: float, total: float, message: str) -> None:
+    if ctx is None:
+        return
+    try:
+        await ctx.report_progress(done, total, message)
+    except Exception:
+        pass  # clients without progress support must not break the tool
+
+
+async def _invoke(fn, ctx: Context | None, label: str, **kwargs):
+    """Run a blocking tool body on a worker thread that the client can cancel.
+
+    On cancellation the run token is aborted, which kills every child process the
+    body registered (iverilog, vvp, yosys, the GUI bridge), so a 30 s simulation
+    stops in ~100 ms instead of pinning the toolchain.
+    """
+    token = runstate.RunToken()
+    loop = asyncio.get_running_loop()
+
+    def report(done: float, total: float, message: str) -> None:
+        if ctx is None:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                ctx.report_progress(done, total, f"{label}: {message}"), loop
+            )
+        except Exception:
+            pass
+
+    if "progress" in inspect.signature(fn).parameters:
+        kwargs["progress"] = report
+    await _quiet_progress(ctx, 0, 1, f"{label}: started")
+    try:
+        result = await anyio.to_thread.run_sync(
+            functools.partial(runstate.call, fn, token, **kwargs), abandon_on_cancel=True
+        )
+    except anyio.get_cancelled_exc_class():
+        token.abort()
+        raise
+    await _quiet_progress(ctx, 1, 1, f"{label}: done")
+    return result
+
+
+@mcp.tool(annotations=READ)
 def runtime_status() -> dict[str, Any]:
     """Check Robei, iverilog, vvp, yosys and verilator paths and versions."""
     try:
@@ -34,30 +94,31 @@ def runtime_status() -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool()
-def lint_verilog(files: list[str], top: str | None = None, timeout_s: int = 30) -> dict[str, Any]:
+@mcp.tool(annotations=WRITE)
+async def lint_verilog(files: list[str], top: str | None = None, timeout_s: int = 30, ctx: Context | None = None) -> dict[str, Any]:
     """Lint with iverilog -Wall, Verilator --lint-only -Wall and Yosys (synth + unused-wire pass)."""
     try:
-        return tools.lint_verilog(files=files, top=top, timeout_s=timeout_s)
+        return await _invoke(tools.lint_verilog, ctx, "lint_verilog", files=files, top=top, timeout_s=timeout_s)
     except Exception as exc:
         return _error(exc)
 
 
-@mcp.tool()
-def simulate(files: list[str], top: str, timeout_s: int = 30) -> dict[str, Any]:
+@mcp.tool(annotations=WRITE)
+async def simulate(files: list[str], top: str, timeout_s: int = 30, ctx: Context | None = None) -> dict[str, Any]:
     """Compile and run a Verilog testbench with iverilog/vvp; return output and VCD paths."""
     try:
-        return tools.simulate(files=files, top=top, timeout_s=timeout_s)
+        return await _invoke(tools.simulate, ctx, "simulate", files=files, top=top, timeout_s=timeout_s)
     except Exception as exc:
         return _error(exc)
 
 
-@mcp.tool()
-def simulate_project(
+@mcp.tool(annotations=WRITE)
+async def simulate_project(
     proj_path: str,
     test_name: str,
     timeout_s: int = 30,
     render: bool = False,
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Run a Robei test/*.test model headlessly with the bundled iverilog (no IDE, no desktop).
 
@@ -66,14 +127,14 @@ def simulate_project(
     get a PNG of the produced VCD.
     """
     try:
-        return tools.simulate_project(
+        return await _invoke(tools.simulate_project, ctx, "simulate_project", 
             proj_path=proj_path, test_name=test_name, timeout_s=timeout_s, render=render
         )
     except Exception as exc:
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 def read_waveform(
     vcd_path: str,
     signals: list[str] | None = None,
@@ -86,7 +147,7 @@ def read_waveform(
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 def compare_waveforms(
     golden_vcd: str,
     dut_vcd: str,
@@ -99,26 +160,27 @@ def compare_waveforms(
         return _error(exc)
 
 
-@mcp.tool()
-def report_lab(
+@mcp.tool(annotations=WRITE)
+async def report_lab(
     proj_path: str,
     test_name: str,
     title: str | None = None,
     out_name: str | None = None,
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Run a Robei test headlessly and write a markdown lab report (signals, transitions, PNG).
 
     Returns the report path plus the automatic checks (finished, VCD produced, no X/Z).
     """
     try:
-        return tools.report_lab(
+        return await _invoke(tools.report_lab, ctx, "report_lab", 
             proj_path=proj_path, test_name=test_name, title=title, out_name=out_name
         )
     except Exception as exc:
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 def find_events(
     vcd_path: str,
     signal: str,
@@ -132,7 +194,7 @@ def find_events(
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE)
 def render_waveform(
     vcd_path: str,
     signals: list[str],
@@ -146,7 +208,7 @@ def render_waveform(
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 def read_robei_model(path: str) -> dict[str, Any]:
     """Read a Robei .model XML file and return metadata, ports, parameters and Verilog code."""
     try:
@@ -155,7 +217,7 @@ def read_robei_model(path: str) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ANALYZE)
 def robei_doctor(deep: bool = False) -> dict[str, Any]:
     """Self-check the whole stack: python/venv, mcp+matplotlib, workspace, Robei, iverilog/vvp/yosys, GUI task.
 
@@ -167,7 +229,7 @@ def robei_doctor(deep: bool = False) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 def list_projects(limit: int = 200) -> dict[str, Any]:
     """List every Robei project in the workspace with its models, tests, verilog and VCDs."""
     try:
@@ -176,7 +238,7 @@ def list_projects(limit: int = 200) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 def read_robei_project(proj_path: str) -> dict[str, Any]:
     """Read a Robei .proj project (read-only): folders, files and every model."""
     try:
@@ -185,7 +247,7 @@ def read_robei_project(proj_path: str) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE)
 def create_robei_project(name: str, models: list[str] | None = None) -> dict[str, Any]:
     """Create a Robei project skeleton (folders, .proj, blank models) under the workspace."""
     try:
@@ -194,7 +256,7 @@ def create_robei_project(name: str, models: list[str] | None = None) -> dict[str
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE)
 def create_robei_model(
     proj_path: str,
     name: str,
@@ -217,7 +279,7 @@ def create_robei_model(
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def set_robei_port(
     model_path: str,
     name: str,
@@ -240,7 +302,7 @@ def set_robei_port(
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE)
 def export_robei_verilog(
     model_path: str,
     out_name: str | None = None,
@@ -257,7 +319,7 @@ def export_robei_verilog(
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def sync_robei_verilog(proj_path: str, overwrite: bool = True) -> dict[str, Any]:
     """Export every model of a project to <proj>/verilog/<model>.v (Robei's iverilog -y library dir)."""
     try:
@@ -266,7 +328,7 @@ def sync_robei_verilog(proj_path: str, overwrite: bool = True) -> dict[str, Any]
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE)
 def create_robei_test(
     proj_path: str,
     name: str,
@@ -293,7 +355,7 @@ def create_robei_test(
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE)
 def create_robei_canvas_model(
     proj_path: str,
     name: str,
@@ -324,7 +386,7 @@ def create_robei_canvas_model(
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE)
 def generate_testbench(
     verilog_path: str,
     top: str,
@@ -343,7 +405,7 @@ def generate_testbench(
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_GUI)
 def robei_gui_status(output_lines: int = 20) -> dict[str, Any]:
     """Report whether Robei is running, the loaded project, open models and the Output tail."""
     try:
@@ -352,25 +414,25 @@ def robei_gui_status(output_lines: int = 20) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool()
-def robei_gui_launch(wait_s: int = 30) -> dict[str, Any]:
+@mcp.tool(annotations=WRITE_GUI)
+async def robei_gui_launch(wait_s: int = 30, ctx: Context | None = None) -> dict[str, Any]:
     """Start the Robei IDE on the interactive desktop and wait for its main window."""
     try:
-        return gui.launch(wait_s=wait_s)
+        return await _invoke(gui.launch, ctx, "robei_gui_launch", wait_s=wait_s)
     except Exception as exc:
         return _error(exc)
 
 
-@mcp.tool()
-def robei_gui_open_project(proj_path: str, timeout_s: int = 90) -> dict[str, Any]:
+@mcp.tool(annotations=WRITE_GUI)
+async def robei_gui_open_project(proj_path: str, timeout_s: int = 90, ctx: Context | None = None) -> dict[str, Any]:
     """Open a .proj through File > Open and verify the Files tree shows that project."""
     try:
-        return gui.open_project(proj_path=proj_path, timeout_s=timeout_s)
+        return await _invoke(gui.open_project, ctx, "robei_gui_open_project", proj_path=proj_path, timeout_s=timeout_s)
     except Exception as exc:
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_GUI)
 def robei_gui_open_model(name: str, timeout_s: int = 90) -> dict[str, Any]:
     """Double-click a model in the Robei Files tree so its canvas becomes the current one."""
     try:
@@ -379,16 +441,16 @@ def robei_gui_open_model(name: str, timeout_s: int = 90) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool()
-def robei_gui_compile(timeout_s: int = 90) -> dict[str, Any]:
+@mcp.tool(annotations=WRITE_GUI)
+async def robei_gui_compile(timeout_s: int = 90, ctx: Context | None = None) -> dict[str, Any]:
     """Run Build > Compile on the open model and return the new Output lines."""
     try:
-        return gui.compile_model(timeout_s=timeout_s)
+        return await _invoke(gui.compile_model, ctx, "robei_gui_compile", timeout_s=timeout_s)
     except Exception as exc:
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_GUI)
 def robei_gui_output(lines: int = 80) -> dict[str, Any]:
     """Read the last N lines of the Robei Output dock."""
     try:
@@ -397,25 +459,25 @@ def robei_gui_output(lines: int = 80) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool()
-def robei_gui_run(timeout_s: int = 90) -> dict[str, Any]:
+@mcp.tool(annotations=WRITE_GUI)
+async def robei_gui_run(timeout_s: int = 90, ctx: Context | None = None) -> dict[str, Any]:
     """Build > Run: let Robei compile and simulate the active model, returning the Output delta."""
     try:
-        return gui.run_simulation(timeout_s=timeout_s)
+        return await _invoke(gui.run_simulation, ctx, "robei_gui_run", timeout_s=timeout_s)
     except Exception as exc:
         return _error(exc)
 
 
-@mcp.tool()
-def robei_gui_wave(timeout_s: int = 60) -> dict[str, Any]:
+@mcp.tool(annotations=WRITE_GUI)
+async def robei_gui_wave(timeout_s: int = 60, ctx: Context | None = None) -> dict[str, Any]:
     """Build > Wave: open Robei's wave viewer for the last run."""
     try:
-        return gui.open_wave(timeout_s=timeout_s)
+        return await _invoke(gui.open_wave, ctx, "robei_gui_wave", timeout_s=timeout_s)
     except Exception as exc:
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_GUI)
 def robei_gui_refresh() -> dict[str, Any]:
     """Run Build > Refresh so Robei reloads changed .model/.proj files from disk."""
     try:
@@ -424,7 +486,7 @@ def robei_gui_refresh() -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_GUI)
 def robei_gui_code_read() -> dict[str, Any]:
     """Read the Verilog snippet in the active model's Code tab (the model's Code field)."""
     try:
@@ -433,7 +495,7 @@ def robei_gui_code_read() -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE_GUI)
 def robei_gui_code_write(code: str, save: bool = True) -> dict[str, Any]:
     """Replace the active model's Code tab text and save it with Ctrl+S."""
     try:
@@ -442,7 +504,7 @@ def robei_gui_code_write(code: str, save: bool = True) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE_GUI)
 def robei_gui_close() -> dict[str, Any]:
     """Force-close the Robei IDE. Unsaved model edits are lost."""
     try:
@@ -451,8 +513,8 @@ def robei_gui_close() -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool()
-def robei_gui_experiment(
+@mcp.tool(annotations=WRITE_GUI)
+async def robei_gui_experiment(
     proj_path: str,
     test_name: str,
     restart: bool = False,
@@ -463,6 +525,7 @@ def robei_gui_experiment(
     heal: bool = True,
     plot: bool = True,
     timeout_s: int = 240,
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Run the whole Robei loop: open project -> open test model -> Compile -> Run -> Wave.
 
@@ -470,7 +533,7 @@ def robei_gui_experiment(
     new models/tests were written to disk so the IDE reloads the .proj manifest.
     """
     try:
-        return gui.experiment(
+        return await _invoke(gui.experiment, ctx, "robei_gui_experiment", 
             proj_path=proj_path,
             test_name=test_name,
             restart=restart,
@@ -486,16 +549,16 @@ def robei_gui_experiment(
         return _error(exc)
 
 
-@mcp.tool()
-def robei_gui_wave_load(signals: list[str] | None = None, max_signals: int = 12) -> dict[str, Any]:
+@mcp.tool(annotations=WRITE_GUI)
+async def robei_gui_wave_load(signals: list[str] | None = None, max_signals: int = 12, ctx: Context | None = None) -> dict[str, Any]:
     """Open the Wave dock, expand the VCD signal tree and click signals into the viewer."""
     try:
-        return gui.wave_load(signals=signals, max_signals=max_signals)
+        return await _invoke(gui.wave_load, ctx, "robei_gui_wave_load", signals=signals, max_signals=max_signals)
     except Exception as exc:
         return _error(exc)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_GUI)
 def robei_gui_health() -> dict[str, Any]:
     """Check whether Robei's UIA bridge still answers (it goes silent after the Wave dock opens)."""
     try:
@@ -504,10 +567,10 @@ def robei_gui_health() -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool()
-def robei_gui_compile_all(models: list[str] | None = None) -> dict[str, Any]:
+@mcp.tool(annotations=WRITE_GUI)
+async def robei_gui_compile_all(models: list[str] | None = None, ctx: Context | None = None) -> dict[str, Any]:
     """Compile every .model of the open Robei project and report per-model warnings/errors."""
     try:
-        return gui.compile_all(models=models)
+        return await _invoke(gui.compile_all, ctx, "robei_gui_compile_all", models=models)
     except Exception as exc:
         return _error(exc)

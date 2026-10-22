@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "robei-mcp"
-version = "0.4.0"
+version = "0.5.0"
 description = "MCP server for Robei EDA: Verilog toolchain, project XML, and IDE automation over UIA"
 readme = "README.md"
 requires-python = ">=3.10"

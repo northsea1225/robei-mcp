@@ -17,6 +17,7 @@ from typing import Any
 
 from .config import SETTINGS, file_version
 from .model import _attr_ci, generic_node, model_to_verilog, parse_robei_model
+from . import runstate, xmlsafe
 from .security import (
     is_within,
     resolve_model_path,
@@ -80,37 +81,17 @@ def _run_impl(
         env.update(env_extra)
     cmd = [str(arg) for arg in args]
     started = time.monotonic()
+    token = runstate.current()
     try:
-        completed = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             cwd=str(cwd),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=timeout_s,
             shell=False,
             env=env,
         )
-        stdout = _decode(completed.stdout)
-        stderr = _decode(completed.stderr)
-        return {
-            "ok": completed.returncode == 0,
-            "returncode": completed.returncode,
-            "duration_ms": round((time.monotonic() - started) * 1000),
-            "command": cmd,
-            "stdout": _clip(stdout),
-            "stderr": _clip(stderr),
-        }
-    except subprocess.TimeoutExpired as exc:
-        return {
-            "ok": False,
-            "returncode": None,
-            "duration_ms": round((time.monotonic() - started) * 1000),
-            "command": cmd,
-            "stdout": _clip(_decode(exc.stdout)),
-            "stderr": _clip(_decode(exc.stderr)) + f"\nTIMEOUT after {timeout_s}s",
-            "timeout": True,
-        }
     except FileNotFoundError as exc:
         return {
             "ok": False,
@@ -120,6 +101,54 @@ def _run_impl(
             "stdout": "",
             "stderr": f"executable not found: {exc}",
         }
+    if token is not None:
+        token.register(proc)
+    try:
+        deadline = started + timeout_s
+        while True:
+            try:
+                stdout_b, stderr_b = proc.communicate(timeout=0.1)
+                break
+            except subprocess.TimeoutExpired:
+                # Client cancelled the MCP request: kill and report, do not wait out the timeout.
+                if token is not None and token.aborted():
+                    proc.kill()
+                    out, err = proc.communicate()
+                    return {
+                        "ok": False,
+                        "returncode": None,
+                        "duration_ms": round((time.monotonic() - started) * 1000),
+                        "command": cmd,
+                        "stdout": _clip(_decode(out)),
+                        "stderr": _clip(_decode(err)) + "\nCANCELLED by client; child process killed",
+                        "cancelled": True,
+                    }
+                if time.monotonic() >= deadline:
+                    proc.kill()
+                    out, err = proc.communicate()
+                    return {
+                        "ok": False,
+                        "returncode": None,
+                        "duration_ms": round((time.monotonic() - started) * 1000),
+                        "command": cmd,
+                        "stdout": _clip(_decode(out)),
+                        "stderr": _clip(_decode(err)) + f"\nTIMEOUT after {timeout_s}s",
+                        "timeout": True,
+                    }
+        cancelled = token is not None and token.aborted()
+        return {
+            "ok": proc.returncode == 0 and not cancelled,
+            "returncode": proc.returncode,
+            "duration_ms": round((time.monotonic() - started) * 1000),
+            "command": cmd,
+            "stdout": _clip(_decode(stdout_b)),
+            "stderr": _clip(_decode(stderr_b))
+            + ("\nCANCELLED by client; child process killed" if cancelled else ""),
+            **({"cancelled": True} if cancelled else {}),
+        }
+    finally:
+        if token is not None:
+            token.unregister(proc)
 
 
 def _run(
@@ -234,6 +263,12 @@ def runtime_status() -> dict[str, Any]:
             "max_timeout_s": SETTINGS.max_timeout_s,
             "max_source_bytes": SETTINGS.max_source_bytes,
             "max_vcd_bytes": SETTINGS.max_vcd_bytes,
+        },
+        "config": {
+            "file": str(SETTINGS.config_file) if SETTINGS.config_file else None,
+            "exists": bool(SETTINGS.config_file and SETTINGS.config_file.is_file()),
+            "error": SETTINGS.config_error,
+            "sources": SETTINGS.sources,
         },
     }
 
@@ -408,7 +443,33 @@ def _yosys_unused_check(
     }
 
 
-def lint_verilog(files: list[str], top: str | None = None, timeout_s: int = 30) -> dict[str, Any]:
+def _notify(progress, done: float, total: float, message: str) -> None:
+    """Report MCP progress from a worker thread; never let it break the tool."""
+    if progress is None:
+        return
+    try:
+        progress(float(done), float(total), message)
+    except Exception:
+        pass
+
+
+def _failure_code(result: dict[str, Any], fallback: str) -> str | None:
+    """Map a child-process result to a stable code the MCP caller can branch on."""
+    if result.get("ok"):
+        return None
+    if result.get("cancelled"):
+        return "cancelled"
+    if result.get("timeout"):
+        return "timeout"
+    return fallback
+
+
+def lint_verilog(
+    files: list[str],
+    top: str | None = None,
+    timeout_s: int = 30,
+    progress=None,
+) -> dict[str, Any]:
     sources = resolve_source_files(files)
     top = _valid_top(top)
     run_dir = _new_run_dir("lint")
@@ -424,6 +485,7 @@ def lint_verilog(files: list[str], top: str | None = None, timeout_s: int = 30) 
     if top:
         iverilog_cmd.extend(["-s", top])
     iverilog_cmd.extend(sources)
+    _notify(progress, 0, 4, "iverilog -Wall")
     iverilog_result = _run(iverilog_cmd, cwd=run_dir, timeout_s=timeout_s)
 
     read_commands: list[str] = []
@@ -434,9 +496,12 @@ def lint_verilog(files: list[str], top: str | None = None, timeout_s: int = 30) 
             read_commands.append(f"read_verilog {_quote_yosys(source)}")
     read_commands.append(f"synth -top {top}" if top else "synth")
     yosys_script = "; ".join(read_commands)
+    _notify(progress, 1, 4, "yosys synth")
     yosys_result = _run([SETTINGS.yosys, "-p", yosys_script], cwd=run_dir, timeout_s=timeout_s)
 
+    _notify(progress, 2, 4, "verilator --lint-only")
     verilator_result = _verilator_lint(sources, top, timeout_s, run_dir)
+    _notify(progress, 3, 4, "yosys unused-wire diff")
     yosys_check = _yosys_unused_check(sources, top, timeout_s, run_dir)
 
     iverilog_text = (iverilog_result.get("stdout") or "") + (iverilog_result.get("stderr") or "")
@@ -479,6 +544,7 @@ def simulate(
     files: list[str],
     top: str,
     timeout_s: int = 30,
+    progress=None,
 ) -> dict[str, Any]:
     sources = resolve_source_files(files)
     top = _valid_top(top)
@@ -488,6 +554,7 @@ def simulate(
     if not scan["ok"]:
         return {
             "ok": False,
+            "code": "path_rejected",
             "stage": "security_scan",
             "reason": "source references paths outside the workspace",
             "security": scan,
@@ -498,6 +565,7 @@ def simulate(
     run_dir = _new_run_dir("sim")
     sim_vvp = run_dir / "sim.vvp"
 
+    _notify(progress, 0, 2, "iverilog: compiling")
     compile_result = _run(
         [SETTINGS.iverilog, "-g2012", "-s", top, "-o", sim_vvp, *sources],
         cwd=run_dir,
@@ -506,6 +574,7 @@ def simulate(
     if not compile_result["ok"]:
         return {
             "ok": False,
+            "code": _failure_code(compile_result, "compile_failed"),
             "stage": "compile",
             "run_dir": _rel(run_dir),
             "security": scan,
@@ -514,16 +583,19 @@ def simulate(
             "vcd_paths": [],
         }
 
+    _notify(progress, 1, 2, "vvp: running testbench")
     sim_result = _run(
         [SETTINGS.vvp, sim_vvp],
         cwd=run_dir,
         timeout_s=timeout_s,
     )
+    _notify(progress, 2, 2, "vvp: finished")
     vcd_files = sorted(run_dir.rglob("*.vcd"))
     vcd_paths = [str(p) for p in vcd_files]
     vcd_rel_paths = [_rel(p) for p in vcd_files]
     return {
         "ok": sim_result["ok"],
+        "code": _failure_code(sim_result, "run_failed"),
         "stage": "run",
         "run_dir": _rel(run_dir),
         "security": {k: scan[k] for k in ("ok", "rejected", "unresolved")},
@@ -543,6 +615,7 @@ def simulate_project(
     test_name: str,
     timeout_s: int = 30,
     render: bool = False,
+    progress=None,
 ) -> dict[str, Any]:
     """Run a Robei ``test/*.test`` model with the bundled iverilog — no IDE needed.
 
@@ -563,6 +636,7 @@ def simulate_project(
         available = sorted(p.stem for p in (project_dir / "test").glob("*.test"))
         raise FileNotFoundError(f"test model not found: {test_path} (available: {available})")
 
+    _notify(progress, 0, 3, "parsing test model")
     test_model = parse_robei_model(test_path)
     out_dir = SETTINGS.workspace / "build" / "headless" / f"{project_dir.name}-{stem}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -586,12 +660,14 @@ def simulate_project(
     deps: list[Path] = []
     deps_dir = out_dir / "deps"
     deps_dir.mkdir(exist_ok=True)
+    _notify(progress, 1, 3, "exporting project models")
     for model_file in sorted((project_dir / "model").glob("*.model")):
         model = parse_robei_model(model_file)
         target = deps_dir / f"{model['name']}.v"
         target.write_text(model_to_verilog(model), encoding="utf-8", newline="\n")
         deps.append(target)
 
+    _notify(progress, 2, 3, "compiling + running")
     result = simulate(files=[str(tb_src), *[str(d) for d in deps]], top=stem, timeout_s=timeout_s)
     result["headless"] = {
         "project": str(proj),
@@ -731,12 +807,15 @@ def report_lab(
     title: str | None = None,
     out_name: str | None = None,
     max_transitions: int = 12,
+    progress=None,
 ) -> dict[str, Any]:
     """Run a Robei test headlessly and write a markdown lab report next to the PNG."""
     proj = resolve_project_path(proj_path)
     if not is_within(proj, SETTINGS.workspace):
         raise ValueError("refusing to report on a project outside the workspace")
+    _notify(progress, 0, 3, "simulating headlessly")
     sim = simulate_project(str(proj), test_name, render=True)
+    _notify(progress, 2, 3, "writing report")
     vcds = sim.get("vcd_paths") or []
     display = sim.get("display_output") or ""
     stem = test_name[:-5] if test_name.lower().endswith(".test") else test_name
@@ -973,7 +1052,7 @@ def list_projects(limit: int = 200) -> dict[str, Any]:
             "dir": str(proj.parent),
         }
         try:
-            tree = ET.parse(proj).getroot()
+            tree = xmlsafe.load(proj)
         except Exception as exc:
             problems.append({"proj": str(proj), "error": f"{type(exc).__name__}: {exc}"})
             projects.append({**entry, "ok": False, "error": f"{type(exc).__name__}: {exc}"})
@@ -1018,7 +1097,7 @@ def list_projects(limit: int = 200) -> dict[str, Any]:
 def read_robei_project(proj_path: str) -> dict[str, Any]:
     path = resolve_project_path(proj_path)
     sha_before = _sha256(path)
-    root = ET.parse(path).getroot()
+    root = xmlsafe.load(path)
     project_dir = path.parent
     folder_tags = ("model", "test", "const", "verilog")
 

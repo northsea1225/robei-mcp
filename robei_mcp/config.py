@@ -7,15 +7,10 @@ try:  # ctypes.wintypes only exists on Windows
     import ctypes.wintypes as wintypes
 except Exception:  # pragma: no cover - non-Windows hosts
     wintypes = None
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-
-def _env_path(name: str, default: Path) -> Path:
-    value = os.environ.get(name)
-    return Path(value).expanduser() if value else default
 
 
 IS_WINDOWS = os.name == "nt"
@@ -90,26 +85,151 @@ class Settings:
     max_model_bytes: int = 5_000_000
     max_vcd_bytes: int = 50_000_000
     max_output_chars: int = 20_000
+    config_file: Path | None = None
+    config_error: str | None = None
+    sources: dict[str, str] = field(default_factory=dict)
+
+
+CONFIG_ENV = "ROBEI_MCP_CONFIG"
+CONFIG_NAME = "robei.toml"
+
+
+def config_path() -> Path:
+    raw = os.environ.get(CONFIG_ENV)
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return (PROJECT_ROOT / CONFIG_NAME).resolve()
+
+
+def _read_config(path: Path) -> tuple[dict, str | None]:
+    """Return (data, error). Needs tomllib (3.11+) or tomli; env vars always work."""
+    if not path.is_file():
+        return {}, None
+    try:
+        import tomllib  # type: ignore[import-not-found]
+    except ModuleNotFoundError:  # pragma: no cover - python 3.10 only
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ModuleNotFoundError:
+            return {}, "python < 3.11 has no tomllib and tomli is not installed; using env vars and defaults"
+    try:
+        with path.open("rb") as handle:
+            data = tomllib.load(handle)
+    except Exception as exc:  # malformed toml must not take the server down
+        return {}, f"{type(exc).__name__}: {exc}"
+    return data if isinstance(data, dict) else {}, None
+
+
+def _pick(
+    env_name: str,
+    data: dict,
+    section: str,
+    key: str,
+    default: Path,
+    base: Path,
+) -> tuple[Path, str]:
+    raw = os.environ.get(env_name)
+    if raw:
+        return Path(raw).expanduser(), "env"
+    value = (data.get(section) or {}).get(key) if isinstance(data.get(section), dict) else None
+    if isinstance(value, str) and value.strip():
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            candidate = base / candidate
+        return candidate, "toml"
+    return default, "default"
+
+
+def _pick_int(env_name: str, data: dict, section: str, key: str, default: int) -> tuple[int, str]:
+    raw = os.environ.get(env_name)
+    if raw:
+        try:
+            return int(raw), "env"
+        except ValueError:
+            pass
+    value = (data.get(section) or {}).get(key) if isinstance(data.get(section), dict) else None
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value, "toml"
+    return default, "default"
+
+
+def _pick_roots(env_name: str, data: dict, section: str, key: str, default: tuple[Path, ...], base: Path) -> tuple[tuple[Path, ...], str]:
+    raw = os.environ.get(env_name)
+    if raw:
+        return tuple(Path(p).expanduser() for p in raw.split(os.pathsep) if p.strip()), "env"
+    value = (data.get(section) or {}).get(key) if isinstance(data.get(section), dict) else None
+    if isinstance(value, list) and value:
+        roots = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                candidate = Path(item).expanduser()
+                if not candidate.is_absolute():
+                    candidate = base / candidate
+                roots.append(candidate)
+        if roots:
+            return tuple(roots), "toml"
+    return default, "default"
 
 
 def load_settings() -> Settings:
-    workspace = _env_path("ROBEI_MCP_WORKSPACE", PROJECT_ROOT / "workspace").resolve()
-    robei_home = _env_path("ROBEI_HOME", Path(r"E:\Robei")).resolve()
+    path = config_path()
+    data, error = _read_config(path)
+    base = path.parent
+    sources: dict[str, str] = {}
+
+    workspace, sources["workspace"] = _pick(
+        "ROBEI_MCP_WORKSPACE", data, "paths", "workspace", PROJECT_ROOT / "workspace", base
+    )
+    workspace = workspace.resolve()
+    robei_home, sources["robei_home"] = _pick(
+        "ROBEI_HOME", data, "paths", "robei_home", Path(r"E:\Robei"), base
+    )
+    robei_home = robei_home.resolve()
     bin_dir = robei_home / "bin"
     verilator_default = _first_existing(VERILATOR_CANDIDATES) or VERILATOR_CANDIDATES[0]
     verilator_root_default = _first_existing(VERILATOR_ROOT_CANDIDATES) or VERILATOR_ROOT_CANDIDATES[0]
+
+    robei_exe, sources["robei_exe"] = _pick("ROBEI_EXE", data, "paths", "robei_exe", bin_dir / "Robei.exe", base)
+    gui_exe, sources["robei_gui_exe"] = _pick(
+        "ROBEI_GUI_EXE", data, "paths", "gui_exe", _default_gui_exe(robei_home), base
+    )
+    iverilog, sources["iverilog"] = _pick(
+        "IVERILOG_EXE", data, "paths", "iverilog", _tool_default("iverilog", bin_dir), base
+    )
+    vvp, sources["vvp"] = _pick("VVP_EXE", data, "paths", "vvp", _tool_default("vvp", bin_dir), base)
+    yosys, sources["yosys"] = _pick("YOSYS_EXE", data, "paths", "yosys", _tool_default("yosys", bin_dir), base)
+    verilator, sources["verilator"] = _pick("VERILATOR_EXE", data, "paths", "verilator", verilator_default, base)
+    verilator_root, sources["verilator_root"] = _pick(
+        "VERILATOR_ROOT_DIR", data, "paths", "verilator_root", verilator_root_default, base
+    )
+    model_roots, sources["model_roots"] = _pick_roots(
+        "ROBEI_MODEL_ROOTS", data, "paths", "model_roots", _default_model_roots(workspace), base
+    )
+    default_timeout, sources["default_timeout_s"] = _pick_int(
+        "ROBEI_DEFAULT_TIMEOUT_S", data, "limits", "default_timeout_s", 30
+    )
+    max_timeout, sources["max_timeout_s"] = _pick_int(
+        "ROBEI_MAX_TIMEOUT_S", data, "limits", "max_timeout_s", 120
+    )
+    default_timeout = max(1, min(default_timeout, 3600))
+    max_timeout = max(default_timeout, min(max_timeout, 3600))
     return Settings(
         project_root=PROJECT_ROOT,
         workspace=workspace,
         robei_home=robei_home,
-        robei_exe=_env_path("ROBEI_EXE", bin_dir / "Robei.exe").resolve(),
-        robei_gui_exe=_env_path("ROBEI_GUI_EXE", _default_gui_exe(robei_home)).resolve(),
-        iverilog=_env_path("IVERILOG_EXE", _tool_default("iverilog", bin_dir)).resolve(),
-        vvp=_env_path("VVP_EXE", _tool_default("vvp", bin_dir)).resolve(),
-        yosys=_env_path("YOSYS_EXE", _tool_default("yosys", bin_dir)).resolve(),
-        verilator=_env_path("VERILATOR_EXE", verilator_default),
-        verilator_root=_env_path("VERILATOR_ROOT_DIR", verilator_root_default),
-        model_roots=_default_model_roots(workspace),
+        robei_exe=robei_exe.resolve(),
+        robei_gui_exe=gui_exe.resolve(),
+        iverilog=iverilog.resolve(),
+        vvp=vvp.resolve(),
+        yosys=yosys.resolve(),
+        verilator=verilator,
+        verilator_root=verilator_root,
+        model_roots=model_roots,
+        default_timeout_s=default_timeout,
+        max_timeout_s=max_timeout,
+        config_file=path,
+        config_error=error,
+        sources=sources,
     )
 
 

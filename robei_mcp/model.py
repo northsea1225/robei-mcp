@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
+
+from . import xmlsafe
 from pathlib import Path
 from typing import Any
 
@@ -110,8 +112,7 @@ def _parse_wire(element: ET.Element) -> dict[str, Any]:
 
 
 def parse_robei_model(path: Path) -> dict[str, Any]:
-    tree = ET.parse(path)
-    root = tree.getroot()
+    root = xmlsafe.load(path)
     ports: list[dict[str, Any]] = []
     instances: list[dict[str, Any]] = []
     wires: list[dict[str, Any]] = []

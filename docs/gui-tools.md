@@ -108,7 +108,7 @@ compile  ok  generated=[".../build/and2.v"]
 
 ## 端口：为什么不用 GUI 点，而用 `set_robei_port`
 
-实测过 GUI 那条路（`probe19/20`）：点工具栏 `Port` 后在画布边缘点击确实会生成一个端口节点，但
+实测过 GUI 那条路（`tools/gui/archive/probe19.py` / `probe20.py`）：点工具栏 `Port` 后在画布边缘点击确实会生成一个端口节点，但
 
 - 名字固定是 `p1`、方向默认、`Side` 由落点决定（点到右边缘却生成了 `Side="top"`）；
 - 想改名字/方向/位宽要再选中该端口，让 `Property` 表格出现对应行，再进单元格编辑——

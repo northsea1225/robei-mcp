@@ -70,10 +70,17 @@ def resolve_model_path(value: str | Path) -> Path:
             resolved = item.resolve()
         except OSError:
             continue
-        if resolved.suffix.lower() != ".model":
-            continue
         if not any(is_within(resolved, root) for root in roots):
+            if resolved.is_file():
+                # The file exists but is outside every allowed root: that is a
+                # policy rejection, not a missing file; clients must tell them apart.
+                raise ValueError(
+                    "model path escapes allowed roots: " + str(resolved) + "; allowed: "
+                    + "; ".join(str(r) for r in roots)
+                )
             continue
+        if resolved.suffix.lower() != ".model":
+            raise ValueError(f"model file must have a .model extension: {resolved}")
         if resolved.is_file():
             if resolved.stat().st_size > SETTINGS.max_model_bytes:
                 raise ValueError("model file exceeds size limit")

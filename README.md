@@ -111,6 +111,21 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
 - `read_robei_model` / `read_robei_project` 现在解析 `instances` / `wires` / `netlist`
   （`nets` + `dangling_instance_ports`），`is_canvas` 标识画布级模型
 
+已验证（阶段 17，协议与输入加固，`tests/stage17_hardening.py`，28/28 PASS）：
+
+- 37 个工具全部带 MCP annotations：`read_waveform` 是 `readOnlyHint=true`、
+  `robei_gui_close` 是 `destructiveHint=true`、`robei_gui_*` 是 `openWorldHint=true`
+- 失败统一带稳定 `code` + `hint`：`not_found` / `already_exists` / `invalid_argument` /
+  `unsafe_xml` / `path_rejected` / `cancelled` / `timeout` / `compile_failed` /
+  `run_failed` / `internal`，客户端不必再猜错误文本
+- XML 防护：`<!ENTITY>` 或带内部子集的 `<!DOCTYPE ... [ ... ]>` 直接拒（`code=unsafe_xml`），
+  Robei 自己的裸 `<!DOCTYPE Robei>` 与真实 `mux.model` 照常解析
+- 客户端取消：`simulate` 跑到一半取消 → 2 秒内 `vvp.exe` 消失、服务端仍能继续响应
+- 进度上报：一次 `simulate` 发出 5 条 `notifications/progress`（started → iverilog → vvp → done）
+- 路径逃逸与"文件不存在"现在能区分：越界文件报 `invalid_argument`，缺文件报 `not_found`
+- `robei.toml` 生效，`runtime_status().config.sources` 逐键报告 `env` / `toml` / `default`
+- 65 个一次性 GUI 探针移到 `tools/gui/archive/`（`probe.py` / `probe_push.py` 仍在使用）
+
 仅可见 / 待定：
 
 - Robei GUI 打开和编译：当前 SSH 在 Session 0，交互桌面在 Session 1，无法从 SSH 看到/点击 GUI；已准备 `workspace\robei_counter4_project` 和手动步骤，待人工验证。
@@ -124,7 +139,8 @@ C:\dev\robei-mcp\
   .gitignore
   .mcp.json                      Windows Claude Code 项目配置
   README.md
-  pyproject.toml                 0.4.0，requires-python>=3.10，可选 dev=pytest
+  pyproject.toml                 0.5.0，requires-python>=3.10，可选 dev=pytest
+  robei.toml.example             路径/限额配置样例（复制成 robei.toml 生效）
   requirements.txt               mcp==2.3.0, matplotlib
   run-mcp.cmd                    Windows stdio 包装脚本
   examples\
@@ -134,7 +150,10 @@ C:\dev\robei-mcp\
     claude-mac-remote.mcp.json
   server.py                      MCP stdio 入口
   robei_mcp\
-    config.py
+    config.py                    环境变量 + robei.toml，逐键记录来源
+    errors.py                    稳定错误码（code / hint / stage）
+    xmlsafe.py                   XML 防护：拒 <!ENTITY> 与 DOCTYPE 内部子集
+    runstate.py                  RunToken：取消时 kill 已注册子进程
     model.py                     .model 解析（含画布 instances/wires/netlist）+ 通用节点树 + Verilog 导出
     security.py                  路径策略 + simulate 前静态路径扫描
     server_app.py                MCP 工具注册
@@ -146,11 +165,13 @@ C:\dev\robei-mcp\
   tools\
     setup.py                     一键 bootstrap + 自检（--check / --apply）
     gui\                          Session 1 侧 UIA 驱动与 schtasks 桥
+      archive\                    65 个一次性探针（仅作证据，不再维护）
   tests\
     stage2_smoke.py              正常路径冒烟
     stage3_cases.py              警告、语法错误、超时、残留进程
     stage4_cases.py              Verilator/未用信号、工程解析、导出、TB、波形、路径逃逸
     stage16_canvas.py            画布级 model：生成 → 解析 → Robei 编译 → 真值表
+    stage17_hardening.py         annotations、错误码、XML 防护、进度、取消、robei.toml
   workspace\
     counter4\
       counter4.v                 4 位计数器
@@ -229,7 +250,27 @@ set "PYTHONIOENCODING=utf-8"
 
 ## 配置
 
-可通过环境变量覆盖：
+两层配置：`robei.toml`（复制 `robei.toml.example` 到仓库根即可）和环境变量。
+**优先级：环境变量 > robei.toml > 内置默认值**，`runtime_status().config.sources`
+会逐项告诉你每个键最终来自哪一层。
+
+```toml
+[paths]
+workspace   = "C:/dev/robei-mcp/workspace"
+robei_home  = "E:/Robei"
+iverilog    = "E:/Robei/bin/iverilog.exe"
+model_roots = ["C:/ProgramData/Robei"]
+
+[limits]
+default_timeout_s = 30
+max_timeout_s     = 120
+```
+
+用 `ROBEI_MCP_CONFIG` 可以指向另一份 toml（测试和多环境切换用）。
+Python 3.10 没有 `tomllib`，那一档需要装 `tomli`；装不上时 toml 会被忽略并在
+`config.error` 里说明，环境变量照常生效。
+
+下面这些键都可以用环境变量覆盖：
 
 | 变量 | 默认值 |
 |---|---|
@@ -239,7 +280,13 @@ set "PYTHONIOENCODING=utf-8"
 | `IVERILOG_EXE` | `E:\Robei\bin\iverilog.exe` |
 | `VVP_EXE` | `E:\Robei\bin\vvp.exe` |
 | `YOSYS_EXE` | `E:\Robei\bin\yosys.exe` |
+| `VERILATOR_EXE` | `C:\msys64\ucrt64\bin\verilator_bin.exe` |
+| `VERILATOR_ROOT_DIR` | `C:\msys64\ucrt64\share\verilator` |
+| `ROBEI_GUI_EXE` | `D:\robei-lab\robei\bin\Robei.exe`（没有则用 `ROBEI_HOME` 下那个） |
 | `ROBEI_MODEL_ROOTS` | `C:\ProgramData\Robei` 和工作区，多个路径用 `;` 分隔 |
+| `ROBEI_MCP_CONFIG` | `C:\dev\robei-mcp\robei.toml` |
+| `ROBEI_DEFAULT_TIMEOUT_S` | `30` |
+| `ROBEI_MAX_TIMEOUT_S` | `120`（单次调用上限，`timeout_s` 会被裁到这个值） |
 
 ### Windows Codex
 
@@ -602,6 +649,38 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 用 venv 内的 matplotlib（Agg 后端）逐信号阶梯图，写入
 `workspace/build/waveforms/`，返回路径和字节数。已存在则拒绝覆盖；`x`/`z` 记为 NaN。
 
+## 错误码、进度与取消
+
+失败返回统一长这样，`code` 稳定、`error` 给人看、`hint` 是下一步建议：
+
+```json
+{"ok": false, "code": "not_found",
+ "error": "FileNotFoundError: file not found in workspace: C:\\...\\missing.v",
+ "hint": "the path must exist and, for models/projects, sit under an allowed root"}
+```
+
+| `code` | 场景 |
+|---|---|
+| `unsafe_xml` | 文档里出现 `<!ENTITY>` 或带内部子集的 `<!DOCTYPE>` |
+| `not_found` | 文件/工程/模型/端口不存在 |
+| `already_exists` | 拒绝覆盖（`overwrite=true` 可覆盖并留 `.bak`） |
+| `invalid_argument` | 名字非法、连线端点不存在、路径逃逸、参数越界 |
+| `cancelled` | 客户端取消，子进程已被 kill |
+| `timeout` | 超过 `timeout_s` 或 `max_timeout_s` |
+| `compile_failed` / `run_failed` | iverilog 编译失败 / vvp 运行失败（看 `compile` / `simulation` 段） |
+| `path_rejected` | `simulate` 的安全扫描在编译前拒绝了 `include` / `$fopen` 等越界路径 |
+
+**进度**：`simulate` / `simulate_project` / `lint_verilog` / `report_lab` 在阶段边界上报
+`notifications/progress`（`total` 是阶段数，不是时间估计）。客户端不订阅就静默无副作用。
+
+**取消**：长任务跑在可放弃的工作线程里，`RunToken` 记录这次调用启动的子进程
+（`iverilog` / `vvp` / `yosys` / `verilator`）。客户端发 `notifications/cancelled` 后，
+服务端置位 token 并 kill 这些进程，线程随即解出；实测从取消到 `vvp.exe` 消失 < 2 s，
+服务端仍继续响应后续请求。
+
+`robei_gui_*` 走的是计划任务桥，不是这批子进程：取消会让调用立刻返回，但桥任务会按它
+自己的超时跑完（结果丢弃）。已知副作用：被取消的调用可能留下半个 `workspace/build/sim-*/` 目录。
+
 ## Robei 原生仿真闭环
 
 不用 GUI 也能让 Robei 自己编译、自己跑 vvp、自己出 VCD，全流程只碰 workspace：
@@ -731,6 +810,16 @@ C:\dev\robei-mcp\.venv\Scripts\python.exe C:\dev\robei-mcp\tests\stage4_cases.py
 4. Robei 打开工程、Compile 通过，输出 `.a(a) .b(b) .y(t1)` 形式的实例化
 5. headless 仿真 `$strobe` 真值表 8 行全部满足 `y = a&b&c`
 
+`stage17_hardening.py` 覆盖（28/28 PASS）：
+
+1. 37 个工具都带 annotations；只读 / 破坏性 / open-world 各抽查一个
+2. 错误码：缺文件 → `not_found`、重复创建 → `already_exists`、越界路径 → `invalid_argument`
+3. XML 防护：实体炸弹 → `unsafe_xml`；裸 `<!DOCTYPE Robei>` 与真实 `mux.model` 仍能解析
+4. 画布负向：重复实例名 / 未知实例端口 / 未知顶层端口 / 模型缺失 / 属性注入
+5. 进度：`simulate` 期间收到 ≥4 条 progress 通知
+6. 取消：先确认 `vvp.exe` 在跑，取消后消失，服务端仍存活
+7. `robei.toml`：`ROBEI_MCP_CONFIG` 指向临时文件后 limits 生效且 `sources` 变成 `toml`
+
 `stage3_cases.py` 覆盖：
 
 1. 正常 4 位计数器 lint/simulate/read_waveform
@@ -801,6 +890,11 @@ C:\dev\robei-mcp\workspace\robei_counter4_project\
 - `generate_testbench` 是骨架生成器，不理解设计语义（例如不会自动产生激励序列或断言）。
 - 超时后可能留下部分 VCD；这是被终止仿真的预期副产物。
 - Codex 长驻 app-server 需要重启才能热加载新 MCP server。
+- annotations 只是给客户端的**提示**，服务端仍然逐项做真实校验（不会因为标了只读就跳过路径检查）。
+- 进度与取消依赖客户端：我们用 MCP Python 客户端验证过；某个具体客户端是否渲染进度条、是否真的发
+  `notifications/cancelled` 属于待定。没人取消时，调用会一直跑到 `timeout_s`。
+- 被取消的调用可能留下半个 `workspace/build/sim-*/` 目录（进程被杀时文件写了一半）。
+- Python 3.10 上 `robei.toml` 需要额外装 `tomli`；装不上时只有环境变量生效，`config.error` 会写明原因。
 ## GUI 工具（robei_gui_*）
 
 MCP 现在可以直接驱动 Robei 本体（打开工程、打开模型、编译、读日志、读写 Code 页签里的 Verilog，并用 set_robei_port 造端口），底层走 Robei 自带的 UIA 桥，不改程序、不注入 DLL。
