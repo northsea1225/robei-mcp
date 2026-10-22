@@ -9,6 +9,8 @@ jobs:
   portable:
     name: portable core (ubuntu + iverilog)
     runs-on: ubuntu-latest
+    env:
+      PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -26,11 +28,24 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Toolchain versions
+      - name: Versions
         run: |
-          iverilog -V | head -1
+          python -c "import sys, platform; print(sys.version); print(platform.platform())"
+          iverilog -V | head -2
           vvp -V | head -1
           yosys -V || true
 
-      - name: Portable core tests (no Robei, no GUI)
-        run: python tests/portable_core.py
+      - name: simulate + waveform
+        run: python tests/portable_core.py simulate
+
+      - name: generate_testbench round trip
+        run: python tests/portable_core.py testbench
+
+      - name: Robei XML (read-only)
+        run: python tests/portable_core.py robei-xml
+
+      - name: headless experiment
+        run: python tests/portable_core.py headless
+
+      - name: lint (iverilog + yosys)
+        run: python tests/portable_core.py lint
