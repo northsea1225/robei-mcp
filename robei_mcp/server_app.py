@@ -202,6 +202,24 @@ def robei_gui_output(lines: int = 80) -> dict[str, Any]:
 
 
 @mcp.tool()
+def robei_gui_code_read() -> dict[str, Any]:
+    """Read the Verilog snippet in the active model's Code tab (the model's Code field)."""
+    try:
+        return gui.code_read()
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def robei_gui_code_write(code: str, save: bool = True) -> dict[str, Any]:
+    """Replace the active model's Code tab text and save it with Ctrl+S."""
+    try:
+        return gui.code_write(code=code, save=save)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
 def robei_gui_close() -> dict[str, Any]:
     """Force-close the Robei IDE. Unsaved model edits are lost."""
     try:

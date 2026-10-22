@@ -18,6 +18,8 @@ OPS = {
     "compile": lambda a: robei_ui.compile_model(float(a.get("timeout_s", 25))),
     "output": lambda a: robei_ui.output(int(a.get("lines", 80))),
     "open_model": lambda a: robei_ui.open_model(a["name"]),
+    "code_read": lambda a: robei_ui.code_read(),
+    "code_write": lambda a: robei_ui.code_write(a["code"], bool(a.get("save", True))),
     "launch": lambda a: robei_ui.launch(a["exe"], float(a.get("wait_s", 20))),
     "close": lambda a: robei_ui.close(),
 }

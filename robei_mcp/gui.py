@@ -204,5 +204,13 @@ def output(lines: int = 80) -> dict[str, Any]:
     return call("output", {"lines": lines})
 
 
+def code_read() -> dict[str, Any]:
+    return call("code_read", {})
+
+
+def code_write(code: str, save: bool = True, timeout_s: int = 90) -> dict[str, Any]:
+    return call("code_write", {"code": code, "save": save}, timeout_s=timeout_s)
+
+
 def close(timeout_s: int = 60) -> dict[str, Any]:
     return call("close", {}, timeout_s=timeout_s)

@@ -458,7 +458,7 @@ C:\dev\robei-mcp\workspace\robei_counter4_project\
 - Codex 长驻 app-server 需要重启才能热加载新 MCP server。
 ## GUI 工具（robei_gui_*）
 
-MCP 现在可以直接驱动 Robei 本体（打开工程、打开模型、编译、读输出），底层走 Robei 自带的 UIA 桥，不改程序、不注入 DLL。
+MCP 现在可以直接驱动 Robei 本体（打开工程、打开模型、编译、读日志、读写 Code 页签里的 Verilog），底层走 Robei 自带的 UIA 桥，不改程序、不注入 DLL。
 
 前提：Windows 上有一个已登录且未锁屏的交互桌面，并注册一次辅助任务：
 
@@ -468,4 +468,4 @@ python tools\gui\register_task.py
 
 服务器跑在 SSH（Session 0）时会自动把请求排给该任务；在桌面直接运行时就地执行。完整说明与已知限制见 `docs/gui-tools.md`，桥的存在性与探测过程见 `docs/L1-uia-bridge.md`。
 
-回归：`tests\stage5_gui_cases.py`（真实 stdio MCP 客户端，10 项断言，全部 PASS）。
+回归：`tests\stage5_gui_cases.py`（10 项断言）与 `tests\stage6_gui_code.py`（11 项断言），都走真实 stdio MCP 客户端，全部 PASS。

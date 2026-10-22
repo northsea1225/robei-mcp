@@ -36,6 +36,8 @@ python tools\gui\register_task.py --remove   # 不再需要时删除
 | `robei_gui_open_model(name, timeout_s=90)` | 展开 Files 树（Qt 忽略 UIA 展开模式，改用 `点击 + →`）后双击模型 | `models` `tree` |
 | `robei_gui_compile(timeout_s=90)` | Build→Compile，解析 `Output` 增量 | `generated` `errors` `warnings` `missing_modules` `check_warnings` |
 | `robei_gui_output(lines=80)` | Output 面板末 N 行 | `text` `lines_total` |
+| `robei_gui_code_read()` | 切到画布 `Code` 页签，读当前模型的 Verilog 片段 | `model` `text` `length` |
+| `robei_gui_code_write(code, save=True)` | 写入 `Code` 页签并用 Ctrl+S 保存 | `changed` `written` `saved` `save_log` |
 | `robei_gui_close()` | `taskkill /F /IM Robei.exe` | `stdout` |
 
 路径校验：`robei_gui_open_project` 复用 `security.resolve_project_path`，
@@ -60,6 +62,28 @@ PASS  status_after_close
  "generated": ["C:/dev/robei-mcp/workspace/robei_samples/two_level/build/and2.v"]}
 ```
 
+## Code 页签读写
+
+模型画布底部有 `Graph | Code` 两个页签。`Code` 页签里的 `CodeEditor` 控件通过 UIA 暴露整段文本
+（auto_id 以 `...Design.qt_tabwidget_stackedwidget.CodeEditor` 结尾），所以读和写都不用模拟键盘：
+
+- 读：`window_text()` 直接拿到 `.model` 里 `Code` 字段的原文；
+- 写：`ValuePattern.SetValue(text)` 一次替换全文，再 `Ctrl+S`，Robei 在 Output 打印
+  `|>File: .../and2.model saved.`，`save_log` 就是这条增量。
+
+实测（`tests/stage6_gui_code.py`，11/11 PASS）：
+
+```
+read1    'assign y = a & b;'
+write    written=true saved=true  log='|>File: ...and2.model saved.'
+read2    'assign y = a & b;  // stage6 probe'
+restore  saved=true
+read3    'assign y = a & b;'    ← 原文已还原
+compile  ok  generated=[".../build/and2.v"]
+```
+
+写的是**模型的 `Code` 字段**（模块内部的 Verilog 片段），不是整份 `.v`；端口、参数仍在 `.model` 的 `<Port>` 节点里。
+
 ## 已知限制
 
 1. **Compile 只编译当前打开的 model**。没有打开模型时不会编译工程，工具会直接拒绝并提示先 `robei_gui_open_model`。
@@ -75,6 +99,9 @@ PASS  status_after_close
 
    这不是本项目的 bug，是 Robei 自己的库解析行为；工具的 `missing_modules`/`errors` 会如实回传。
 3. Robei 编译时会往**安装副本**目录（`<install>\project\test1\model\`）写模板模型，属其自身行为；`E:\Robei` 只读使用时需注意。
-4. `robei_gui_compile` 返回的 `model` 是**所有打开的页签**，不是“当前激活页签”（UIA 未暴露选中态，待补）。
+4. `robei_gui_compile` 的 `model` 是**所有打开的页签**；当前激活的那个看 `active`（来自 TabItem 的 SelectionItemPattern）。
 5. 同一时刻只允许一个 GUI 任务；并发调用会被计划任务串行化，可能触发超时。
 6. `robei_gui_close` 是强制结束进程，未保存的模型编辑会丢失。
+7. **Files 树只列 `.proj` 里声明过的模型**。`_synthetic/sample.proj` 没有 `<file>` 节点，
+   所以磁盘上的 `model/top.model` 在树上不出现，`robei_gui_open_model` 也找不到——这不是展开失败。
+8. 切换工程不会关闭旧页签，`models` 里可能残留上一个工程的模型名；以 `active` 为准。

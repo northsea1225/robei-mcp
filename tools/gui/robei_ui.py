@@ -172,6 +172,23 @@ def model_tabs(dlg) -> list[str]:
     return out
 
 
+def active_model(dlg) -> str | None:
+    """Name of the selected model tab, when Qt exposes SelectionItemPattern."""
+    for ctrl in dlg.descendants(control_type="Tab"):
+        try:
+            if ctrl.element_info.automation_id != MODEL_TAB_ID:
+                continue
+            for item in ctrl.children(control_type="TabItem"):
+                try:
+                    if item.iface_selection_item.CurrentIsSelected:
+                        return item.window_text()
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return None
+
+
 def menu_headers(dlg) -> dict:
     mb = dlg.child_window(auto_id=MENU_BAR_ID)
     return {
@@ -302,6 +319,7 @@ def status(output_lines: int = 20) -> dict:
         "project": next((t for t in tree_items(dlg)), None),
         "tree": tree_items(dlg),
         "models": model_tabs(dlg),
+        "active": active_model(dlg),
         "tabs": tab_groups(dlg),
         "output_tail": _tail(text, output_lines),
         "output_lines_total": len(text.splitlines()),
@@ -393,6 +411,117 @@ def output(lines: int = 80) -> dict:
     return {"ok": True, "lines_total": len(text.splitlines()), "text": _tail(text, lines)}
 
 
+CODE_EDITOR_CLASS = "CodeEditor"
+
+
+def _design_tab_item(dlg, label: str):
+    for tab in dlg.descendants(control_type="Tab"):
+        try:
+            if "Design.qt_tabwidget_tabbar" not in (tab.element_info.automation_id or ""):
+                continue
+            for item in tab.children(control_type="TabItem"):
+                if item.window_text().strip().lower() == label.lower():
+                    return item
+        except Exception:
+            continue
+    return None
+
+
+def _code_editor(dlg, activate: bool = True):
+    """Switch to the canvas 'Code' tab and return its CodeEditor element."""
+    from pywinauto import mouse
+
+    if activate:
+        tab = _design_tab_item(dlg, "code")
+        if tab is None:
+            return None
+        mouse.click(button="left", coords=_center(_rect(tab.element_info.rectangle)))
+        time.sleep(1.0)
+    for ctrl in dlg.descendants():
+        try:
+            if ctrl.element_info.class_name == CODE_EDITOR_CLASS:
+                return ctrl
+        except Exception:
+            continue
+    return None
+
+
+def code_read() -> dict:
+    """Return the Verilog snippet stored in the active model's Code tab."""
+    dlg, win = main_window()
+    if dlg is None:
+        return {"ok": False, "error": "Robei is not running"}
+    model = active_model(dlg)
+    if model is None:
+        return {"ok": False, "error": "no active model tab"}
+    editor = _code_editor(dlg)
+    if editor is None:
+        return {"ok": False, "error": "Code tab not available for this model", "model": model}
+    text = editor.window_text()
+    return {"ok": True, "model": model, "length": len(text), "text": text}
+
+
+def code_write(code: str, save: bool = True) -> dict:
+    """Replace the Code tab text of the active model, then save with Ctrl+S."""
+    from pywinauto import keyboard, mouse
+
+    dlg, win = main_window()
+    if dlg is None:
+        return {"ok": False, "error": "Robei is not running"}
+    model = active_model(dlg)
+    if model is None:
+        return {"ok": False, "error": "no active model tab"}
+    editor = _code_editor(dlg)
+    if editor is None:
+        return {"ok": False, "error": "Code tab not available for this model", "model": model}
+    before = editor.window_text()
+    if before == code:
+        return {
+            "ok": True,
+            "model": model,
+            "changed": False,
+            "saved": False,
+            "note": "editor already contains this text; nothing written",
+        }
+    method = "value_pattern"
+    try:
+        editor.iface_value.SetValue(code)
+    except Exception as exc:
+        method = f"type_keys (SetValue failed: {type(exc).__name__})"
+        mouse.click(button="left", coords=_center(_rect(editor.element_info.rectangle)))
+        time.sleep(0.2)
+        keyboard.send_keys("^a")
+        keyboard.send_keys(code, with_spaces=True, pause=0.005)
+    time.sleep(0.8)
+    after = editor.window_text()
+    result = {
+        "model": model,
+        "changed": True,
+        "method": method,
+        "before": before,
+        "after": after,
+        "written": after == code,
+    }
+    if not result["written"]:
+        result.update({"ok": False, "error": "editor text does not match the requested code"})
+        return result
+    if save:
+        out_before = read_output(dlg)
+        keyboard.send_keys("^s")
+        deadline = time.time() + 8.0
+        log = ""
+        while time.time() < deadline:
+            out = read_output(dlg)
+            if out != out_before:
+                log = out[len(out_before):] if out.startswith(out_before) else out
+                break
+            time.sleep(0.3)
+        result["saved"] = "saved" in log.lower()
+        result["save_log"] = log.strip()
+    result["ok"] = True
+    return result
+
+
 def _file_tree(dlg):
     for ctrl in dlg.descendants(control_type="Tree"):
         try:
@@ -453,21 +582,30 @@ def open_model(name: str) -> dict:
 
     wanted = name.lower()
     target = None
-    for _ in range(3):
+    expanded: list[str] = []
+    for _ in range(5):
         entries = _tree_entries(tree)
         target = next((e["item"] for e in entries if e["text"].lower() == wanted), None)
         if target is not None:
             break
-        folders = [e["item"] for e in entries if not e["text"].lower().endswith(".model") and not e["text"].lower().endswith(".proj")]
-        if not folders:
+        collapsed = [
+            e
+            for e in entries
+            if e["state"] != 1 and e["text"] not in expanded
+        ]
+        if not collapsed:
             break
-        for folder in folders:
-            _expand_tree_item(folder)
+        current = collapsed[0]
+        expanded.append(current["text"])
+        _expand_tree_item(current["item"])
 
     if target is None:
         return {
             "ok": False,
-            "error": f"model {name!r} not found in Files tree",
+            "error": (
+                f"model {name!r} not found in Files tree "
+                "(Robei lists only models declared in the .proj manifest)"
+            ),
             "tree": [e["text"] for e in _tree_entries(tree)],
         }
     rect = _rect(target.element_info.rectangle)
@@ -478,6 +616,7 @@ def open_model(name: str) -> dict:
         "ok": wanted.rsplit(".", 1)[0] in [m.lower() for m in models],
         "opened": name,
         "models": models,
+        "active": active_model(dlg),
         "tree": [e["text"] for e in _tree_entries(tree)],
     }
 

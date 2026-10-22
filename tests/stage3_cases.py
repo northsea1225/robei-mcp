@@ -61,6 +61,8 @@ async def main():
                 "robei_gui_open_model",
                 "robei_gui_compile",
                 "robei_gui_output",
+                "robei_gui_code_read",
+                "robei_gui_code_write",
                 "robei_gui_close",
             ]
             for name in required:
