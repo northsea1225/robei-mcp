@@ -87,15 +87,20 @@ def attach(hwnd: int):
 
 
 def main_window():
-    """Return (wrapper, win_info) for the Robei main window, or (None, None)."""
-    for win in windows():
-        if win["class"].startswith("Qt") and win["class"].endswith("QWindowIcon"):
-            try:
-                dlg = attach(win["hwnd"])
-                if dlg.descendants():
-                    return dlg, win
-            except Exception:
-                continue
+    """Return (wrapper, win_info) for the Robei main window, or (None, None).
+
+    Modal dialogs share the ``Qt640QWindowIcon`` class, so pick the biggest window
+    that actually owns a menu bar instead of the first Qt window.
+    """
+    candidates = [w for w in windows() if w["class"].startswith("Qt")]
+    candidates.sort(key=lambda w: -((w["rect"][2] - w["rect"][0]) * (w["rect"][3] - w["rect"][1])))
+    for win in candidates:
+        try:
+            dlg = attach(win["hwnd"])
+            if dlg.child_window(auto_id="QApplication.Romain.QMenuBar").exists(timeout=0.3):
+                return dlg, win
+        except Exception:
+            continue
     return None, None
 
 
