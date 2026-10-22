@@ -931,14 +931,18 @@ def _model_xml(name: str, ports: list[dict] | None, code: str, comment: str) -> 
     return "\n".join(lines) + "\n"
 
 
-def _register_entry_in_project(proj_path: Path, folder: str, name: str, extension: str, node_type: str) -> bool:
-    """Append one file entry to a folder block of a .proj, text-preserving."""
+def _register_entry_in_project(proj_path: Path, folder: str, name: str, extension: str, node_type: str) -> str:
+    """Append one file entry to a folder block of a .proj, text-preserving.
+
+    Returns ``"created"`` when the entry was appended, ``"exists"`` when the
+    manifest already declared it, so callers can stay idempotent.
+    """
     with proj_path.open("r", encoding="utf-8", newline="") as handle:
         text = handle.read()
     file_name = f"{name}.{extension}"
     entry = f'<{file_name} name="{file_name}" parent="{folder}" type="{node_type}"/>'
     if f'<{file_name} ' in text:
-        return False
+        return "exists"
     folder_tag = re.search(rf"<{folder}\b[^>]*>", text)
     if folder_tag is None:
         raise ValueError(f"project has no <{folder}> folder")
@@ -954,10 +958,10 @@ def _register_entry_in_project(proj_path: Path, folder: str, name: str, extensio
     ET.fromstring(new_text)
     with proj_path.open("w", encoding="utf-8", newline="") as handle:
         handle.write(new_text)
-    return True
+    return "created"
 
 
-def _register_model_in_project(proj_path: Path, model_name: str) -> bool:
+def _register_model_in_project(proj_path: Path, model_name: str) -> str:
     return _register_entry_in_project(proj_path, "model", model_name, "model", "model")
 
 
@@ -1060,7 +1064,7 @@ def create_robei_test(
     ET.fromstring(xml_text)
     backup = _backup_file(target)
     target.write_text(xml_text, encoding="utf-8", newline="\n")
-    registered = _register_entry_in_project(proj, "test", name, "test", "test")
+    registration = _register_entry_in_project(proj, "test", name, "test", "test")
     deps = sync_robei_verilog(str(proj)) if sync_deps else None
     return {
         "ok": True,
@@ -1068,7 +1072,8 @@ def create_robei_test(
         "path": str(target),
         "relative_path": _rel(target),
         "project": str(proj),
-        "registered_in_project": registered,
+        "registered_in_project": registration in ("created", "exists"),
+        "registration": registration,
         "backup": str(backup) if backup else None,
         "sha256": _sha256(target),
         "code": code,
@@ -1167,7 +1172,7 @@ def create_robei_model(
         backup = target.with_name(target.name + ".bak-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
         backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
     target.write_text(xml_text, encoding="utf-8", newline="\n")
-    registered = _register_model_in_project(proj, name)
+    registration = _register_model_in_project(proj, name)
 
     parsed = parse_robei_model(target)
     return {
@@ -1176,7 +1181,8 @@ def create_robei_model(
         "path": str(target),
         "relative_path": _rel(target),
         "project": str(proj),
-        "registered_in_project": registered,
+        "registered_in_project": registration in ("created", "exists"),
+        "registration": registration,
         "backup": str(backup) if backup else None,
         "sha256": _sha256(target),
         "ports": parsed.get("ports"),

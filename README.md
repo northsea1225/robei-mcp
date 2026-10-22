@@ -371,6 +371,7 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
   `$dumpfile("./build/<name>.vcd"); $dumpvars;`
 - 默认 `sync_deps=true`，顺带刷新 `verilog/` 依赖库
 - 目标已存在时 `FileExistsError`（`overwrite=true` 才覆盖，并留 `.bak-<时间戳>`）
+- 登记是幂等的：返回 `registered_in_project`（布尔）与 `registration`（`created` / `exists`）
 
 ### `generate_testbench`
 
@@ -471,6 +472,15 @@ C:\dev\robei-mcp\.venv\Scripts\python.exe C:\dev\robei-mcp\tests\stage4_cases.py
 8. `render_waveform` 出 PNG；重复渲染被拒绝
 9. 三类路径逃逸被拒 + 工作区内路径放行
 10. 1 秒超时后残留 `vvp.exe = 0`
+
+`stage11_mcp_native.py` 覆盖（全部走真实 stdio MCP 客户端，14/14 PASS）：
+
+1. 29 个工具注册，含 `sync_robei_verilog` / `create_robei_test` / `robei_gui_experiment` / `robei_gui_wave_load`
+2. `sync_robei_verilog` → `counter4_native/verilog/counter4.v`
+3. `read_robei_project` 读到 `.test`（`type=test`、`timescale=1ns/1ns`），`.proj` SHA 不变
+4. `create_robei_test` 建新 test 并登记（第二次调用返回 `registration=exists`）
+5. `robei_gui_experiment` 在 Robei 里 Compile+Run，输出 `t=45 count=0011`
+6. `read_waveform` / `find_events` 读 Robei 生成的 VCD（`count==4'b0011` → `t=35`）
 
 `stage9_native_run.py` / `stage10_counter_native.py` 覆盖（Robei 原生闭环）：
 
