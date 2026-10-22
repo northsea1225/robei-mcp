@@ -44,7 +44,7 @@ async def main():
             tools = await session.list_tools()
             names = [tool.name for tool in tools.tools]
             print("TOOLS=" + json.dumps(names))
-            assert names == [
+            required = [
                 "runtime_status",
                 "lint_verilog",
                 "simulate",
@@ -55,7 +55,18 @@ async def main():
                 "read_robei_project",
                 "export_robei_verilog",
                 "generate_testbench",
+                "robei_gui_status",
+                "robei_gui_launch",
+                "robei_gui_open_project",
+                "robei_gui_open_model",
+                "robei_gui_compile",
+                "robei_gui_output",
+                "robei_gui_close",
             ]
+            for name in required:
+                assert name in names, f"missing tool: {name}"
+            unexpected = [n for n in names if n not in required]
+            assert not unexpected, f"unexpected tools registered: {unexpected}"
 
             runtime = await call(session, "runtime_status", {})
             assert runtime["ok"] is True
