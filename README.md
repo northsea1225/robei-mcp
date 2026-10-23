@@ -216,6 +216,7 @@ python C:\dev\robei-mcp\tools\gui\register_task.py --remove   # 删除
 | [docs/gui-tools.md](docs/gui-tools.md) | GUI 工具、Session-1 桥、坐标/菜单/画布的历史坑 |
 | [docs/L1-uia-bridge.md](docs/L1-uia-bridge.md) | Robei 内建 UIA 桥的层级与控件 id |
 | [docs/verification-log.md](docs/verification-log.md) | 每个阶段「实际跑通了什么」的证据日志 |
+| [docs/coverage-roadmap.md](docs/coverage-roadmap.md) | Robei 能力覆盖矩阵、缺口清单与补齐路线（含未接的 Route/Package/Download） |
 | [docs/repo-layout.md](docs/repo-layout.md) | 仓库结构 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本变更 |
 
