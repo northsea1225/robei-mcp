@@ -7,11 +7,16 @@ name = "robei-mcp"
 version = "0.11.1"
 description = "MCP server for Robei EDA: Verilog toolchain, project XML, and IDE automation over UIA"
 readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = [
   "mcp==2.3.0",
   "matplotlib>=3.9",
 ]
+
+[project.urls]
+Homepage = "https://github.com/northsea1225/robei-mcp"
+Changelog = "https://github.com/northsea1225/robei-mcp/blob/master/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
