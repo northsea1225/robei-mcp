@@ -139,7 +139,7 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
 - **波形统计**：`waveform_stats` 识别时钟周期 `10 ns`（`100 MHz`）、单比特 level coverage `1.0`
 - **testbench 升级**：`generate_testbench(full_combo=true)` 自动穷举输入组合（4 行 `combo` 输出）
 
-已验证（阶段 19，引脚约束，`tests/stage19_constraints.py`，18/18 PASS，45 个工具）：
+已验证（阶段 19，引脚约束 + FPGA 前端流程，`tests/stage19_constraints.py`，21/21 PASS，47 个工具）：
 
 - `.const` 的真实 schema 来自网络（`wwkkww1983/uart` 的 `prac_04_led/light_constrain.const`）：
   `Type="constrain"` 画布 + 嵌套 `<Module Type="model">` + 每根 FPGA 引脚一个 `<Port>` +
@@ -153,6 +153,12 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
   那份**逐行相同**（18 行 PACKAGE_PIN + IOSTANDARD）
 - 负向：引脚数不匹配 / 端口不存在 / 引脚名非法 / 重复创建，分别返回
   `invalid_argument` 与 `already_exists`
+- **Robei 自己的 FPGA 前端跑通了**：`robei_gui_save_project`（File→Save）+ `robei_gui_synthesis`
+  （Build→Synthesis）在生成的 `.const` 上跑完 yosys Xilinx 流程，输出 `Synthesis complete`
+  并写出 `build/<name>.json`。三个前提都是实测踩出来并已修进工具的：根节点必须是
+  `Type="const"` + `Vendor/Device/Family`（`Type="constrain"` 会被拒绝为
+  `is not constrain file`）、工程里要有 `build/` 目录（否则最后一步
+  `Can't open output file .../build/<name>.json`）
 
 仅可见 / 待定：
 
@@ -167,7 +173,7 @@ C:\dev\robei-mcp\
   .gitignore
   .mcp.json                      Windows Claude Code 项目配置
   README.md
-  pyproject.toml                 0.7.0，requires-python>=3.10，可选 dev=pytest
+  pyproject.toml                 0.8.0，requires-python>=3.10，可选 dev=pytest
   robei.toml.example             路径/限额配置样例（复制成 robei.toml 生效）
   requirements.txt               mcp==2.3.0, matplotlib
   run-mcp.cmd                    Windows stdio 包装脚本
@@ -680,7 +686,10 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 - `pins` 的每个端口都必须给全，数量必须等于端口位宽（4 位端口就要 4 个引脚）
 - 引脚名按 `[A-Za-z][A-Za-z0-9_]*` 校验（Xilinx 的 `G15`/`M14` 这类）
 - 文件写到 `<工程>/const/<name>.const`，并登记进 `.proj` 的 `<const>` 目录
-- `kind` 默认 `constrain`（Robei 5.x 的画布形式）；老版本可传 `const`
+- `kind` 默认 **`const`**（Robei 5.x 的 FPGA 流程认这个；传 `constrain` 会被 Build→Synthesis
+  拒绝为 `is not constrain file`）
+- `vendor` / `device` / `family` 只在 `kind="const"` 时写入根节点；留空时 Robei 会提示
+  `has no Device/Family configured`（综合仍会跑完），填成目标板卡的器件名即可消掉
 - 已存在要 `overwrite=true`（留 `.bak-<时间戳>`）
 
 ### `read_robei_const`
@@ -707,6 +716,27 @@ set_property IOSTANDARD LVCMOS33 [get_ports swt[0]]
 ```
 
 端口顺序按 `.const` 里的声明顺序，和 Robei 自己生成的一致（已逐行比对过）。
+
+### `robei_gui_save_project`
+
+```json
+{}
+```
+
+点 File → Save。Build → Synthesis 之前必须做一次，否则 Robei 只回
+`Error: please save your current project first.`。
+
+### `robei_gui_synthesis`
+
+```json
+{"timeout_s": 240}
+```
+
+点 Build → Synthesis 并等到 `Synthesis complete`（内部是 yosys 的 Xilinx 流程）。
+返回 `completed`、`errors`、`board_warnings`、`output_tail`、`delta`。
+
+- `board_warnings` 单独列出 `has no Device/Family configured`，不算失败
+- 前提：当前打开的是 `.const`（`Type="const"`），工程里有 `build/` 目录
 
 ### `check_connectivity`
 
@@ -1066,9 +1096,13 @@ C:\dev\robei-mcp\workspace\robei_counter4_project\
 - `waveform_stats` 的时钟识别是启发式（边沿间隔近似恒定），不做抖动/占空比签核。
 - 这版 Robei 的 `compile_all` 有时只留下最后编译那个模型的 `build/*.v`，所以判断"编译成功"
   要看每个模型的 `warnings`/`errors`，不能只看某个 `.v` 是否出现。
-- `.const` 现在能写能读，但**Robei 自己的 xdc 再生成没有打通**：在这个工程上按 Compile 只打出
-  `File: …/constrain/<name>.constrain saved.` 然后报 `please save your current project first`，
-  没有真的落盘；所以 `export_robei_xdc` 是我们按 Robei 的格式自己投影的（已与网络工程里的产物逐行比对）。
+- `.const` 能写能读，FPGA 前端（Save + Synthesis）也跑通了，但**这版 Robei 在综合阶段不写
+  `.xdc`**：只在 `build/` 落 `<name>.json`（网表），`constrain/` 里最多出现它自己的
+  `<name>.constrain` 画布副本。所以 `export_robei_xdc` 仍是我们按 Robei 的格式自己投影的
+  ——已与网络工程里 Robei 生成的 xdc 逐行比对一致。
+- 器件信息（`Vendor/Device/Family`）只能写进 `.const` 的属性；Robei 的 `Setting → Configure`
+  对话框只有 5 个下拉框，读出来是 Bezier / Circuit / Bottom / Side 这类画布选项，
+  **不是器件选择器**，所以没法从 UI 里问到合法的器件名。
 - 引脚约束只覆盖"引脚 ↔ 端口位"的映射；时序约束（时钟周期、false path）没有样例，没做。
 - Robei 自带按芯片的 xdc 模板在 `C:\ProgramData\Robei\spiOverJtag\constr_*.xdc`，
   目前没有把它们和 `.const` 里的引脚做合法性校验（写错引脚名 Robei 打开时不会报）。

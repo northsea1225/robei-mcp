@@ -137,6 +137,8 @@ async def main():
                 "robei_gui_code_read",
                 "robei_gui_code_write",
                 "robei_gui_close",
+                "robei_gui_save_project",
+                "robei_gui_synthesis",
                 "sync_robei_verilog",
                 "create_robei_canvas_model",
                 "import_verilog_canvas",

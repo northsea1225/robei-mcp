@@ -469,6 +469,75 @@ def compile_model(timeout_s: float = 25.0) -> dict:
     }
 
 
+def save_project() -> dict:
+    """File > Save — Robei refuses Build steps until the project is saved."""
+    dlg, win = main_window()
+    if dlg is None:
+        return {"ok": False, "error": "Robei is not running"}
+    before = read_output(dlg)
+    click = click_menu(dlg, "File", "Save")
+    if not click.get("ok"):
+        return {"ok": False, "error": "could not reach File>Save", "detail": click}
+    time.sleep(2.0)
+    after = read_output(dlg)
+    delta = after[len(before):] if after.startswith(before) else after
+    return {
+        "ok": True,
+        "saved": "saved" in delta.lower(),
+        "delta": delta.strip()[-2000:],
+        "output_tail": _tail(after, 10),
+    }
+
+
+def synthesis(timeout_s: float = 300.0) -> dict:
+    """Build > Synthesis on the open constrain model (yosys -> build/<name>.json)."""
+    dlg, win = main_window()
+    if dlg is None:
+        return {"ok": False, "error": "Robei is not running"}
+    models = model_tabs(dlg)
+    if not models:
+        return {"ok": False, "error": "no model is open; open the constrain file first", "models": models}
+    before = read_output(dlg)
+    click = click_menu(dlg, "Build", "Synthesis")
+    if not click.get("ok"):
+        return {"ok": False, "error": "could not reach Build>Synthesis", "detail": click}
+    deadline = time.time() + timeout_s
+    after = before
+    delta = ""
+    while time.time() < deadline:
+        after = read_output(dlg)
+        delta = after[len(before):] if after.startswith(before) else after
+        if "Synthesis complete" in delta or "ERROR:" in delta or "is not constrain file" in delta:
+            break
+        time.sleep(0.8)
+    lines = [line for line in delta.splitlines() if line.strip()]
+    board = [line for line in lines if "has no" in line and "configured" in line]
+    errors = [
+        line
+        for line in lines
+        if (line.startswith("ERROR") or line.startswith("|>Error")) and line not in board
+    ]
+    warnings = [line for line in lines if line.startswith("Warning") or line.startswith("|>Warning")]
+    complete = "Synthesis complete" in delta
+    return {
+        "ok": complete and not errors,
+        "completed": complete,
+        "model": models,
+        "error_count": len(errors),
+        "errors": errors[:20],
+        "board_warnings": board[:6],
+        "hint": (
+            "pass vendor/device/family to create_robei_const to silence the board warnings"
+            if board
+            else None
+        ),
+        "warnings": warnings[:20],
+        "delta_chars": len(delta),
+        "delta": delta.strip()[-6000:],
+        "output_tail": _tail(after, 25),
+    }
+
+
 def compile_all(compile_timeout: float = 45.0, models: list[str] | None = None) -> dict:
     """Compile every .model in the open project, one at a time.
 

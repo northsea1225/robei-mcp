@@ -53,8 +53,11 @@ def create_const(
     model: str,
     pins: dict[str, list[str]],
     overwrite: bool = False,
-    kind: str = "constrain",
+    kind: str = "const",
     comment: str = "",
+    vendor: str = "AMD",
+    device: str = "",
+    family: str = "",
 ) -> dict[str, Any]:
     """Write a pin-constraint canvas: ``pins = {"swt": ["G15","P15","W13","T16"], "led": [...]}``."""
     proj = resolve_project_path(proj_path)
@@ -91,8 +94,9 @@ def create_const(
 
     instance = f"{name}_inst"
     lines = ["<!DOCTYPE Robei>"]
+    board = f' Vendor="{_attr(vendor)}" Device="{_attr(device)}" Family="{_attr(family)}"' if kind == "const" else ""
     lines.append(
-        f'<Module Height="547" Type="{kind}" Width="1185" Class="module" Comment="{_attr(comment)}" '
+        f'<Module Height="547" Type="{kind}"{board} Width="1185" Class="module" Comment="{_attr(comment)}" '
         f'Code="&#xa;&#xa;&#xa;" X="95.8814" Parent="0" Name="{_attr(name)}" Include="" '
         f'Color="#d3d3d3" Y="69.1928" File="Current/{_attr(name)}.const" Parameters="">'
     )
@@ -140,6 +144,9 @@ def create_const(
 
     target_dir = proj.parent / "const"
     target_dir.mkdir(parents=True, exist_ok=True)
+    # Build > Synthesis writes build/<name>.json; without the folder yosys fails at the
+    # very last step ("Can't open output file .../build/<name>.json").
+    (proj.parent / "build").mkdir(exist_ok=True)
     target = target_dir / f"{name}.const"
     if target.exists() and not overwrite:
         raise FileExistsError(f"constraint already exists: {target}")
@@ -162,6 +169,7 @@ def create_const(
         "relative_path": tools._rel(target),
         "model": model_stem,
         "pins": pins,
+        "board": {"vendor": vendor, "device": device, "family": family},
         "registered_in_project": registration in ("created", "exists"),
         "registration": registration,
         "backup": str(backup) if backup else None,

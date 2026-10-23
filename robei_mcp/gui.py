@@ -375,6 +375,16 @@ def compile_all(models: list[str] | None = None, timeout_s: int = 240) -> dict[s
     return call("compile_all", {"models": models, "compile_timeout": 45}, timeout_s=timeout_s)
 
 
+def save_project() -> dict[str, Any]:
+    """File > Save in the IDE (required before Build > Synthesis)."""
+    return call("save_project", {}, timeout_s=90)
+
+
+def synthesis(timeout_s: int = 300) -> dict[str, Any]:
+    """Run Build > Synthesis on the open constrain model and wait for it to finish."""
+    return call("synthesis", {"timeout_s": timeout_s}, timeout_s=timeout_s + 60)
+
+
 def _plot(vcd_path: str, label: str) -> dict[str, Any]:
     """Render the VCD Robei just produced into workspace/build/waveforms."""
     try:

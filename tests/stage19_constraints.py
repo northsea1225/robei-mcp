@@ -95,7 +95,7 @@ async def main() -> int:
             sha_before = created.get("sha256")
             read_back = payload(await session.call_tool("read_robei_const", {
                 "path": "const_demo/const/light_constrain.const"}))
-            check("const reads back as constrain", read_back.get("kind") == "constrain", read_back)
+            check("const reads back as kind=const", read_back.get("kind") == "const", read_back)
             got = {port: [bits[key] for key in sorted(bits, key=int)]
                    for port, bits in (read_back.get("pins") or {}).items()}
             check("bit->pin map round-trips", got == PINS, got)
@@ -132,6 +132,13 @@ async def main() -> int:
             tree = payload(await session.call_tool("robei_gui_open_model", {
                 "name": "light_constrain.const", "timeout_s": 60}))
             check("Robei opens the generated .const", tree.get("ok") is True and tree.get("active") == "light_constrain", tree)
+
+            saved = payload(await session.call_tool("robei_gui_save_project", {}))
+            check("Robei saves the project", saved.get("ok") is True, saved)
+            syn = payload(await session.call_tool("robei_gui_synthesis", {"timeout_s": 240}))
+            check("Build > Synthesis completes", syn.get("completed") is True and syn.get("ok") is True, syn)
+            check("synthesis wrote build/light_constrain.json",
+                  (WS / "const_demo" / "build" / "light_constrain.json").is_file(), syn.get("output_tail"))
             await session.call_tool("robei_gui_close", {})
 
     passed = sum(1 for _, ok in results if ok)

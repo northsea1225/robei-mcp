@@ -39,6 +39,8 @@ OPS = {
     "wave_load": lambda a: robei_ui.wave_load(a.get("signals"), int(a.get("max_signals", 12))),
     "health": lambda a: robei_ui.uia_health(),
     "compile_all": lambda a: robei_ui.compile_all(float(a.get("compile_timeout", 45)), a.get("models")),
+    "save_project": lambda a: robei_ui.save_project(),
+    "synthesis": lambda a: robei_ui.synthesis(float(a.get("timeout_s", 300))),
 }
 
 

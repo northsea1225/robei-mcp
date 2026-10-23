@@ -466,12 +466,20 @@ def create_robei_const(
     model: str,
     pins: dict[str, list[str]],
     overwrite: bool = False,
-    kind: str = "constrain",
+    kind: str = "const",
+    vendor: str = "AMD",
+    device: str = "",
+    family: str = "",
 ) -> dict[str, Any]:
-    """Write a pin-constraint canvas: pins={"swt":["G15","P15","W13","T16"], "led":["M14",...]}."""
+    """Write a pin-constraint canvas: pins={"swt":["G15","P15","W13","T16"], "led":["M14",...]}.
+
+    vendor/device/family are only written for kind="const"; Robei reports
+    "has no Device configured" until they match the board you synthesise for.
+    """
     try:
         return constraints.create_const(
-            proj_path=proj_path, name=name, model=model, pins=pins, overwrite=overwrite, kind=kind
+            proj_path=proj_path, name=name, model=model, pins=pins, overwrite=overwrite,
+            kind=kind, vendor=vendor, device=device, family=family,
         )
     except Exception as exc:
         return _error(exc)
@@ -615,6 +623,24 @@ def robei_gui_code_write(code: str, save: bool = True) -> dict[str, Any]:
     """Replace the active model's Code tab text and save it with Ctrl+S."""
     try:
         return gui.code_write(code=code, save=save)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=WRITE_GUI)
+def robei_gui_save_project() -> dict[str, Any]:
+    """File > Save in Robei (Build > Synthesis refuses to run on an unsaved project)."""
+    try:
+        return gui.save_project()
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=WRITE_GUI)
+def robei_gui_synthesis(timeout_s: int = 300) -> dict[str, Any]:
+    """Build > Synthesis on the open constrain model; waits for 'Synthesis complete'."""
+    try:
+        return gui.synthesis(timeout_s=timeout_s)
     except Exception as exc:
         return _error(exc)
 
