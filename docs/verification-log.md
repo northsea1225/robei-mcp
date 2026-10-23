@@ -54,6 +54,17 @@
 **这一版仍然没验证的东西**（别当成已通过）：`Build→Route`、`Build→Package`、bitstream、
 真实板卡下载；安全扫描是编译输入检查，不是 OS 沙箱；GUI 需要 `[gui]` extra 且在 Session 1。
 
+**复审（2026-10-24 第二轮）**：外部 QA 在真实 Windows 上重跑 1.0.2，报回 6 类问题。
+逐条复现后修复：跨 timescale 的 `max_time` 误判（1ns `#20` vs 1ps `#20000`）、安全拒绝时
+顶层缺 `rejected`、`workspace/...` 路径被套成两层、点名不存在的信号抛 `KeyError`、
+`const_eval` 除法用 floor、参数化位宽静默按 1 位。回归新增 6 项
+（cross-timescale / unknown-signal / allow_extra_signals / path-prefix / Verilog 取整 / 参数化位宽），
+本地 `pytest -q tests` 33 passed、`portable_core` 14 passed + 1 skipped（本机无 yosys）。
+Windows 复跑：`pytest -q tests` 33 passed、`portable_core` 16/16、`stage19_constraints` 26/26、
+`stage5_gui_cases` 10/10、`stage20_gui_robustness` 14/14、`stage21_packaging` 13/13、
+`verify_1_0_2.py` 42/42（新增 COMPARE-FS-MAXTIME / COMPARE-UNKNOWN / PATH-PREFIX / SEC-TOPREJECT）。
+`stage19_constraints` 的 XDC 期望同步到标准 Tcl 写法，并保留一条"Robei 自身仍写 legacy"的对照。
+
 ### 0.11：精简工具面（P0）
 
 47 → 38 个工具。移除的都是「只有本机 / 只有课堂场景才用得上」的部分：

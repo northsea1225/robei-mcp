@@ -161,10 +161,21 @@ def compare_waveforms(
     golden_vcd: str,
     dut_vcd: str,
     signals: list[str] | None = None,
+    allow_extra_signals: bool = False,
 ) -> dict[str, Any]:
-    """Diff two VCDs signal by signal; returns the first divergence per signal."""
+    """Diff two VCDs signal by signal; returns the first divergence per signal.
+
+    Timescales and run lengths are compared after conversion to femtoseconds.
+    ``allow_extra_signals=True`` compares only the shared signals (golden vs an
+    alternative hierarchy) instead of failing on one-sided names.
+    """
     try:
-        return tools.compare_waveforms(golden_vcd=golden_vcd, dut_vcd=dut_vcd, signals=signals)
+        return tools.compare_waveforms(
+            golden_vcd=golden_vcd,
+            dut_vcd=dut_vcd,
+            signals=signals,
+            allow_extra_signals=allow_extra_signals,
+        )
     except Exception as exc:
         return _error(exc)
 

@@ -597,6 +597,13 @@ def simulate(
             "code": "path_rejected",
             "stage": "security_scan",
             "reason": "source references paths outside the workspace or paths that cannot be verified statically",
+            # Mirror the decisive lists at the top level: clients that read
+            # result["rejected"] must not get None just because the detail also
+            # lives under "security".
+            "strict": scan.get("strict"),
+            "rejected": scan.get("rejected") or [],
+            "unresolved": scan.get("unresolved") or [],
+            "scanned_files": scan.get("scanned_files") or [],
             "security": scan,
             "compile": None,
             "simulation": None,
@@ -646,6 +653,9 @@ def simulate(
         "code": _failure_code(sim_result, "run_failed"),
         "stage": "run",
         "run_dir": _rel(run_dir),
+        "strict": scan.get("strict"),
+        "rejected": scan.get("rejected") or [],
+        "unresolved": scan.get("unresolved") or [],
         "security": {k: scan[k] for k in ("ok", "strict", "rejected", "unresolved")},
         "compile": compile_result,
         "simulation": sim_result,
@@ -770,6 +780,7 @@ def compare_waveforms(
     dut_vcd: str,
     signals: list[str] | None = None,
     max_mismatches: int = 20,
+    allow_extra_signals: bool = False,
 ) -> dict[str, Any]:
     """Diff two VCDs signal by signal, using change times from both sides.
 
@@ -778,7 +789,13 @@ def compare_waveforms(
     Timescales are converted to a common unit instead of comparing raw ticks.
     Missing signals, width mismatches, an empty intersection and differing run
     lengths all make the result ``ok: false`` — a comparison that silently
-    skips most of the data is not a pass.
+    skips most of the data is not a pass.  Run lengths are compared after both
+    sides are converted to femtoseconds, so ``#20`` at 1ns and ``#20000`` at
+    1ps count as the same end time.
+
+    ``allow_extra_signals=True`` compares only the shared signal set and reports
+    the extra names instead of failing, for golden-vs-alternative comparisons
+    where the two hierarchies legitimately differ.
     """
     golden_path = resolve_vcd_path(golden_vcd)
     dut_path = resolve_vcd_path(dut_vcd)
@@ -786,15 +803,28 @@ def compare_waveforms(
     dut = parse_vcd(dut_path)
     max_mismatches = max(1, min(int(max_mismatches), 1000))
 
+    unknown: list[str] = []
+    ambiguous: list[str] = []
     if signals:
         requested: list[str] = []
         for query in signals:
-            try:
-                requested.append(match_signals(golden, [query])[0].full_name)
-            except KeyError:
-                # It may exist only in the DUT; keep the name so it is reported
-                # as missing_in_golden instead of crashing the whole comparison.
-                requested.append(match_signals(dut, [query])[0].full_name)
+            found = None
+            for data in (golden, dut):
+                try:
+                    matches = match_signals(data, [query])
+                except KeyError as exc:
+                    message = str(exc)
+                    if message.startswith("ambiguous") and message not in ambiguous:
+                        ambiguous.append(message)
+                    continue
+                if matches:
+                    found = matches[0].full_name
+                    break
+            if found is None:
+                # Neither file has it: report it instead of raising KeyError.
+                unknown.append(query)
+            else:
+                requested.append(found)
         missing_dut = [n for n in requested if n not in dut.signals]
         missing_golden = [n for n in requested if n not in golden.signals]
         comparable = [n for n in requested if n in golden.signals and n in dut.signals]
@@ -879,9 +909,13 @@ def compare_waveforms(
     reasons: list[str] = []
     if not comparable:
         reasons.append("no comparable signals")
-    if missing_dut:
+    if unknown:
+        reasons.append("requested signal(s) not found: " + ", ".join(unknown[:10]))
+    if ambiguous:
+        reasons.append("; ".join(ambiguous[:5]))
+    if missing_dut and not allow_extra_signals:
         reasons.append(f"{len(missing_dut)} golden signal(s) missing in dut")
-    if missing_golden:
+    if missing_golden and not allow_extra_signals:
         reasons.append(f"{len(missing_golden)} dut signal(s) missing in golden")
     if incompatible:
         reasons.append(f"{len(incompatible)} signal(s) have different widths")
@@ -889,9 +923,19 @@ def compare_waveforms(
         reasons.append(f"{total} value mismatch(es)")
     if not timescale_known:
         reasons.append("timescale missing/unparseable; raw ticks could not be verified")
-    max_time_matches = golden.max_time == dut.max_time
+    golden_end_fs = (
+        golden.max_time * g_fs if timescale_known and golden.max_time is not None else None
+    )
+    dut_end_fs = dut.max_time * d_fs if timescale_known and dut.max_time is not None else None
+    if timescale_known and golden_end_fs is not None and dut_end_fs is not None:
+        max_time_matches = golden_end_fs == dut_end_fs
+    else:
+        max_time_matches = golden.max_time == dut.max_time
     if not max_time_matches:
-        reasons.append("max_time differs")
+        if golden_end_fs is not None and dut_end_fs is not None:
+            reasons.append(f"max_time differs ({golden_end_fs} fs vs {dut_end_fs} fs)")
+        else:
+            reasons.append("max_time differs")
     elif golden.max_time is None:
         reasons.append("no time markers in either VCD")
     return {
@@ -903,6 +947,7 @@ def compare_waveforms(
         "timescale_fs": {"golden": g_fs, "dut": d_fs},
         "timescale_comparable": timescale_known,
         "max_time": {"golden": golden.max_time, "dut": dut.max_time},
+        "max_time_fs": {"golden": golden_end_fs, "dut": dut_end_fs},
         "max_time_matches": max_time_matches,
         "signal_count": len(comparable),
         "compared_signal_count": len(comparable) - len(incompatible),
@@ -911,6 +956,9 @@ def compare_waveforms(
         "incompatible_signals": incompatible,
         "missing_in_dut": missing_dut,
         "missing_in_golden": missing_golden,
+        "unknown_signals": unknown,
+        "ambiguous_signals": ambiguous,
+        "allow_extra_signals": allow_extra_signals,
         "results": results,
     }
 

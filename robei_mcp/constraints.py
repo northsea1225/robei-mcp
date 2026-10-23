@@ -291,7 +291,7 @@ def export_xdc(
         "const": str(const_path),
         "constraints": info,
         "line_count": len(lines),
-        "tcl_quoting": "standard" if quote_bus else "robei",
+        "tcl_quoting": "standard" if quote_bus else "legacy",
         "sha256": __import__("hashlib").sha256(target.read_bytes()).hexdigest(),
     }
 

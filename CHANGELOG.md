@@ -78,6 +78,31 @@
   `results.json` 留在 `test-results/qa_20261023122612/` 与 Windows 的
   `workspace/_qa_runs/qa_20261023122612/verify_1_0_2/`，可照原样重跑。
 
+### 1.0.2 复审修复（2026-10-24 第二轮）
+
+外部复审在真实 Windows 环境跑完 1.0.2 后提出的问题，逐条修掉：
+
+- **`compare_waveforms` 的 `max_time` 现在按 fs 比较**：以前拿原始 tick 直接比，
+  1ns 的 `#20` 与 1ps 的 `#20000` 明明等长却判 `ok:false`；返回里加了
+  `max_time_fs: {golden, dut}`，diff 文案也带 fs 数值。
+- **`signals=[...]` 点名了两边都不存在的信号**：以前 `match_signals` 抛 `KeyError`，
+  现在返回 `ok:false` + `unknown_signals` + 原因；歧义信号单独进 `ambiguous_signals`。
+- **新增 `allow_extra_signals`**（默认 `false`）：golden 对比"另一套层次结构"时只比共有信号，
+  单边多出的内部信号记进 `missing_*` 但不判失败。
+- **安全拒绝时顶层字段补齐**：`simulate` 被拒时顶层也有 `strict` / `rejected` /
+  `unresolved` / `scanned_files`，不再只有 `security.*`；成功时 `rejected` 为空数组。
+- **路径不再多套一层**：`workspace/proj/a.v` 与 `proj/a.v` 等价，
+  `resolve_workspace_path` / `resolve_model_path` / `resolve_project_path` 都接受两种写法，
+  新建路径也一样（不会出现 `workspace/workspace/...`）。
+- **`const_eval` 改用 Verilog 整数语义**：`-1/2 == 0`（向零截断）、`-1%2 == -1`（余数随被除数），
+  之前是 Python 的 floor 语义。
+- **参数化位宽不再静默当 1 位**：`width_info("LEN-1:0")` 返回 `resolved:false`，
+  `truth_table` / `generate_testbench` 直接报错并要求先导出具体位宽，而不是生成 2 行假真值表。
+- **`tcl_quoting` 统一为 `"legacy"`**（文档一直这么写，代码之前返回 `"robei"`）。
+- **`open_model` 的去重键**从每次都变的 `id(wrapper)` 改成 `(文本, 行矩形)`，展开循环真的会跳过已展开的目录。
+- `tests/stage19_constraints.py` 的期望更新为新的标准 Tcl 写法，并新增"Robei 自己仍写 legacy 形式"
+  的对照断言（25 → 26 项）。
+
 ## 1.0.1 — 2026-10-23
 
 **测试不再改仓库里的夹具。**

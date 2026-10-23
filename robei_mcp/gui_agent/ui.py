@@ -1103,7 +1103,14 @@ def open_model(name: str) -> dict:
         collapsed = [e for e in entries if e["state"] != 1 and "." not in e["text"]]
         preferred = [e for e in collapsed if e["text"].lower() in folder_names]
         for candidate in preferred + collapsed:
-            key = (candidate["text"], id(candidate["item"]))
+            # ``descendants()`` hands back fresh wrappers on every poll, so id()
+            # differs each round and never dedupes.  The row's rectangle is
+            # stable while the tree is not scrolled.
+            try:
+                rect = tuple(_rect(candidate["item"].element_info.rectangle))
+            except Exception:
+                rect = None
+            key = (candidate["text"], rect)
             if key in expanded:
                 continue
             expanded.add(key)

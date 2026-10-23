@@ -4,6 +4,10 @@
 
 > 这份文件是从早期 README 拆出来的，示例里的时间戳/路径是当时的真实输出，不要当成当前默认值。
 
+**路径约定**：所有文件参数都相对 `workspace/` 解析。`counter4/counter4.v` 和
+`workspace/counter4/counter4.v` 等价（不会解析成 `workspace/workspace/...`）；
+绝对路径必须落在 workspace / 模型根目录之内。
+
 ## 工具清单
 
 ### `runtime_status`
@@ -59,6 +63,9 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
 不会启动 `iverilog`。通过后执行 `iverilog` 编译和 `vvp` 运行，
 返回 `$display`、VCD 绝对/相对路径。超时会终止子进程并返回 `simulation.timeout=true`。
 
+返回值顶层的 `strict` / `rejected` / `unresolved` 与 `security.*` 内容一致（成功时
+`rejected` 为空数组），客户端不必再往下钻一层取。
+
 严格模式（默认）下，`security.rejected` 非空即拒绝，包括：
 
 - 字面量路径逃出工作区
@@ -112,10 +119,15 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
 - 同名信号位宽不一致（记进 `incompatible_signals`）
 - `max_time` 不一致（一份仿真提前结束）
 - timescale 解析不出来
+- `signals=[...]` 里点名的信号两边都找不到（返回 `unknown_signals`，不再抛 `KeyError`）
 
 两份文件的 timescale 不同但都可解析时，会按 fs 归一到共同时间轴比较，并返回
 `timescale_fs` / `timescale_comparable`；`max_time_matches` 和 `compared_signal_count`
-便于确认到底比了多少。`signals=[...]` 只比指定信号，其余同上。
+便于确认到底比了多少。**`max_time` 也先换算成 fs 再比**：`1ns` 的 `#20` 与 `1ps` 的
+`#20000` 视为同一时刻，返回 `max_time_fs: {golden, dut}`。
+
+`allow_extra_signals=true` 时只比两边共有的信号，单边多出来的内部信号记进
+`missing_in_dut` / `missing_in_golden` 但不判失败；默认仍是严格模式。
 
 ### `read_robei_model`
 

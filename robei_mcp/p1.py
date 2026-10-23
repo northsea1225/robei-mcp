@@ -21,6 +21,7 @@ from .security import (
     resolve_workspace_path,
 )
 from .vcd import match_signals, parse_vcd, value_at
+from .verilog import width_info
 from .verilog_ast import is_plain_net, net_width, parse_module, parse_modules, port_map, width_of
 
 REL = tools._rel
@@ -195,7 +196,25 @@ def truth_table(
         raise ValueError("truth_table needs at least one input and one output port")
     if module["has_behaviour"] and "always" in source.read_text(encoding="utf-8", errors="replace"):
         pass  # sequential designs simply enumerate slower; not an error
-    widths = {port["name"]: width_of(port["width"]) for port in inputs}
+    def _concrete_widths(ports: list[dict[str, Any]]) -> dict[str, int]:
+        widths: dict[str, int] = {}
+        unresolved: list[str] = []
+        for port in ports:
+            info = width_info(port["width"])
+            if info["width"] is None:
+                unresolved.append(f"{port['name']}[{info['expression']}]")
+            else:
+                widths[port["name"]] = int(info["width"])
+        if unresolved:
+            raise ValueError(
+                "cannot enumerate a parameterised width: "
+                + ", ".join(unresolved)
+                + "; export the model with concrete parameter values first"
+            )
+        return widths
+
+    widths = _concrete_widths(inputs)
+    output_widths = _concrete_widths(outputs)
     total_bits = sum(widths.values())
     if total_bits > max_inputs:
         raise ValueError(
@@ -205,7 +224,7 @@ def truth_table(
     for port in inputs:
         lines.append(f"    reg [{widths[port['name']] - 1}:0] {port['name']};")
     for port in outputs:
-        width = width_of(port["width"])
+        width = output_widths[port["name"]]
         lines.append(f"    wire [{width - 1}:0] {port['name']};")
     lines.append("    " + top + " dut (")
     lines.append(",\n".join(f"        .{port['name']}({port['name']})" for port in module["ports"]))
@@ -261,7 +280,7 @@ def truth_table(
         "ok": bool(result.get("ok")) and len(rows) == total,
         "top": top,
         "inputs": [{"name": p["name"], "width": widths[p["name"]]} for p in inputs],
-        "outputs": [{"name": p["name"], "width": width_of(p["width"])} for p in outputs],
+        "outputs": [{"name": p["name"], "width": output_widths[p["name"]]} for p in outputs],
         "expected_rows": total,
         "row_count": len(rows),
         "rows": rows,

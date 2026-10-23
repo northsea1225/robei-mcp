@@ -18,16 +18,42 @@ def is_within(path: Path, root: Path) -> bool:
     return p == r or p.startswith(r + os.sep)
 
 
-def resolve_workspace_path(value: str | Path, *, must_exist: bool = True) -> Path:
+def _relative_readings(value: str | Path, base: Path) -> list[Path]:
+    """Plausible readings of a workspace-relative path.
+
+    Tools resolve ``foo/bar.v`` against the workspace.  Docs and humans often
+    write the same thing repo-relative (``workspace/foo/bar.v``); accepting the
+    extra prefix avoids the surprising ``workspace/workspace/foo`` nesting.
+    """
     candidate = Path(value)
-    if not candidate.is_absolute():
-        candidate = SETTINGS.workspace / candidate
-    candidate = candidate.resolve()
-    if not is_within(candidate, SETTINGS.workspace):
-        raise ValueError(f"path escapes workspace: {candidate}")
-    if must_exist and not candidate.is_file():
-        raise FileNotFoundError(f"file not found in workspace: {candidate}")
-    return candidate
+    if candidate.is_absolute():
+        return [candidate]
+    readings = [base / candidate]
+    parts = candidate.parts
+    if len(parts) > 1 and parts[0].lower() == base.name.lower():
+        readings.append(base.joinpath(*parts[1:]))
+    return readings
+
+
+def resolve_workspace_path(value: str | Path, *, must_exist: bool = True) -> Path:
+    readings = _relative_readings(value, SETTINGS.workspace)
+    resolved = [path.resolve() for path in readings]
+    for path in resolved:
+        if not is_within(path, SETTINGS.workspace):
+            raise ValueError(f"path escapes workspace: {path}")
+    if must_exist:
+        for path in resolved:
+            if path.is_file():
+                return path
+        raise FileNotFoundError(f"file not found in workspace: {resolved[-1]}")
+    for path in resolved:
+        if path.exists():
+            return path
+    # Creating something new: prefer the repo-relative reading only when its
+    # parent already exists, so ``workspace/newproj`` lands under workspace/.
+    if len(resolved) > 1 and resolved[1].parent.is_dir() and not resolved[0].parent.is_dir():
+        return resolved[1]
+    return resolved[0]
 
 
 def resolve_source_files(files: list[str] | tuple[str, ...]) -> list[Path]:
@@ -61,8 +87,9 @@ def resolve_model_path(value: str | Path) -> Path:
     if candidate.is_absolute():
         candidates = [candidate]
     else:
-        candidates = [SETTINGS.workspace / candidate]
-        candidates.extend(root / candidate for root in SETTINGS.model_roots)
+        candidates = []
+        for base in (SETTINGS.workspace, *SETTINGS.model_roots):
+            candidates.extend(_relative_readings(candidate, base))
 
     roots = (SETTINGS.workspace, *SETTINGS.model_roots)
     for item in candidates:
@@ -93,17 +120,28 @@ def resolve_model_path(value: str | Path) -> Path:
 def resolve_project_path(value: str | Path) -> Path:
     """Resolve a Robei .proj path. Read-only: the project is never written back."""
     candidate = Path(value)
-    if not candidate.is_absolute():
-        candidate = SETTINGS.workspace / candidate
-    resolved = candidate.resolve()
     roots = (SETTINGS.workspace, *SETTINGS.model_roots, SETTINGS.robei_home / "project")
-    if not any(is_within(resolved, root) for root in roots):
-        raise ValueError(f"project path escapes allowed roots: {resolved}")
-    if resolved.suffix.lower() != ".proj":
-        raise ValueError("project file must have .proj extension")
-    if not resolved.is_file():
-        raise FileNotFoundError(f"project not found: {resolved}")
-    return resolved
+    readings = [candidate] if candidate.is_absolute() else [
+        path
+        for base in roots
+        for path in _relative_readings(candidate, base)
+    ]
+    resolved = []
+    for path in readings:
+        try:
+            item = path.resolve()
+        except OSError:
+            continue
+        if not any(is_within(item, root) for root in roots):
+            raise ValueError(f"project path escapes allowed roots: {item}")
+        if item.suffix.lower() != ".proj":
+            raise ValueError("project file must have .proj extension")
+        resolved.append(item)
+        if item.is_file():
+            return item
+    if not resolved:
+        raise FileNotFoundError(f"project not found: {candidate}")
+    raise FileNotFoundError(f"project not found: {resolved[0]}")
 
 
 # ---------------------------------------------------------------------------

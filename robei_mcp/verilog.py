@@ -178,7 +178,7 @@ def parse_module_ports(source: str, top: str) -> list[dict[str, Any]]:
     return ports
 
 
-_CONST_EXPR_RE = re.compile(r"^[0-9+\-*/() \t]+$")
+_CONST_EXPR_RE = re.compile(r"^[0-9+\-*/%() \t]+$")
 
 
 def const_eval(text: str | None) -> int | None:
@@ -215,11 +215,11 @@ def const_eval(text: str | None) -> int | None:
             if isinstance(node.op, ast.Mult):
                 return left * right
             if isinstance(node.op, ast.Div):
-                return left // right
+                return _verilog_div(left, right)
             if isinstance(node.op, ast.FloorDiv):
-                return left // right
+                return _verilog_div(left, right)
             if isinstance(node.op, ast.Mod):
-                return left % right
+                return left - _verilog_div(left, right) * right
         raise ValueError("unsupported expression")
 
     try:
@@ -228,20 +228,43 @@ def const_eval(text: str | None) -> int | None:
         return None
 
 
-def width_of(range_text: str | None) -> int:
-    """``[3:0]``/``3:0`` -> 4, ``[7:4]`` -> 4, ``[4-1:0]`` -> 4, ``""`` -> 1."""
-    text = (range_text or "").strip()
+def _verilog_div(left: int, right: int) -> int:
+    """Integer division truncated toward zero, as Verilog (and C) do it."""
+    if right == 0:
+        raise ZeroDivisionError("division by zero")
+    quotient = abs(left) // abs(right)
+    return quotient if (left < 0) == (right < 0) else -quotient
+
+
+def width_info(range_text: str | None) -> dict[str, Any]:
+    """Describe a port range without guessing.
+
+    Returns ``{"width": int | None, "range": str | None, "resolved": bool,
+    "expression": str | None}``.  ``resolved`` is False for parameterised
+    ranges such as ``LEN-1:0`` — callers that enumerate bits must stop instead
+    of silently treating them as one bit wide.
+    """
+    if isinstance(range_text, int):
+        value = max(1, range_text)
+        return {"width": value, "range": f"{value - 1}:0", "resolved": True, "expression": str(value)}
+    text = (str(range_text) if range_text is not None else "").strip()
     if text.startswith("[") and text.endswith("]"):
         text = text[1:-1].strip()
     if not text:
-        return 1
+        return {"width": 1, "range": None, "resolved": True, "expression": None}
     high_text, sep, low_text = text.partition(":")
     if not sep:
-        return 1
+        return {"width": 1, "range": None, "resolved": True, "expression": None}
     high, low = const_eval(high_text), const_eval(low_text)
     if high is None or low is None:
-        return 1
-    return abs(high - low) + 1
+        return {"width": None, "range": text, "resolved": False, "expression": text}
+    return {"width": abs(high - low) + 1, "range": text, "resolved": True, "expression": text}
+
+
+def width_of(range_text: str | None) -> int:
+    """``[3:0]``/``3:0`` -> 4, ``[7:4]`` -> 4, ``[4-1:0]`` -> 4, ``""`` -> 1."""
+    info = width_info(range_text)
+    return int(info["width"]) if info["width"] is not None else 1
 
 
 def classify_clocks(ports: list[dict[str, Any]]) -> list[str]:
@@ -298,6 +321,17 @@ def generate_testbench(
     max_combo_bits: int = 8,
 ) -> str:
     tb_name = tb_name or f"{top}_tb"
+    unresolved = [
+        f"{port['name']}[{port['width']}]"
+        for port in ports
+        if width_info(port["width"])["width"] is None
+    ]
+    if unresolved:
+        raise ValueError(
+            "cannot size a testbench for a parameterised width: "
+            + ", ".join(unresolved)
+            + "; give the model concrete port widths or override the parameters first"
+        )
     clocks = classify_clocks(ports)
     clock, reset, active_low = classify_control(ports)
 

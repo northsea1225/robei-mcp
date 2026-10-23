@@ -31,13 +31,25 @@ def work() -> Path:
     shutil.rmtree(root, ignore_errors=True)
 
 
-def _vcd(scope: str = "qa", timescale: str = "1ns") -> str:
+def _vcd(scope: str = "qa", timescale: str = "1ns", end: int = 30, extra: bool = False) -> str:
+    extra_var = "$var wire 1 w extra $end\n" if extra else ""
+    extra_change = "#5\n1w\n" if extra else ""
     return (
         f"$date QA $end\n$timescale {timescale} $end\n"
         f"$scope module {scope} $end\n"
         "$var wire 1 ! a $end\n$var wire 4 v bus [3:0] $end\n"
+        f"{extra_var}"
         "$upscope $end\n$enddefinitions $end\n"
-        "#0\n0!\nb0000 v\n#10\n1!\nb1111 v\n#20\n0!\nb0010 v\n#30\n"
+        f"#0\n0!\nb0000 v\n{extra_change}#10\n1!\nb1111 v\n#20\n0!\nb0010 v\n#{end}\n"
+    )
+
+
+def _vcd_static(timescale: str, end: int) -> str:
+    """One signal that never changes: isolates the run-length comparison."""
+    return (
+        f"$timescale {timescale} $end\n$scope module qa $end\n"
+        "$var wire 1 ! a $end\n$upscope $end\n$enddefinitions $end\n"
+        f"#0\n1!\n#{end}\n"
     )
 
 
@@ -74,6 +86,32 @@ def test_width_of_folds_constant_expressions() -> None:
     assert width_of("WIDTH-1:0") == 1
     assert width_of("4-1:") == 1
     assert width_of("(4-1:0") == 1
+
+
+def test_const_eval_uses_verilog_integer_semantics() -> None:
+    from robei_mcp.verilog import const_eval
+
+    assert const_eval("4-1") == 3
+    assert const_eval("-1/2") == 0      # truncates toward zero, not floor
+    assert const_eval("-1/2*2") == 0
+    assert const_eval("-3/2") == -1
+    assert const_eval("-1%2") == -1     # remainder keeps the dividend's sign
+    assert const_eval("1/0") is None
+
+
+def test_parameterised_widths_are_not_silently_one_bit() -> None:
+    from robei_mcp.verilog import width_info
+
+    info = width_info("LEN-1:0")
+    assert info["resolved"] is False
+    assert info["width"] is None
+    assert width_info("4-1:0")["width"] == 4
+    ports = [
+        {"name": "a", "direction": "input", "datatype": "wire", "width": "LEN-1:0"},
+        {"name": "y", "direction": "output", "datatype": "wire", "width": "LEN-1:0"},
+    ]
+    with pytest.raises(ValueError, match="parameterised width"):
+        generate_testbench("param", ports, full_combo=True)
 
 
 def test_model_range_suffix_emits_literal_ranges() -> None:
@@ -239,6 +277,56 @@ def test_compare_max_time_mismatch(work: Path) -> None:
     assert result["max_time_matches"] is False
 
 
+def test_compare_same_length_across_timescales(work: Path) -> None:
+    """#20 at 1ns and #20000 at 1ps are the same instant and must not fail."""
+    golden = work / "golden.vcd"
+    pico = work / "pico.vcd"
+    golden.write_text(_vcd_static("1ns", 20), encoding="utf-8")
+    pico.write_text(_vcd_static("1ps", 20_000), encoding="utf-8")
+    result = tools.compare_waveforms(str(golden), str(pico))
+    assert result["ok"] is True, result["reasons"]
+    assert result["max_time_matches"] is True
+    assert result["max_time_fs"] == {"golden": 20_000_000, "dut": 20_000_000}
+    assert result["mismatch_total"] == 0
+
+
+def test_compare_reports_unknown_requested_signals(work: Path) -> None:
+    golden = work / "golden.vcd"
+    same = work / "same.vcd"
+    golden.write_text(_vcd(), encoding="utf-8")
+    same.write_text(_vcd(), encoding="utf-8")
+    result = tools.compare_waveforms(str(golden), str(same), signals=["does_not_exist"])
+    assert result["ok"] is False
+    assert result["unknown_signals"] == ["does_not_exist"]
+    assert "not found" in " ".join(result["reasons"])
+
+
+def test_compare_can_ignore_one_sided_internal_signals(work: Path) -> None:
+    golden = work / "golden.vcd"
+    dut = work / "dut.vcd"
+    golden.write_text(_vcd(), encoding="utf-8")
+    dut.write_text(_vcd(extra=True), encoding="utf-8")
+    strict = tools.compare_waveforms(str(golden), str(dut))
+    assert strict["ok"] is False
+    assert strict["missing_in_golden"] == ["qa.extra"]
+    loose = tools.compare_waveforms(str(golden), str(dut), allow_extra_signals=True)
+    assert loose["ok"] is True, loose["reasons"]
+    assert loose["missing_in_golden"] == ["qa.extra"]
+
+
+def test_workspace_prefix_is_not_doubled(work: Path) -> None:
+    from robei_mcp.security import resolve_workspace_path
+
+    source = work / "bus.v"
+    source.write_text("module bus; endmodule\n", encoding="utf-8")
+    relative = source.relative_to(SETTINGS.workspace)
+    assert resolve_workspace_path(str(relative)) == source
+    assert resolve_workspace_path(f"workspace/{relative.as_posix()}") == source
+    # Creation paths follow the same rule instead of nesting workspace/workspace.
+    fresh = f"workspace/{relative.parent.as_posix()}/new-model.model"
+    assert resolve_workspace_path(fresh, must_exist=False) == source.parent / "new-model.model"
+
+
 def test_backups_do_not_collide(work: Path) -> None:
     name = f"regress_{uuid.uuid4().hex[:8]}"
     project = tools.create_robei_project(name, models=[])
@@ -306,6 +394,10 @@ def test_simulate_rejects_dynamic_path_before_compile(work: Path) -> None:
     assert result["ok"] is False
     assert result["stage"] == "security_scan"
     assert result["security"]["strict"] is True
+    # The decisive lists must also be visible at the top level.
+    assert result["rejected"] and result["rejected"] == result["security"]["rejected"]
+    assert isinstance(result["unresolved"], list)
+    assert result["strict"] is True
 
 
 def test_duplicate_pins_and_tcl_quoting() -> None:
@@ -342,6 +434,8 @@ def test_duplicate_pins_and_tcl_quoting() -> None:
         legacy = constraints.export_xdc(project["proj"], "ok", out_name="legacy", quote_bus=False)
         legacy_text = Path(legacy["path"]).read_text(encoding="utf-8")
         assert "[get_ports swt[0]]" in legacy_text
+        assert legacy["tcl_quoting"] == "legacy"
+        assert standard["tcl_quoting"] == "standard"
     finally:
         shutil.rmtree(SETTINGS.workspace / name, ignore_errors=True)
 

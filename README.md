@@ -5,6 +5,11 @@
 
 **状态：稳定版**（38 个工具）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
 
+> **升级注意（1.0.2 起）**：`simulate` 默认开启**严格路径扫描**。像
+> `$readmemh(PATH, mem)` 这种无法静态判定路径的写法，以前能跑，现在会直接返回
+> `stage="security_scan"` 并拒绝编译。确实需要动态路径时设
+> `ROBEI_MCP_STRICT_PATHS=0`（或在 `robei.toml` 里写 `[security] strict_path_scan = false`）。
+
 把 Robei EDA 变成 AI 能直接调用的工具集：Verilog 检查、仿真、波形、工程文件读写，
 以及（可选）驱动 Robei 本体 GUI。基于 MCP（Model Context Protocol）stdio 传输，
 可在 Codex / Claude Code 里直接用自然语言完成「写代码 → 检查 → 仿真 → 看波形」。
@@ -100,10 +105,13 @@ tool_timeout_sec = 120
 
 ```text
 runtime_status                 → ok=true，四个工具的 exists 都是 true
-lint_verilog(["workspace/counter4/counter4.v"], top="counter4")
-simulate(["workspace/counter4/counter4.v", "workspace/counter4/counter4_tb.v"], top="counter4_tb")
+lint_verilog(["counter4/counter4.v"], top="counter4")
+simulate(["counter4/counter4.v", "counter4/counter4_tb.v"], top="counter4_tb")
 read_waveform(<上一步的 vcd_path>, signals=["counter4_tb.dut.count"], time=45)
 ```
+
+路径一律**相对 workspace**（`counter4/counter4.v`）。写成 `workspace/counter4/counter4.v`
+也认，不会因此多套一层目录。
 
 ## 配置
 
