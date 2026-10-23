@@ -126,6 +126,19 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
 - `robei.toml` 生效，`runtime_status().config.sources` 逐键报告 `env` / `toml` / `default`
 - 65 个一次性 GUI 探针移到 `tools/gui/archive/`（`probe.py` / `probe_push.py` 仍在使用）
 
+已验证（阶段 18，P1 第一批，`tests/stage18_p1.py`，29/29 PASS，42 个工具）：
+
+- **Verilog → 画布**：`import_verilog_canvas` 把结构化的 `.v` 变成 Robei 画布 `.model`（具名与**位置**连接都支持）
+  （嵌套 `<Module>` + `<Wire>`），Robei 打开工程编译后自己产出
+  `//---Module instantiation--- and2 u1( .a(a), .b(b), .y(t1) );`，headless 仿真 `y = a&b&c` 全对
+- **连接性检查**：`check_connectivity` 报多驱动 / 未驱动网络 / 位宽不匹配 / 未知模块 / 未连接端口，
+  坏样例精确命中 `multi_driver:1, undriven_net:2`
+- **真值表**：`truth_table` 穷举输入跑仿真，与门 4 行全对；`max_inputs` 超限直接拒绝
+- **波形断言**：`expect_waveform` 支持 `at` 取点和 `from`+`to` 保持窗口，负例能准确报 `failed=1`；
+  信号名有歧义（`count` 同时命中 `counter4_tb.count` 和 `counter4_tb.dut.count`）只让这一条失败，不炸整个调用
+- **波形统计**：`waveform_stats` 识别时钟周期 `10 ns`（`100 MHz`）、单比特 level coverage `1.0`
+- **testbench 升级**：`generate_testbench(full_combo=true)` 自动穷举输入组合（4 行 `combo` 输出）
+
 仅可见 / 待定：
 
 - Robei GUI 打开和编译：当前 SSH 在 Session 0，交互桌面在 Session 1，无法从 SSH 看到/点击 GUI；已准备 `workspace\robei_counter4_project` 和手动步骤，待人工验证。
@@ -139,7 +152,7 @@ C:\dev\robei-mcp\
   .gitignore
   .mcp.json                      Windows Claude Code 项目配置
   README.md
-  pyproject.toml                 0.5.0，requires-python>=3.10，可选 dev=pytest
+  pyproject.toml                 0.6.0，requires-python>=3.10，可选 dev=pytest
   robei.toml.example             路径/限额配置样例（复制成 robei.toml 生效）
   requirements.txt               mcp==2.3.0, matplotlib
   run-mcp.cmd                    Windows stdio 包装脚本
@@ -155,6 +168,9 @@ C:\dev\robei-mcp\
     xmlsafe.py                   XML 防护：拒 <!ENTITY> 与 DOCTYPE 内部子集
     runstate.py                  RunToken：取消时 kill 已注册子进程
     model.py                     .model 解析（含画布 instances/wires/netlist）+ 通用节点树 + Verilog 导出
+    verilog_ast.py               结构级 Verilog 读取（端口/线网/实例/assign）
+    erc.py                       连接性规则：多驱动、未驱动、位宽、未知模块、未连接端口
+    p1.py                        Verilog→画布、ERC、真值表、波形断言与统计
     security.py                  路径策略 + simulate 前静态路径扫描
     server_app.py                MCP 工具注册
     tools.py                     工具实现
@@ -172,6 +188,7 @@ C:\dev\robei-mcp\
     stage4_cases.py              Verilator/未用信号、工程解析、导出、TB、波形、路径逃逸
     stage16_canvas.py            画布级 model：生成 → 解析 → Robei 编译 → 真值表
     stage17_hardening.py         annotations、错误码、XML 防护、进度、取消、robei.toml
+    stage18_p1.py                Verilog→画布、ERC、真值表、波形断言/统计、combo TB
   workspace\
     counter4\
       counter4.v                 4 位计数器
@@ -185,6 +202,9 @@ C:\dev\robei-mcp\
       escape_fopen.v             路径逃逸负向用例
       escape_readmemh.v          路径逃逸负向用例
       inside_paths.v             路径逃逸正向对照
+      and2.v / two_and.v         结构级样例（P1 导入/ERC 用）
+      two_and_positional.v       位置连接的实例化样例
+      erc_bad.v                  ERC 负向样例（多驱动 + 未驱动）
     testbench\                    generate_testbench 输出目录
     robei_samples\                层次化样例（_synthetic 为容错自测样例）
     robei_counter4_project\      Robei 手动闭环测试工程
@@ -626,7 +646,74 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 
 - 默认写到 `workspace/testbench/<top>_tb.v`，已存在则拒绝覆盖
 - 生成模块名固定为 `<top>_tb`
-- 其余输入先置 0，复位释放后把第一个非时钟/复位输入拉高，并留 TODO 提示
+- 多时钟：所有 `clk`/`clock`/`*_clk` 输入都会生成 `always` 翻转
+- 默认：其余输入先置 0，复位释放后把第一个非时钟/复位输入拉高，并留 TODO 提示
+- `full_combo=true`：穷举所有自由输入的组合（`2^bits` 行，`bits > max_combo_bits` 直接拒绝），
+  每步 `$display("combo a=%b b=%b y=%b", ...)`，适合组合逻辑直接出真值表
+
+### `check_connectivity`
+
+```json
+{"files": ["cases/and2.v", "cases/erc_bad.v"], "top": "erc_bad"}
+```
+
+静态 ERC（不跑仿真）：
+
+- `multi_driver`：一个网络有两个以上驱动（实例输出或 `assign` 左值）
+- `undriven_net`：被读但没有任何驱动（顶层输入算驱动）
+- `width_mismatch`：连接网络的位宽 ≠ 实例端口位宽
+- `unknown_module`：实例化了一个不在本次源码里的模块
+- `unconnected_port`：被引用模块的端口没出现在实例连接里
+
+返回 `counts`（按规则计数）、`issues`（逐条带模块/实例/网络）。常量与拼接表达式跳过不判。
+
+### `import_verilog_canvas`
+
+```json
+{"proj_path": "p1_demo/p1_demo.proj", "verilog_path": "cases/two_and.v"}
+```
+
+把结构化的 Verilog 模块写成画布级 `.model`：
+
+- 实例 → 嵌套 `<Module Type="model">`，被引用模块必须已存在于 `<工程>/model/<模块>.model`
+- 端口连接 → `<Wire>`；同一网络超过两个端点时以第一个为基准发多条同名 wire
+- `assign` / `always` **不会**被画布承载，原样列在 `not_imported` 里；常量 / 拼接连接列在
+  `skipped_connections`
+- 目标 `.model` 已存在要 `overwrite=true`
+
+### `truth_table`
+
+```json
+{"verilog_path": "cases/and2.v", "top": "and2", "max_inputs": 8}
+```
+
+穷举输入（`2^n` 行，`n ≤ max_inputs`）生成 testbench → `simulate` → 解析 `TT` 行，
+返回 `rows`（每行是 `{输入: 二进制串, 输出: 二进制串}`）、`expected_rows`、`row_count`。
+`ok` 要求仿真成功且行数等于 `2^n`。
+
+### `expect_waveform`
+
+```json
+{"vcd_path": "build/sim-.../tb.vcd",
+ "checks": [{"signal": "y", "value": "1", "at": 25},
+            {"signal": "y", "value": "0", "from": 0, "to": 10}]}
+```
+
+- `at`：按原始 VCD 时间刻度取该点值
+- `from` + `to`：值在 `from` 等于期望，且 `(from, to]` 区间内没有跳变
+- 信号名重复（多个作用域同名）只把这一条标成 error 并给出候选全名，不影响其他检查项
+
+### `waveform_stats`
+
+```json
+{"vcd_path": "build/sim-.../counter4.vcd"}
+```
+
+每个信号的跳变次数、首次/末次跳变、不同取值数、是否见过 0/1/X/Z；汇总
+`coverage`（单比特信号里 0/1 都出现过的比例）与 `clock`（最规整的高频信号，
+`period` = 两次边沿间隔的两倍，附 `frequency_mhz`）。纯启发式，不做时序签核。
+
+### `find_events`
 
 ### `find_events`
 
@@ -820,6 +907,17 @@ C:\dev\robei-mcp\.venv\Scripts\python.exe C:\dev\robei-mcp\tests\stage4_cases.py
 6. 取消：先确认 `vvp.exe` 在跑，取消后消失，服务端仍存活
 7. `robei.toml`：`ROBEI_MCP_CONFIG` 指向临时文件后 limits 生效且 `sources` 变成 `toml`
 
+`stage18_p1.py` 覆盖（29/29 PASS，需要交互桌面跑 Robei 编译）：
+
+1. 5 个 P1 工具注册，`check_connectivity` 标成只读
+2. `truth_table(and2)` 4 行全对；`max_inputs=1` 被拒
+3. ERC：干净设计 `ok=true`；坏样例报 `multi_driver=1`、`undriven_net=2`
+4. `import_verilog_canvas` 生成 2 个实例 + `t1` 连线，无悬空端口；位置连接版本同样解析正确
+5. 导入后的画布在 Robei 里编译成功，产物含 `and2 u1( .a(a), .b(b), .y(t1) )`；headless 仿真 `y=a&b&c`
+6. `expect_waveform` 正例通过、反例 `failed=1`、保持窗口通过
+7. `waveform_stats` 认出 10 ns / 100 MHz 时钟，coverage 1.0
+8. `generate_testbench(full_combo=true)` 生成的 TB 打印 4 行 combo
+
 `stage3_cases.py` 覆盖：
 
 1. 正常 4 位计数器 lint/simulate/read_waveform
@@ -895,6 +993,15 @@ C:\dev\robei-mcp\workspace\robei_counter4_project\
   `notifications/cancelled` 属于待定。没人取消时，调用会一直跑到 `timeout_s`。
 - 被取消的调用可能留下半个 `workspace/build/sim-*/` 目录（进程被杀时文件写了一半）。
 - Python 3.10 上 `robei.toml` 需要额外装 `tomli`；装不上时只有环境变量生效，`config.error` 会写明原因。
+- ERC 是教学级静态检查：常量/拼接表达式不参与驱动判定，**不分析组合环**（交给 Yosys 那一路）。
+  位置连接按目标 `.model` 的端口顺序解析，端口顺序不一致时会报错而不是猜。
+- `import_verilog_canvas` 只搬运结构：`assign` / `always` 不会进画布（列在 `not_imported`），
+  被实例化的模块必须先以 `.model` 形式存在。
+- `truth_table` 默认上限 8 个输入（256 行）；时序逻辑会被穷举但结果含义有限，别当 FSM 验证器用。
+- `waveform_stats` 的时钟识别是启发式（边沿间隔近似恒定），不做抖动/占空比签核。
+- 这版 Robei 的 `compile_all` 有时只留下最后编译那个模型的 `build/*.v`，所以判断"编译成功"
+  要看每个模型的 `warnings`/`errors`，不能只看某个 `.v` 是否出现。
+- `.const`（引脚/时序约束）仍然**只能读不能写**：没有真实带引脚的 `.const` 样例，按"不猜结构"原则先不做。
 ## GUI 工具（robei_gui_*）
 
 MCP 现在可以直接驱动 Robei 本体（打开工程、打开模型、编译、读日志、读写 Code 页签里的 Verilog，并用 set_robei_port 造端口），底层走 Robei 自带的 UIA 桥，不改程序、不注入 DLL。

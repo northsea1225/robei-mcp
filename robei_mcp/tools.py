@@ -1234,6 +1234,8 @@ def generate_testbench(
     top: str,
     out_path: str | None = None,
     clock_period_ns: int = 10,
+    full_combo: bool = False,
+    max_combo_bits: int = 8,
 ) -> dict[str, Any]:
     source = resolve_source_files([verilog_path])[0]
     top = _valid_top(top)
@@ -1244,7 +1246,14 @@ def generate_testbench(
     ports = parse_module_ports(text, top)
     clock, reset, active_low = classify_control(ports)
     tb_name = f"{top}_tb"
-    content = build_testbench(top, ports, tb_name=tb_name, clock_period_ns=clock_period_ns)
+    content = build_testbench(
+        top,
+        ports,
+        tb_name=tb_name,
+        clock_period_ns=clock_period_ns,
+        full_combo=full_combo,
+        max_combo_bits=max_combo_bits,
+    )
 
     if out_path:
         target = Path(out_path)
@@ -1275,6 +1284,7 @@ def generate_testbench(
         "clock": clock,
         "reset": reset,
         "reset_active_low": active_low,
+        "full_combo": full_combo,
         "clock_period_ns": clock_period_ns,
         "simulate_hint": {
             "files": [_rel(source), _rel(target)],

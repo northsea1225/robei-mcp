@@ -144,6 +144,31 @@ def parse_module_ports(source: str, top: str) -> list[dict[str, Any]]:
     return ports
 
 
+def width_of(range_text: str | None) -> int:
+    """``[3:0]`` -> 4, ``[7:4]`` -> 4, ``""`` -> 1."""
+    text = (range_text or "").strip()
+    if not text:
+        return 1
+    match = re.fullmatch(r"\[\s*(\d+)\s*:\s*(\d+)\s*\]", text)
+    if not match:
+        return 1
+    high, low = int(match.group(1)), int(match.group(2))
+    return abs(high - low) + 1
+
+
+def classify_clocks(ports: list[dict[str, Any]]) -> list[str]:
+    """Every input that looks like a clock, in declaration order."""
+    clocks = [port["name"] for port in ports if port["direction"] == "input" and port["name"].lower() in CLOCK_NAMES]
+    clocks += [
+        port["name"]
+        for port in ports
+        if port["direction"] == "input"
+        and port["name"].lower().endswith("clk")
+        and port["name"] not in clocks
+    ]
+    return clocks
+
+
 def classify_control(ports: list[dict[str, Any]]) -> tuple[str | None, str | None, bool]:
     clock = None
     reset = None
@@ -178,8 +203,11 @@ def generate_testbench(
     ports: list[dict[str, Any]],
     tb_name: str | None = None,
     clock_period_ns: int = 10,
+    full_combo: bool = False,
+    max_combo_bits: int = 8,
 ) -> str:
     tb_name = tb_name or f"{top}_tb"
+    clocks = classify_clocks(ports)
     clock, reset, active_low = classify_control(ports)
 
     lines: list[str] = [
@@ -204,8 +232,10 @@ def generate_testbench(
     lines.append("")
 
     half = max(1, clock_period_ns // 2)
-    if clock:
-        lines.append(f"    always #{half} {clock} = ~{clock};  // {clock_period_ns} ns period")
+    for index, name in enumerate(clocks):
+        phase = "" if index == 0 else f"  // phase {index}"
+        lines.append(f"    always #{half} {name} = ~{name};  // {clock_period_ns} ns period{phase}")
+    if clocks:
         lines.append("")
 
     lines.append("    initial begin")
@@ -219,15 +249,31 @@ def generate_testbench(
         else:
             lines.append(f"        #100 {reset} = 1'b0;  // release active-high reset")
 
-    stimulus = [
-        port["name"]
-        for port in ports
-        if port["direction"] == "input" and port["name"] not in {clock, reset}
+    free = [
+        port for port in ports
+        if port["direction"] == "input" and port["name"] not in set(clocks) | {reset}
     ]
-    if stimulus:
-        lines.append(f"        #20 {stimulus[0]} = 1'b1;  // TODO: drive real stimulus")
-        for name in stimulus[1:]:
-            lines.append(f"        // TODO: drive {name}")
+    if full_combo and free:
+        bits = sum(width_of(port["width"]) for port in free)
+        if bits > max_combo_bits:
+            raise ValueError(f"full_combo needs {bits} input bits, above max_combo_bits={max_combo_bits}")
+        outputs = [port for port in ports if port["direction"] != "input"]
+        fmt = " ".join(f"{port['name']}=%b" for port in free + outputs)
+        args = ", ".join(port["name"] for port in free + outputs)
+        for index in range(1 << bits):
+            assignments = []
+            shift = bits
+            for port in free:
+                width = width_of(port["width"])
+                shift -= width
+                value = (index >> shift) & ((1 << width) - 1)
+                assignments.append(f"{port['name']} = {width}'b{format(value, f'0{width}b')};")
+            lines.append("        " + " ".join(assignments) + " #10;")
+            lines.append(f'        $display("combo {fmt}", {args});')
+    elif free:
+        lines.append(f"        #20 {free[0]['name']} = 1'b1;  // TODO: drive real stimulus")
+        for port in free[1:]:
+            lines.append(f"        // TODO: drive {port['name']}")
     lines.append("        #1000;")
     lines.append(f'        $display("SIM end: {tb_name} at %0t", $time);')
     lines.append("        $finish;")

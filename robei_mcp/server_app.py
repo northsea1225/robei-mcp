@@ -10,7 +10,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 
 from . import __version__
-from . import doctor, errors, gui, runstate, tools
+from . import doctor, errors, gui, p1, runstate, tools
 
 mcp = MCPServer(
     name="robei-mcp",
@@ -392,15 +392,87 @@ def generate_testbench(
     top: str,
     out_path: str | None = None,
     clock_period_ns: int = 10,
+    full_combo: bool = False,
+    max_combo_bits: int = 8,
 ) -> dict[str, Any]:
-    """Generate a clock/reset/VCD testbench skeleton for a module without overwriting files."""
+    """Generate a clock/reset/VCD testbench skeleton; full_combo enumerates every input combination."""
     try:
         return tools.generate_testbench(
             verilog_path=verilog_path,
             top=top,
             out_path=out_path,
             clock_period_ns=clock_period_ns,
+            full_combo=full_combo,
+            max_combo_bits=max_combo_bits,
         )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=WRITE)
+def import_verilog_canvas(
+    proj_path: str,
+    verilog_path: str,
+    name: str | None = None,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Turn a structural Verilog module into a canvas-level .model (placed instances + wires).
+
+    Every instantiated module must already exist as <project>/model/<module>.model.
+    assign/always bodies are reported in ``not_imported`` - the canvas carries structure only.
+    """
+    try:
+        return p1.import_verilog_canvas(
+            proj_path=proj_path, verilog_path=verilog_path, name=name, overwrite=overwrite
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=READ)
+def check_connectivity(
+    files: list[str] | None = None,
+    top: str | None = None,
+    proj_path: str | None = None,
+) -> dict[str, Any]:
+    """Static ERC: multi-driver, undriven net, width mismatch, unknown module, unconnected port."""
+    try:
+        return p1.check_connectivity(files=files, top=top, proj_path=proj_path)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=WRITE)
+def truth_table(
+    verilog_path: str,
+    top: str,
+    max_inputs: int = 8,
+    timeout_s: int = 30,
+    deps: list[str] | None = None,
+) -> dict[str, Any]:
+    """Exhaustively simulate a combinational module and return its truth table rows."""
+    try:
+        return p1.truth_table(
+            verilog_path=verilog_path, top=top, max_inputs=max_inputs, timeout_s=timeout_s, deps=deps
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=READ)
+def expect_waveform(vcd_path: str, checks: list[dict[str, Any]]) -> dict[str, Any]:
+    """Assert VCD values: [{"signal":"y","value":"1","at":45}] or {"from":30,"to":100} (held)."""
+    try:
+        return p1.expect_waveform(vcd_path=vcd_path, checks=checks)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=READ)
+def waveform_stats(vcd_path: str, max_signals: int = 64) -> dict[str, Any]:
+    """Toggle counts, level coverage, X/Z flags and a clock period/frequency estimate."""
+    try:
+        return p1.waveform_stats(vcd_path=vcd_path, max_signals=max_signals)
     except Exception as exc:
         return _error(exc)
 
