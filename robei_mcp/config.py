@@ -157,6 +157,7 @@ class Settings:
     max_model_bytes: int = 5_000_000
     max_vcd_bytes: int = 50_000_000
     max_output_chars: int = 20_000
+    strict_path_scan: bool = True
     config_file: Path | None = None
     config_error: str | None = None
     sources: dict[str, str] = field(default_factory=dict)
@@ -221,6 +222,16 @@ def _pick_int(env_name: str, data: dict, section: str, key: str, default: int) -
             pass
     value = (data.get(section) or {}).get(key) if isinstance(data.get(section), dict) else None
     if isinstance(value, int) and not isinstance(value, bool):
+        return value, "toml"
+    return default, "default"
+
+
+def _pick_bool(env_name: str, data: dict, section: str, key: str, default: bool) -> tuple[bool, str]:
+    raw = os.environ.get(env_name)
+    if raw is not None:
+        return raw.strip().lower() not in {"", "0", "false", "off", "no"}, "env"
+    value = (data.get(section) or {}).get(key) if isinstance(data.get(section), dict) else None
+    if isinstance(value, bool):
         return value, "toml"
     return default, "default"
 
@@ -316,6 +327,9 @@ def load_settings() -> Settings:
     )
     default_timeout = max(1, min(default_timeout, 3600))
     max_timeout = max(default_timeout, min(max_timeout, 3600))
+    strict_path_scan, sources["strict_path_scan"] = _pick_bool(
+        "ROBEI_MCP_STRICT_PATHS", data, "security", "strict_path_scan", True
+    )
     return Settings(
         project_root=PROJECT_ROOT,
         workspace=workspace,
@@ -330,6 +344,7 @@ def load_settings() -> Settings:
         model_roots=model_roots,
         default_timeout_s=default_timeout,
         max_timeout_s=max_timeout,
+        strict_path_scan=strict_path_scan,
         config_file=path,
         config_error=error,
         sources=sources,

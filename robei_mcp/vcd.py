@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from bisect import bisect_right
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -8,6 +9,19 @@ from typing import Any
 
 class VcdParseError(ValueError):
     pass
+
+
+_TIMESCALE_RE = re.compile(r"^\s*(\d+)\s*(fs|ps|ns|us|ms|s)\s*$", re.IGNORECASE)
+_UNIT_FS = {"fs": 1, "ps": 1_000, "ns": 1_000_000, "us": 1_000_000_000,
+            "ms": 1_000_000_000_000, "s": 1_000_000_000_000_000}
+
+
+def timescale_fs(text: str | None) -> int | None:
+    """Return one time tick in femtoseconds, or ``None`` when unparseable."""
+    match = _TIMESCALE_RE.match(text or "")
+    if not match:
+        return None
+    return int(match.group(1)) * _UNIT_FS[match.group(2).lower()]
 
 
 @dataclass
@@ -59,6 +73,8 @@ def parse_vcd(path: Path) -> VcdData:
     scope: list[str] = []
     current_time: int | None = None
     index = 0
+    saw_enddefinitions = False
+    saw_var = False
 
     while index < len(tokens):
         token = tokens[index]
@@ -79,6 +95,7 @@ def parse_vcd(path: Path) -> VcdData:
                     scope.pop()
                 continue
             if directive == "$var":
+                saw_var = True
                 parts, index = _take_until_end(tokens, index)
                 if len(parts) < 4:
                     continue
@@ -112,8 +129,11 @@ def parse_vcd(path: Path) -> VcdData:
             if directive in {"$comment", "$date", "$version", "$attrbegin"}:
                 _, index = _take_until_end(tokens, index)
                 continue
+            if directive == "$enddefinitions":
+                saw_enddefinitions = True
+                index += 1
+                continue
             if directive in {
-                "$enddefinitions",
                 "$dumpvars",
                 "$dumpall",
                 "$dumpon",
@@ -164,6 +184,10 @@ def parse_vcd(path: Path) -> VcdData:
 
         index += 1
 
+    if not saw_enddefinitions or not saw_var:
+        raise VcdParseError(
+            f"not a VCD file: {path.name} has no $var declarations and $enddefinitions"
+        )
     return data
 
 
@@ -415,6 +439,11 @@ def render_waveform_png(
             times.append(time)
             values.append(float(value_int) if value_int is not None else math.nan)
         if times:
+            # A step plot needs an endpoint: without it the final value is not
+            # drawn past the last change (a reset that stays high looked missing).
+            if data.max_time is not None and data.max_time > times[-1]:
+                times.append(data.max_time)
+                values.append(values[-1])
             axis.step(times, values, where="post", linewidth=1.2)
             axis.plot(times, values, "o", markersize=2)
         axis.set_ylabel(signal.full_name if len(signal.full_name) < 28 else signal.name, fontsize=8)

@@ -157,16 +157,88 @@ def _resolve_checked(raw: str, base: Path) -> tuple[Path, bool]:
     return resolved, is_within(resolved, SETTINGS.workspace)
 
 
-def scan_source_paths(sources: list[Path]) -> dict:
+def _scan_text(
+    source: Path,
+    text: str,
+    visited: set[Path],
+    findings: list[dict],
+    rejected: list[dict],
+    unresolved: list[dict],
+    strict: bool,
+    depth: int,
+) -> None:
+    """Scan one source and every `include it pulls in from the workspace."""
+    clean = strip_comments(text)
+    entries: list[tuple[str, str, int]] = []
+    for match in _INCLUDE_RE.finditer(clean):
+        entries.append(("include", match.group(1) or match.group(2) or "", match.start()))
+    for match in _PATH_FUNC_RE.finditer(clean):
+        raw = _quoted_literal(clean, match.end())
+        func = "$" + match.group(1).lower()
+        if raw is None:
+            item = {
+                "file": str(source),
+                "line": _line_of(clean, match.start()),
+                "kind": func,
+                "reason": "non-literal path expression; cannot verify statically",
+            }
+            unresolved.append(item)
+            if strict:
+                rejected.append({**item, "reason": item["reason"] + " (strict mode)"})
+            continue
+        entries.append((func, raw, match.start()))
+
+    for kind, raw, index in entries:
+        if not raw.strip():
+            continue
+        resolved, inside = _resolve_checked(raw, source.parent)
+        item = {
+            "file": str(source),
+            "line": _line_of(clean, index),
+            "kind": kind,
+            "raw": raw,
+            "resolved": str(resolved),
+            "inside_workspace": inside,
+        }
+        findings.append(item)
+        if not inside:
+            rejected.append(item)
+            continue
+        if kind != "include":
+            continue
+        if depth >= 8:
+            unresolved.append({**item, "reason": "include nesting deeper than 8 levels"})
+            continue
+        if not resolved.is_file():
+            unresolved.append({**item, "reason": "included file not found next to the including source"})
+            continue
+        if resolved in visited:
+            continue
+        visited.add(resolved)
+        try:
+            if resolved.stat().st_size > SETTINGS.max_source_bytes:
+                unresolved.append({**item, "reason": "included file exceeds max_source_bytes"})
+                continue
+            nested = resolved.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            unresolved.append({**item, "reason": f"unreadable: {exc}"})
+            continue
+        _scan_text(resolved, nested, visited, findings, rejected, unresolved, strict, depth + 1)
+
+
+def scan_source_paths(sources: list[Path], strict: bool | None = None) -> dict:
     """Reject simulation inputs that point at files outside the workspace.
 
-    Scans `include and $fopen/$readmemh/$readmemb/$writememh/$writememb/$dumpfile.
-    Literal paths that resolve outside the workspace are rejected. Non-literal
-    expressions are reported as unresolved instead of being guessed.
+    Scans `include and $fopen/$readmemh/$readmemb/$writememh/$writememb/$dumpfile
+    in the given files *and* in every workspace-local file they include.
+    Non-literal expressions cannot be verified statically; strict mode (the
+    default) rejects them instead of compiling code it could not inspect.
     """
+    strict = SETTINGS.strict_path_scan if strict is None else strict
     findings: list[dict] = []
     rejected: list[dict] = []
     unresolved: list[dict] = []
+    visited: set[Path] = {path.resolve() for path in sources}
 
     for source in sources:
         try:
@@ -174,47 +246,13 @@ def scan_source_paths(sources: list[Path]) -> dict:
         except OSError as exc:
             rejected.append({"file": str(source), "reason": f"unreadable: {exc}"})
             continue
-        clean = strip_comments(text)
-
-        entries: list[tuple[str, str, int]] = []
-        for match in _INCLUDE_RE.finditer(clean):
-            raw = match.group(1) or match.group(2) or ""
-            entries.append(("include", raw, match.start()))
-        for match in _PATH_FUNC_RE.finditer(clean):
-            raw = _quoted_literal(clean, match.end())
-            func = "$" + match.group(1).lower()
-            if raw is None:
-                unresolved.append(
-                    {
-                        "file": str(source),
-                        "line": _line_of(clean, match.start()),
-                        "kind": func,
-                        "reason": "non-literal path expression; cannot verify statically",
-                    }
-                )
-                continue
-            entries.append((func, raw, match.start()))
-
-        for kind, raw, index in entries:
-            if not raw.strip():
-                continue
-            resolved, inside = _resolve_checked(raw, source.parent)
-            item = {
-                "file": str(source),
-                "line": _line_of(clean, index),
-                "kind": kind,
-                "raw": raw,
-                "resolved": str(resolved),
-                "inside_workspace": inside,
-            }
-            findings.append(item)
-            if not inside:
-                rejected.append(item)
+        _scan_text(source, text, visited, findings, rejected, unresolved, strict, 0)
 
     return {
         "ok": not rejected,
+        "strict": strict,
         "workspace": str(SETTINGS.workspace),
-        "scanned_files": [str(p) for p in sources],
+        "scanned_files": [str(path) for path in sorted(visited)],
         "findings": findings,
         "rejected": rejected,
         "unresolved": unresolved,

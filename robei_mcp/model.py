@@ -222,11 +222,25 @@ def parse_parameter_text(text: str) -> list[dict[str, str]]:
 
 
 def _range_suffix(datasize: str) -> str:
+    """Render a Robei Datasize attribute as a Verilog range suffix.
+
+    Robei stores the *width* (``4``), but also accepts a literal range
+    (``3:0``).  Constant widths are folded to ``[3:0]`` so the exported module
+    stays readable and every downstream parser (ours included) sees a plain
+    literal range instead of ``[4-1:0]``.
+    """
     width = (datasize or "").strip()
-    if width in {"", "1", "0"}:
+    if not width:
         return ""
     if ":" in width:
         return f" [{width}]"
+    from .verilog import const_eval
+
+    value = const_eval(width)
+    if value is not None:
+        if value <= 1:
+            return ""
+        return f" [{value - 1}:0]"
     return f" [{width}-1:0]"
 
 

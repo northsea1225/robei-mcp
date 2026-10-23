@@ -12,6 +12,48 @@
 
 ## 交付状态
 
+### 1.0.2：QA 回归修复（2026-10-24）
+
+上一轮 QA 在 Windows 实机上把 38 个工具逐个打过一遍，留下 16 组问题。这一版全部修掉，
+并用两个脚本把结论钉住：`tests/test_regressions.py`（本地，22 项）和 `verify_1_0_2.py`
+（Windows 实机，38 项端到端）。
+
+**实机结果：38/38 PASS**（脚本与结果在 `C:\dev\robei-mcp\workspace\_qa_runs\qa_20261023122612\verify_1_0_2\`）。
+上一轮同样的脚本是 34/37，三项失败的性质各不相同，值得单独记：
+
+| 用例 | 上一轮为什么红 | 性质 | 这一版 |
+| --- | --- | --- | --- |
+| `RUNTIME-VERSION` | 断言 `mcp_version == "1.0.2"`，但那个字段是 MCP SDK 的 `2.3.0` | **用例写错** | `runtime_status` 新增 `server_version`，用例改查它；`mcp_version` 保留原语义 |
+| `TRUTH-16` | `Datasize="4"` 导出成 `[4-1:0]`，`width_of` 只认字面量 → 4 位输入只出 2 行 | **真 bug** | 导出折成 `[3:0]`；`width_of` 能算纯数字常量表达式 |
+| `SEC-INCLUDE` | 越界 canary 建在 workspace 里，严格扫描放行是对的 | **夹具写错** | canary 改到 `tempfile.mkdtemp()`，用完删掉 |
+
+顺带抓到修复过程中暴露的第三个真 bug：`truth_table` 按**端口个数**移位而不是位数，
+混合位宽（`[1:0] a` + `[3:0] b`）的枚举顺序是乱的。新增 `TRUTH-MIXED`（64 行、第二行
+`b=0001 → y=000100`）守着。
+
+实机覆盖到的具体断言（全部 PASS）：
+
+- **工具面**：38 个工具；干净 venv 里没装 `pywinauto` 时只有 28 个（`GUI-GATE`）。
+- **打包**：wheel 构建、`Provides-Extra: gui`、entry_points 指向 `__main__:main`、LICENSE 入包、
+  装进干净 venv 后 `robei-mcp.exe` 读 stdin EOF 退出码 0。
+- **解析**：一行 non-ANSI、同行双实例 import（0 悬空端口）、ANSI 简写、`[4-1:0]`、混合位宽。
+- **波形**：同文件/选信号/值不同/缺信号/位宽不同/timescale 不同/`max_time` 不同/无共同信号
+  八种组合的判决都符合预期；空 VCD 与纯文本 VCD 都被拒。
+- **安全**：`$readmemh(PATH)` 与 `` `include `` 传递越界都停在 `stage="security_scan"`，不启动编译器。
+- **约束**：重复引脚被拒（`G15 is assigned to both a[0] and a[1]`）；XDC 两种引号风格各自正确。
+- **进度**：`0/1 → 0/2 → 1/2 → 2/2 → 2/2`，单调不减。
+- **备份**：同一秒两次改模型，两个备份文件名不同且各自 SHA256 与 `sha256_before` 一致。
+- **GUI**：10 模型工程里找到并激活 `qa_light_const`（树 7 项）→ Save → Compile（`Finished to
+  generate constrain file`）→ Synthesis（`completed: true`，0 error）→ Close。
+- **非 ASCII 路径**：`...\workspace\_qa_runs\...\fixtures\路径\bus4.v` 转成
+  `C:\dev\ROBEI-~1\WORKSP~1\...\E4D8~1\bus4.v`，iverilog / Yosys / Verilator 三路 lint 全过。
+
+同一套改动在本地（macOS，仅 Icarus 13.0，无 Yosys/Verilator/Robei）跑 `pytest -q tests`：
+27 passed（`test_portable` 5 + `test_regressions` 22）。
+
+**这一版仍然没验证的东西**（别当成已通过）：`Build→Route`、`Build→Package`、bitstream、
+真实板卡下载；安全扫描是编译输入检查，不是 OS 沙箱；GUI 需要 `[gui]` extra 且在 Session 1。
+
 ### 0.11：精简工具面（P0）
 
 47 → 38 个工具。移除的都是「只有本机 / 只有课堂场景才用得上」的部分：

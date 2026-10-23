@@ -10,12 +10,14 @@
 
 返回：
 
-- `mcp_version`
+- `server_version`（本包版本，如 `1.0.2`）、`mcp_version`（MCP Python SDK 的版本，如 `2.3.0`）——
+  两个不是一回事，查版本请看前者
 - Python 版本和路径
 - 工作区、模型根目录
 - Robei、iverilog、vvp、yosys、verilator 的路径和存在性
 - `verilator_available`（可执行文件 + `VERILATOR_ROOT` 都在位）
 - `tools.verilator.version`（`5.036`）
+- `security.strict_path_scan`（当前严格路径扫描开关）
 
 Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` 输出 `Synthesis complete`，因此 `version` 为 `null`，但路径和综合检查可用。
 
@@ -57,6 +59,15 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
 不会启动 `iverilog`。通过后执行 `iverilog` 编译和 `vvp` 运行，
 返回 `$display`、VCD 绝对/相对路径。超时会终止子进程并返回 `simulation.timeout=true`。
 
+严格模式（默认）下，`security.rejected` 非空即拒绝，包括：
+
+- 字面量路径逃出工作区
+- `` `include `` 链里的文件（最多递归 8 层）带出的越界字面量
+- 无法静态求值的路径参数，例如 `$readmemh(PATH, mem)`、`$fopen(name)`
+
+放宽时设 `ROBEI_MCP_STRICT_PATHS=0`，第 3 类只记进 `security.unresolved`。
+返回值里 `security.strict` 会标出本次用的是哪一档。
+
 ### `simulate_project`
 
 ```json
@@ -66,8 +77,9 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
 
 **无 GUI、无桌面**地把一个 Robei 实验跑起来：读 `test/<name>.test` 的 `Code`，
 包成 `` `timescale … module <name>(); … endmodule ``（并补 `$dumpfile`/`$dumpvars`），
-把 `model/*.model` 全部导出到 `build/headless/<工程>-<test>/deps/`，再交给
-`iverilog` + `vvp` 跑。
+把 `model/*.model` 全部导出到本次独立的
+`build/headless-<工程>-<test>-<时间戳>-<uuid8>/deps/`，再交给 `iverilog` + `vvp` 跑
+（同一工程连跑两次不会互相覆盖）。
 
 - 输出结构与 `simulate` 相同（`compile` / `simulation` / `display_output` / `vcd_paths`），
   另外多个 `headless` 段记录生成物路径
@@ -91,6 +103,19 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
 两份 VCD 逐信号比对，比较点在**两边跳变时间的并集**上，所以"一边完全没跳"也能被抓到。
 返回每个信号的跳变次数、差异条数、首个差异（时间/两侧值），以及总和
 `ok / mismatch_total / differing_signals`。
+
+`ok=true` 的判据是"能比、且比完没有差异"，以下任一情况都是 `ok=false` 并在 `reasons`
+里给出原因（不会静默放过）：
+
+- 缺少信号（golden 有、dut 没有，或反之）
+- 没有任何共同信号（信号名/作用域完全不同）
+- 同名信号位宽不一致（记进 `incompatible_signals`）
+- `max_time` 不一致（一份仿真提前结束）
+- timescale 解析不出来
+
+两份文件的 timescale 不同但都可解析时，会按 fs 归一到共同时间轴比较，并返回
+`timescale_fs` / `timescale_comparable`；`max_time_matches` 和 `compared_signal_count`
+便于确认到底比了多少。`signals=[...]` 只比指定信号，其余同上。
 
 ### `read_robei_model`
 
@@ -227,6 +252,8 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 解析端口后生成骨架：时钟（`clk`/`clock`/`*_clk`）、复位（`rst`/`rst_n`/`reset_n` 等，
 `_n` 结尾判定低有效）、`$dumpfile`/`$dumpvars`、`$display`、实例化、TODO 注释。
 
+- 端口解析支持 ANSI 简写继承（`input wire [3:0] a, b, c`）、一行写的 non-ANSI
+  （`module m(a,y); input a; output y;`），以及同一行里的多个实例
 - 默认写到 `workspace/testbench/<top>_tb.v`，已存在则拒绝覆盖
 - 生成模块名固定为 `<top>_tb`
 - 多时钟：所有 `clk`/`clock`/`*_clk` 输入都会生成 `always` 翻转
@@ -249,6 +276,8 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 - `kind` 默认 **`const`**（Robei 5.x 的 FPGA 流程认这个；传 `constrain` 会被 Build→Synthesis
   拒绝为 `is not constrain file`）
 - `iostandard`（默认 `LVCMOS33`）写进每个引脚 `<Port Function="...">`
+- **同一引脚不能出现在两个端口/同一位**（跳过大小写差异），否则整个调用
+  `code=invalid_argument`，不写文件
 - `vendor` / `device` / `family` 只在 `kind="const"` 时写入根节点；留空时 Robei 会提示
   `has no Device/Family configured`（综合仍会跑完），填成目标板卡的器件名即可消掉
 - 已存在要 `overwrite=true`（留 `.bak-<时间戳>`）
@@ -278,6 +307,10 @@ set_property IOSTANDARD LVCMOS33 [get_ports swt[0]]
 
 端口顺序按 `.const` 里的声明顺序；`PACKAGE_PIN` 行与 Robei 自己生成的 `build/<name>.xdc`
 逐行相同（头部注释与空 `IOSTANDARD` 两处例外）。
+
+默认输出**标准 Tcl** 的总线写法 `[get_ports {swt[0]}]`（`tcl_quoting: "standard"`），
+Vivado 直接可用。Robei 自带的 Route 解析器只认不带花括号的 `[get_ports swt[0]]`：
+需要喂回 Robei 时传 `quote_bus=false`，返回 `tcl_quoting: "legacy"`。
 
 `also_build=true` 同时覆盖 `<工程>/build/<name>.xdc`——那是 `Build→Route` 实际解析的副本，
 Robei 自己写的版本 `IOSTANDARD` 为空，Route 会因此报参数个数错误。
@@ -349,6 +382,12 @@ Robei 自己写的版本 `IOSTANDARD` 为空，Route 会因此报参数个数错
 返回 `rows`（每行是 `{输入: 二进制串, 输出: 二进制串}`）、`expected_rows`、`row_count`。
 `ok` 要求仿真成功且行数等于 `2^n`。
 
+- `n` 是**输入总位数**，不是端口个数：`input [1:0] a` + `input [3:0] b` 算 6 位（64 行），
+  超过 `max_inputs` 返回 `invalid_argument`
+- 枚举按位打包：最后一个输入端口的位是最低位，`rows[1]` 只让最后一个端口 +1
+- 位宽支持常量表达式（`[4-1:0]` 按 4 位算），不认识的表达式按 1 位处理并在 `inputs` 里体现
+- 生成的 testbench 写在 `build/truth-<top>-<时间戳>-<uuid8>/`，每次调用独立
+
 ### `expect_waveform`
 
 ```json
@@ -392,7 +431,9 @@ Robei 自己写的版本 `IOSTANDARD` 为空，Route 会因此报参数个数错
 ```
 
 用 venv 内的 matplotlib（Agg 后端）逐信号阶梯图，写入
-`workspace/build/waveforms/`，返回路径和字节数。已存在则拒绝覆盖；`x`/`z` 记为 NaN。
+`workspace/build/waveforms/`，返回路径和字节数。默认文件名带时间戳 + `uuid8`，
+并发调用不会互相覆盖（调用方显式给的 `out_name` 仍然遵守"已存在则拒绝"）；
+`x`/`z` 记为 NaN，最后一个值会一直画到 `max_time`（保持段不会缺一截）。
 
 ## 错误码、进度与取消
 

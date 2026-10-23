@@ -94,6 +94,19 @@ def create_const(
             if not PIN_RE.match(str(pin)):
                 raise ValueError(f"invalid pin name: {pin!r}")
 
+    used: dict[str, str] = {}
+    duplicates: list[str] = []
+    for port in ports:
+        for index, pin in enumerate(pins[port["name"]]):
+            key = str(pin).upper()
+            label = f"{port['name']}[{index}]"
+            if key in used:
+                duplicates.append(f"{pin} is assigned to both {used[key]} and {label}")
+            else:
+                used[key] = label
+    if duplicates:
+        raise ValueError("duplicate FPGA pin assignment: " + "; ".join(duplicates))
+
     instance = f"{name}_inst"
     lines = ["<!DOCTYPE Robei>"]
     board = f' Vendor="{_attr(vendor)}" Device="{_attr(device)}" Family="{_attr(family)}"' if kind == "const" else ""
@@ -154,10 +167,9 @@ def create_const(
         raise FileExistsError(f"constraint already exists: {target}")
     backup = None
     if target.exists():
-        from datetime import datetime
+        from . import tools as _tools
 
-        backup = target.with_name(target.name + ".bak-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
-        backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+        backup = _tools._backup_file(target)
     target.write_text(text, encoding="utf-8", newline="\n")
 
     from . import tools
@@ -218,11 +230,17 @@ def export_xdc(
     out_name: str | None = None,
     iostandard: str = "LVCMOS33",
     also_build: bool = False,
+    quote_bus: bool = True,
 ) -> dict[str, Any]:
     """Project a .const into ``<proj>/constrain/<name>.xdc`` (same text Robei generates).
 
-    ``also_build=True`` additionally overwrites ``<proj>/build/<name>.xdc`` - that is the
-    copy Robei's Build > Route parses, and Robei's own version leaves IOSTANDARD empty.
+    ``also_build=True`` additionally writes ``<proj>/build/<name>.xdc`` - the copy
+    Robei's Build > Route parses, and Robei's own version leaves IOSTANDARD empty.
+
+    ``quote_bus=True`` (default) emits standard Tcl, ``[get_ports {swt[0]}]``.
+    Robei's legacy writer emits ``[get_ports swt[0]]``, which a Tcl interpreter
+    reads as a nested ``[0]`` command; pass ``quote_bus=False`` only when an old
+    Robei build needs that exact spelling.
     """
     proj = resolve_project_path(proj_path)
     if not is_within(proj, SETTINGS.workspace):
@@ -251,8 +269,11 @@ def export_xdc(
         bits = info["pins"][port]
         for bit in sorted(bits):
             suffix = "" if len(bits) == 1 else f"[{bit}]"
-            lines.append(f"set_property PACKAGE_PIN {bits[bit]} [get_ports {port}{suffix}]")
-            lines.append(f"set_property IOSTANDARD {iostandard} [get_ports {port}{suffix}]")
+            target_port = f"{port}{suffix}"
+            if quote_bus and suffix:
+                target_port = "{" + target_port + "}"
+            lines.append(f"set_property PACKAGE_PIN {bits[bit]} [get_ports {target_port}]")
+            lines.append(f"set_property IOSTANDARD {iostandard} [get_ports {target_port}]")
     text = "\n".join(lines) + "\n"
     target.write_text(text, encoding="utf-8", newline="\n")
     build_copy = None
@@ -270,6 +291,7 @@ def export_xdc(
         "const": str(const_path),
         "constraints": info,
         "line_count": len(lines),
+        "tcl_quoting": "standard" if quote_bus else "robei",
         "sha256": __import__("hashlib").sha256(target.read_bytes()).hexdigest(),
     }
 

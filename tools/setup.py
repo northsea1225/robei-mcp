@@ -11,6 +11,7 @@ Every step it takes is printed so it can be undone by hand.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -60,6 +61,18 @@ def apply_steps() -> list[dict]:
     else:
         steps.append({"step": "pip_install_matplotlib", "ran": False, "ok": True,
                       "detail": "matplotlib already importable"})
+
+    missing_gui = [m for m in ("pywinauto", "PIL", "win32gui") if VENV_PY.is_file() and not _has_module(VENV_PY, m)]
+    if os.name == "nt" and VENV_PY.is_file() and missing_gui:
+        proc = _run(
+            [str(VENV_PY), "-m", "pip", "install", "-q", "pywinauto>=0.6.9", "Pillow>=10", "pywin32>=306"],
+            timeout=600,
+        )
+        steps.append({"step": "pip_install_gui", "ran": True, "ok": proc.returncode == 0,
+                      "detail": f"missing={missing_gui} " + (proc.stdout + proc.stderr).strip()[-260:]})
+    else:
+        steps.append({"step": "pip_install_gui", "ran": False, "ok": True,
+                      "detail": "GUI dependencies already importable or not on Windows"})
 
     if _task_exists():
         steps.append({"step": "register_task", "ran": False, "ok": True, "detail": f"{TASK} already registered"})

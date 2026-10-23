@@ -43,6 +43,16 @@ python C:\dev\robei-mcp\tools\setup.py --apply
 
 依赖只有两个：`mcp==2.3.0`、`matplotlib`（画波形 PNG 用）。
 
+想用 10 个 `robei_gui_*` 工具，再装可选依赖（仅 Windows 需要）：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[gui]"     # 源码目录
+.\.venv\Scripts\python.exe -m pip install "robei-mcp[gui]" # 已发布包
+```
+
+`[gui]` 会带上 `pywinauto`、`Pillow`、`pywin32`。**没装这三个包时 GUI 工具不会出现在
+`tools/list` 里**，而不是调用时才报错；`tools\setup.py --apply` 也会在 Windows 上补装它们。
+
 ### 3. 自检
 
 ```powershell
@@ -113,7 +123,15 @@ read_waveform(<上一步的 vcd_path>, signals=["counter4_tb.dut.count"], time=4
 | `IVERILOG_EXE` / `VVP_EXE` / `YOSYS_EXE` | 单独指定工具链 |
 | `VERILATOR_EXE` / `VERILATOR_ROOT_DIR` | Verilator 那一路 |
 | `ROBEI_MCP_GUI` | `0` 强制关闭 GUI 面（工具从 `tools/list` 消失，只剩 28 个） |
+| `ROBEI_MCP_STRICT_PATHS` | 默认 `1`：源码扫描遇到无法静态判定的路径（`$readmemh(PATH)`）直接拒绝；设 `0` 退回只记录 `unresolved` |
 | `ROBEI_DEFAULT_TIMEOUT_S` / `ROBEI_MAX_TIMEOUT_S` | 子进程超时，默认 30 / 120 秒 |
+
+`robei.toml` 里对应的一节：
+
+```toml
+[security]
+strict_path_scan = true
+```
 
 ## 工具一览
 
@@ -123,13 +141,13 @@ read_waveform(<上一步的 vcd_path>, signals=["counter4_tb.dut.count"], time=4
 
 **检查与仿真（3）** — `lint_verilog`（iverilog `-Wall` + Verilator + Yosys 三路）、`simulate`（编译+跑 tb）、`simulate_project`（无头跑 Robei 的 `test/*.test`）
 
-**波形（6）** — `read_waveform`（列信号/按时刻取值）、`find_events`（`count == 4'b1111` 首次出现）、`compare_waveforms`（两份 VCD 逐信号找第一处分歧）、`waveform_stats`（跳变数/翻转率/时钟周期估计）、`expect_waveform`（断言取值）、`render_waveform`（画 PNG）
+**波形（6）** — `read_waveform`（列信号/按时刻取值）、`find_events`（`count == 4'b1111` 首次出现）、`compare_waveforms`（两份 VCD 逐信号比对，任何结构性差异都算不通过）、`waveform_stats`（跳变数/翻转率/时钟周期估计）、`expect_waveform`（断言取值）、`render_waveform`（画 PNG）
 
 **工程与模型（11）** — `read_robei_model`、`list_projects`、`read_robei_project`（含画布 instances/wires）、`create_robei_project`、`create_robei_model`、`set_robei_port`、`export_robei_verilog`、`sync_robei_verilog`、`create_robei_test`、`create_robei_canvas_model`（画布级 XML）、`import_verilog_canvas`（Verilog → 画布）
 
-**辅助（3）** — `generate_testbench`（时钟/复位/VCD 骨架）、`check_connectivity`（ERC）、`truth_table`（组合逻辑穷举真值表）
+**辅助（3）** — `generate_testbench`（时钟/复位/VCD 骨架）、`check_connectivity`（ERC）、`truth_table`（组合逻辑穷举真值表，`max_inputs` 按**输入总位数**计）
 
-**引脚约束（3）** — `create_robei_const`、`read_robei_const`、`export_robei_xdc`
+**引脚约束（3）** — `create_robei_const`（拒绝同一引脚被两个端口/两位重复占用）、`read_robei_const`、`export_robei_xdc`（默认标准 Tcl 写法 `[get_ports {a[0]}]`，`quote_bus=false` 回到 Robei legacy 写法）
 
 **GUI（10，需 Windows 桌面）** — `robei_gui_status`（`probe=true` 顺带查 UIA 桥是否还活着）、`launch`、`open_project`、`open_model`、`compile`、`output`、`save_project`、`synthesis`、`compile_all`、`close`
 
@@ -156,9 +174,16 @@ python C:\dev\robei-mcp\tools\gui\register_task.py --remove   # 删除
 
 - 固定工具白名单，`shell=False`，不执行任意命令。
 - 源码路径必须在 `workspace/` 内；模型读取只允许 `model_roots` 里的目录（默认 `C:\ProgramData\Robei` + 工作区）。
-- 每次运行独立目录 `build/<kind>-<timestamp>-<uuid>`，不覆盖旧文件；改模型前自动备份。
+- 每次运行独立目录 `build/<kind>-<timestamp>-<uuid>`，不覆盖旧文件；改模型前自动备份，
+  备份名带微秒+序号，**同一秒内的两次修改不会互相覆盖**。
 - `simulate` 编译前静态扫描 `` `include `` / `$fopen` / `$readmemh` / `$writememh` / `$dumpfile`：
-  字面量路径逃出工作区直接拒绝，且不启动编译器；非字面量列进 `unresolved`，不做猜测性放行。
+  字面量路径逃出工作区直接拒绝，且不启动编译器；`include` 会**递归解析**（最多 8 层，防环），
+  被包含文件里的越界字面量同样拦下。
+- 严格模式（默认 `strict_path_scan=true`）下，无法静态判定的路径参数（`$readmemh(PATH)`、
+  `$fopen(name)`）也计入 `security.rejected`，`simulate` 返回 `stage="security_scan"` 且不编译；
+  确实需要动态路径时显式设 `ROBEI_MCP_STRICT_PATHS=0`，此时它们只进 `unresolved`。
+- 这条静态扫描是**工具链输入检查**，不是 OS 沙箱：它约束的是"我的编译器去读哪个文件"，
+  不限制同机其他进程。
 - 子进程有超时（默认 30s，上限 120s）、输出有长度上限、`TMP/TEMP` 指向运行目录。
 - `E:\Robei` 只读；不写系统设置、不写注册表。
 
@@ -174,7 +199,11 @@ python C:\dev\robei-mcp\tools\gui\register_task.py --remove   # 删除
 - Verilator 5.036 对"声明了但既不用也不驱动"的 net 不报 `UNUSEDSIGNAL`，这一项由 Yosys
   `opt_clean` 前后网表 diff 兜底；Icarus 12.0 的 `-Wall` 不报未使用信号。
 - Yosys 只做可综合性粗检，不做时序/面积签核；ERC 是教学级静态检查（不分析组合环）。
-- `truth_table` 上限 8 个输入；`generate_testbench` 只生成骨架，不理解设计语义。
+- `truth_table` 上限是 8 个**输入位**（多个窄端口加起来算），超过会报
+  `invalid_argument`；`generate_testbench` 只生成骨架，不理解设计语义。
+- 非 ASCII 路径（`C:\项目\验证\a.v`）在 Windows 上会先转成 8.3 短路径再交给
+  `iverilog`/`vvp`/`yosys`/`verilator`；如果该盘关了 8.3 生成且路径又真的不可表示，
+  会返回 `unsupported_path` 而不是让工具链报一堆乱码。
 - 核心工具在 Linux/macOS 上可用（有 iverilog 即可），GUI 与 Robei 版本读取是 Windows 专属。
 
 完整清单（含每条限制的原因和实测证据）见 [docs/verification-log.md](docs/verification-log.md)。
@@ -194,6 +223,7 @@ python C:\dev\robei-mcp\tools\gui\register_task.py --remove   # 删除
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q            # 单元测试（不需要 Robei）
+.\.venv\Scripts\python.exe -m pytest tests\test_regressions.py -q   # 1.0.2 的解析/波形/安全回归
 .\.venv\Scripts\python.exe tests\stage3_cases.py   # 核心：警告/语法错误/超时/残留进程
 .\.venv\Scripts\python.exe tests\stage21_packaging.py   # 打包与 GUI 可选面
 ```

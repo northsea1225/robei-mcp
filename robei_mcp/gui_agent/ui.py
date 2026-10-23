@@ -1052,7 +1052,7 @@ def _expand_tree_item(item) -> int | None:
 
 def _tree_entries(tree) -> list[dict]:
     rows = []
-    for item in tree.descendants(control_type="TreeItem")[:80]:
+    for item in tree.descendants(control_type="TreeItem")[:400]:
         try:
             rows.append({"text": item.window_text(), "state": _tree_state(item), "item": item})
         except Exception:
@@ -1072,23 +1072,46 @@ def open_model(name: str) -> dict:
         return {"ok": False, "error": "Files tree not found"}
 
     wanted = name.lower()
+    stem = wanted.rsplit(".", 1)[0]
+    suffix = "." + wanted.rsplit(".", 1)[1] if "." in wanted else ""
+    folder_names = {
+        ".model": {"model"},
+        ".test": {"test"},
+        ".const": {"const", "constrain"},
+        ".constrain": {"const", "constrain"},
+        ".v": {"verilog"},
+        ".vf": {"verilog"},
+    }.get(suffix, set())
     target = None
-    expanded: list[str] = []
-    for _ in range(5):
+    expanded: set[tuple[str, int]] = set()
+    for _ in range(10):
         entries = _tree_entries(tree)
-        target = next((e["item"] for e in entries if e["text"].lower() == wanted), None)
+        target = next(
+            (
+                e["item"]
+                for e in entries
+                if e["text"].lower() == wanted
+                or ("." not in wanted and e["text"].lower().rsplit(".", 1)[0] == wanted)
+            ),
+            None,
+        )
         if target is not None:
             break
-        collapsed = [
-            e
-            for e in entries
-            if e["state"] != 1 and e["text"] not in expanded
-        ]
-        if not collapsed:
+        # Folders have no extension and are not expanded yet.  Depending on the
+        # Qt/UIA version a collapsed container reports state 0 or None, so both
+        # are accepted; files always carry `.model`/`.test`/... and are skipped.
+        collapsed = [e for e in entries if e["state"] != 1 and "." not in e["text"]]
+        preferred = [e for e in collapsed if e["text"].lower() in folder_names]
+        for candidate in preferred + collapsed:
+            key = (candidate["text"], id(candidate["item"]))
+            if key in expanded:
+                continue
+            expanded.add(key)
+            _expand_tree_item(candidate["item"])
+            time.sleep(0.2)
             break
-        current = collapsed[0]
-        expanded.append(current["text"])
-        _expand_tree_item(current["item"])
+        else:
+            break
 
     if target is None:
         return {
@@ -1103,11 +1126,16 @@ def open_model(name: str) -> dict:
     _double_click(_center(rect))
     time.sleep(2.5)
     models = model_tabs(dlg)
+    active = active_model(dlg)
+    active_lower = (active or "").lower()
     return {
-        "ok": wanted.rsplit(".", 1)[0] in [m.lower() for m in models],
+        # The active tab is the real proof; a stale tab from the previous project
+        # must not turn a failed double-click into success.  Fall back to the tab
+        # list only while the IDE has not reported an active tab yet.
+        "ok": active_lower == stem if active_lower else stem in [m.lower() for m in models],
         "opened": name,
         "models": models,
-        "active": active_model(dlg),
+        "active": active,
         "tree": [e["text"] for e in _tree_entries(tree)],
     }
 

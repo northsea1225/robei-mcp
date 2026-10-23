@@ -167,6 +167,24 @@ def run(deep: bool = False) -> dict[str, Any]:
         task = gui.task_status()
     except Exception as exc:
         task = {"exists": False, "error": f"{type(exc).__name__}: {exc}"}
+    if os.name == "nt":
+        try:
+            import importlib.util
+
+            missing_gui = [m for m in ("pywinauto", "PIL", "win32gui") if importlib.util.find_spec(m) is None]
+        except Exception as exc:
+            missing_gui = [f"import check failed: {type(exc).__name__}: {exc}"]
+    else:
+        missing_gui = []
+    checks.append(
+        _check(
+            "gui_deps",
+            not missing_gui,
+            missing_gui or ("present" if os.name == "nt" else "not Windows; GUI is optional"),
+            "install the GUI extra: .venv\\Scripts\\python.exe -m pip install -e .[gui]",
+            required=False,
+        )
+    )
     checks.append(
         _check(
             "gui_task",

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "robei-mcp"
-version = "1.0.1"
+version = "1.0.2"
 description = "MCP server for Robei EDA: Verilog toolchain, project XML, and IDE automation over UIA"
 readme = "README.md"
 license = { text = "MIT" }
@@ -20,6 +20,11 @@ Changelog = "https://github.com/northsea1225/robei-mcp/blob/master/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+gui = [
+  "pywinauto>=0.6.9",
+  "Pillow>=10",
+  "pywin32>=306; sys_platform == 'win32'",
+]
 
 [project.scripts]
 robei-mcp = "robei_mcp.__main__:main"

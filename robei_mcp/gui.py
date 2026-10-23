@@ -37,10 +37,21 @@ def available() -> bool:
 
     ``ROBEI_MCP_GUI=0`` forces it off even on Windows, which hides the tools
     from ``tools/list`` entirely (useful for CI and for file-level-only use).
+    The optional GUI dependencies are checked explicitly: importing
+    ``gui_agent.ui`` alone succeeds because pywinauto/Pillow are imported
+    lazily, which used to advertise GUI tools that could never run.
     """
     if os.environ.get("ROBEI_MCP_GUI", "").strip().lower() in {"0", "false", "off", "no"}:
         return False
     if os.name != "nt":
+        return False
+    try:
+        import importlib.util
+
+        for module in ("pywinauto", "PIL", "win32gui"):
+            if importlib.util.find_spec(module) is None:
+                return False
+    except Exception:
         return False
     try:
         from .gui_agent import driver, ui  # noqa: F401

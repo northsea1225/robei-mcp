@@ -6,7 +6,17 @@ MCP 直接驱动 Robei 本体。底层走 Robei 自编入的 **UIA provider**（
 ## 前置条件
 
 1. Windows 上有**已登录且未锁屏**的交互桌面（Session 1）。
-2. 注册辅助任务（只需一次）：
+2. 装 GUI 依赖（`pywinauto`、`Pillow`、`pywin32`）：
+
+   ```powershell
+   .\.venv\Scripts\python.exe -m pip install -e ".[gui]"
+   ```
+
+   三个包缺任何一个，`gui.available()` 就是 false，10 个 `robei_gui_*` 工具**不会出现在
+   `tools/list`** 里（不是调用时才报错）；`tools\setup.py --apply` 也会在 Windows 上补装。
+   `robei_doctor` 的 `gui_deps` 一项会逐个报缺什么。
+
+3. 注册辅助任务（只需一次）：
 
 ```powershell
 python tools\gui\register_task.py            # 创建/刷新 RobeiMCP_GuiAgent
@@ -33,13 +43,18 @@ python tools\gui\register_task.py --remove   # 不再需要时删除
 | `robei_gui_status(output_lines=20)` | 是否在运行、当前工程、打开的模型页签、Output 尾部 | `running` `project` `tree` `models` `output_tail` `bridge` |
 | `robei_gui_launch(wait_s=30)` | 启动 Robei（默认 `D:\robei-lab\robei\bin\Robei.exe`，可用 `ROBEI_GUI_EXE` 覆盖） | `pid` `title` `already_running` |
 | `robei_gui_open_project(proj_path, timeout_s=90)` | File→Open，键入绝对路径并回车，随后用 Files 树根节点校验 | `project` `tree` `dialog` |
-| `robei_gui_open_model(name, timeout_s=90)` | 展开 Files 树（Qt 忽略 UIA 展开模式，改用 `点击 + →`）后双击模型 | `models` `tree` |
+| `robei_gui_open_model(name, timeout_s=90)` | 展开 Files 树（Qt 忽略 UIA 展开模式，改用 `点击 + →`）后双击模型 | `models` `tree` `active` |
 | `robei_gui_compile(timeout_s=90)` | Build→Compile，解析 `Output` 增量 | `generated` `errors` `warnings` `missing_modules` `check_warnings` |
 | `robei_gui_output(lines=80)` | Output 面板末 N 行 | `text` `lines_total` |
 | `robei_gui_close()` | `taskkill /F /IM Robei.exe` | `stdout` |
 
 路径校验：`robei_gui_open_project` 复用 `security.resolve_project_path`，
 只允许 `workspace`、`ROBEI_MODEL_ROOTS`（默认 `C:\ProgramData\Robei`）和 `ROBEI_HOME\project` 之下的 `.proj`。
+
+`robei_gui_open_model` 的查找顺序：`model/` → `test/` → `const/` → `verilog/`，只展开
+真正还是目录节点、且名字没有扩展名的项，最多重试 10 轮（Qt 展开是异步的，一次点击
+未必立刻出子节点）；树的读取上限 400 项。`ok` 以 `active` 是否等于目标为准——
+激活失败但模型名出现在 `models` 里，仍然算失败，并回退报告树的当前状态。
 
 ## 实测
 

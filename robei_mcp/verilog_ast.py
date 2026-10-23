@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .verilog import IDENT, _match_paren, _split_top_level, parse_module_ports, strip_comments
+from .verilog import IDENT, _match_paren, _split_top_level, parse_module_ports, strip_comments, width_of
 
 KEYWORDS = {
     "module", "endmodule", "input", "output", "inout", "wire", "reg", "logic", "tri",
@@ -24,19 +24,12 @@ KEYWORDS = {
 _MODULE_RE = re.compile(rf"\bmodule\s+({IDENT})")
 _WIRE_RE = re.compile(rf"(?m)^\s*(?:wire|logic|tri)\s*(?:\[([^\]]*)\])?\s*([^;]+);")
 _ASSIGN_RE = re.compile(r"\bassign\s+([^;=]+?)\s*=\s*([^;]+);")
-_INSTANCE_RE = re.compile(rf"(?m)^\s*({IDENT})\s+(?:#\s*\([^;]*?\)\s*)?({IDENT})\s*\(")
-
-
-def width_of(range_text: str | None) -> int:
-    """``[3:0]`` -> 4, ``[7:4]`` -> 4, ``""`` -> 1."""
-    text = (range_text or "").strip()
-    if not text:
-        return 1
-    match = re.fullmatch(r"\[\s*(\d+)\s*:\s*(\d+)\s*\]", text)
-    if not match:
-        return 1
-    high, low = int(match.group(1)), int(match.group(2))
-    return abs(high - low) + 1
+# Instances may follow another statement on the same line, so this is not
+# anchored to a line start.  The lookbehind keeps `.name(` method-style text
+# and `$func(` system calls from being read as module instantiations.
+_INSTANCE_RE = re.compile(
+    rf"(?<![\w.$])({IDENT})\s+(?:#\s*\([^;]*?\)\s*)?({IDENT})\s*\("
+)
 
 
 def _module_spans(text: str) -> list[tuple[str, int, int]]:

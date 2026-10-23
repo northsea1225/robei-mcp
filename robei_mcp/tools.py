@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -28,12 +29,45 @@ from .security import (
     scan_source_paths,
 )
 from .vcd import find_events as vcd_find_events
-from .vcd import parse_vcd, query_vcd, render_waveform_png
+from .vcd import match_signals, parse_vcd, query_vcd, render_waveform_png, timescale_fs
 from .verilog import generate_testbench as build_testbench
 from .verilog import parse_module_ports, classify_control
 
 TOP_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 FILE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_RENDER_LOCK = threading.Lock()
+
+
+def _tool_path(path: Path | str) -> str:
+    """Return a path the bundled Windows tools can actually open.
+
+    Icarus/Yosys here open files through the ANSI CRT, so a non-ASCII path turns
+    into ``??`` before the tool ever sees it.  Windows still offers an 8.3 alias
+    for most volumes; use it when available and fail clearly when it is not.
+    """
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = candidate.resolve()
+    text = str(candidate)
+    if os.name != "nt" or text.isascii():
+        return text
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        size = kernel32.GetShortPathNameW(text, None, 0)
+        if size:
+            buffer = ctypes.create_unicode_buffer(size)
+            if kernel32.GetShortPathNameW(text, buffer, size):
+                short = buffer.value
+                if short and short.isascii():
+                    return short
+    except Exception:
+        pass
+    raise ValueError(
+        "unsupported_path: this Windows iverilog/yosys build cannot open non-ASCII "
+        f"paths and no 8.3 alias is available: {text}; move the project to an ASCII path"
+    )
 
 
 def _clip(text: str, limit: int | None = None) -> str:
@@ -248,10 +282,13 @@ def runtime_status() -> dict[str, Any]:
         mcp_version = package_version("mcp")
     except PackageNotFoundError:
         mcp_version = None
+    from . import __version__ as server_version
+
     required = ("robei", "iverilog", "vvp", "yosys")
     return {
         "ok": all(tools[name]["exists"] for name in required),
         "verilator_available": verilator["exists"] and verilator["root_exists"],
+        "server_version": server_version,
         "mcp_version": mcp_version,
         "python_executable": sys.executable,
         "python_version": sys.version.split()[0],
@@ -259,6 +296,7 @@ def runtime_status() -> dict[str, Any]:
         "robei_home": str(SETTINGS.robei_home),
         "model_roots": [str(p) for p in SETTINGS.model_roots],
         "tools": tools,
+        "security": {"strict_path_scan": SETTINGS.strict_path_scan},
         "limits": {
             "default_timeout_s": SETTINGS.default_timeout_s,
             "max_timeout_s": SETTINGS.max_timeout_s,
@@ -285,7 +323,7 @@ def _valid_top(top: str | None) -> str | None:
 
 
 def _quote_yosys(path: Path) -> str:
-    return '"' + path.as_posix().replace('"', '\\"') + '"'
+    return '"' + Path(_tool_path(path)).as_posix().replace('"', '\\"') + '"'
 
 
 def _yosys_summary(text: str) -> list[str]:
@@ -350,7 +388,7 @@ def _verilator_lint(sources: list[Path], top: str | None, timeout_s: int, run_di
     ]
     if top:
         cmd.extend(["--top-module", top])
-    cmd.extend(sources)
+    cmd.extend(_tool_path(source) for source in sources)
     result = _run(cmd, cwd=run_dir, timeout_s=timeout_s, env_extra={"VERILATOR_ROOT": str(SETTINGS.verilator_root)})
     text = (result.get("stdout") or "") + (result.get("stderr") or "")
     warnings, errors = _parse_verilator(text)
@@ -482,11 +520,11 @@ def lint_verilog(
         "-Wall",
         "-g2012",
         "-o",
-        iverilog_out,
+        _tool_path(iverilog_out),
     ]
     if top:
         iverilog_cmd.extend(["-s", top])
-    iverilog_cmd.extend(sources)
+    iverilog_cmd.extend(_tool_path(source) for source in sources)
     _notify(progress, 0, 4, "iverilog -Wall")
     iverilog_result = _run(iverilog_cmd, cwd=run_dir, timeout_s=timeout_s)
 
@@ -558,7 +596,7 @@ def simulate(
             "ok": False,
             "code": "path_rejected",
             "stage": "security_scan",
-            "reason": "source references paths outside the workspace",
+            "reason": "source references paths outside the workspace or paths that cannot be verified statically",
             "security": scan,
             "compile": None,
             "simulation": None,
@@ -569,7 +607,15 @@ def simulate(
 
     _notify(progress, 0, 2, "iverilog: compiling")
     compile_result = _run(
-        [SETTINGS.iverilog, "-g2012", "-s", top, "-o", sim_vvp, *sources],
+        [
+            SETTINGS.iverilog,
+            "-g2012",
+            "-s",
+            top,
+            "-o",
+            _tool_path(sim_vvp),
+            *[_tool_path(source) for source in sources],
+        ],
         cwd=run_dir,
         timeout_s=timeout_s,
     )
@@ -587,7 +633,7 @@ def simulate(
 
     _notify(progress, 1, 2, "vvp: running testbench")
     sim_result = _run(
-        [SETTINGS.vvp, sim_vvp],
+        [SETTINGS.vvp, _tool_path(sim_vvp)],
         cwd=run_dir,
         timeout_s=timeout_s,
     )
@@ -600,7 +646,7 @@ def simulate(
         "code": _failure_code(sim_result, "run_failed"),
         "stage": "run",
         "run_dir": _rel(run_dir),
-        "security": {k: scan[k] for k in ("ok", "rejected", "unresolved")},
+        "security": {k: scan[k] for k in ("ok", "strict", "rejected", "unresolved")},
         "compile": compile_result,
         "simulation": sim_result,
         "display_output": _clip(
@@ -640,8 +686,9 @@ def simulate_project(
 
     _notify(progress, 0, 3, "parsing test model")
     test_model = parse_robei_model(test_path)
-    out_dir = SETTINGS.workspace / "build" / "headless" / f"{project_dir.name}-{stem}"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # One directory per run: two concurrent simulations of the same test used to
+    # rewrite the same tb_source/deps files while the other process was reading.
+    out_dir = _new_run_dir(f"headless-{project_dir.name}-{stem}")
     tb_src = out_dir / f"{stem}.v"
     timescale = test_model.get("timescale") or "1ns/1ns"
     body = test_model["code"]
@@ -698,7 +745,7 @@ def simulate_project(
 def _norm_value(value: str | None) -> str | None:
     if value is None:
         return None
-    text = str(value).strip().lower()
+    text = str(value).strip().lower().replace("_", "")
     if text.startswith(("b", "r", "s")) and len(text) > 1:
         text = text[1:]
     if text and all(ch in "01" for ch in text):
@@ -728,64 +775,140 @@ def compare_waveforms(
 
     Values are compared at the union of both timelines, so a signal that simply
     never toggles in one run is reported at the moment the other one does.
+    Timescales are converted to a common unit instead of comparing raw ticks.
+    Missing signals, width mismatches, an empty intersection and differing run
+    lengths all make the result ``ok: false`` — a comparison that silently
+    skips most of the data is not a pass.
     """
     golden_path = resolve_vcd_path(golden_vcd)
     dut_path = resolve_vcd_path(dut_vcd)
     golden = parse_vcd(golden_path)
     dut = parse_vcd(dut_path)
+    max_mismatches = max(1, min(int(max_mismatches), 1000))
 
     if signals:
-        wanted = [s.full_name for s in match_signals(golden, signals)]
+        requested: list[str] = []
+        for query in signals:
+            try:
+                requested.append(match_signals(golden, [query])[0].full_name)
+            except KeyError:
+                # It may exist only in the DUT; keep the name so it is reported
+                # as missing_in_golden instead of crashing the whole comparison.
+                requested.append(match_signals(dut, [query])[0].full_name)
+        missing_dut = [n for n in requested if n not in dut.signals]
+        missing_golden = [n for n in requested if n not in golden.signals]
+        comparable = [n for n in requested if n in golden.signals and n in dut.signals]
     else:
-        wanted = [name for name in golden.signals if name in dut.signals]
-    missing_golden = [n for n in wanted if n not in golden.signals]
-    missing_dut = [n for n in wanted if n not in dut.signals]
-    comparable = [n for n in wanted if n in golden.signals and n in dut.signals]
+        missing_dut = [n for n in golden.signals if n not in dut.signals]
+        missing_golden = [n for n in dut.signals if n not in golden.signals]
+        comparable = [n for n in golden.signals if n in dut.signals]
+
+    g_fs = timescale_fs(golden.timescale)
+    d_fs = timescale_fs(dut.timescale)
+    timescale_known = g_fs is not None and d_fs is not None
 
     results: list[dict[str, Any]] = []
     total = 0
+    incompatible: list[str] = []
     for name in comparable:
         g_sig = golden.signals[name]
         d_sig = dut.signals[name]
         g_changes, g_times = _sorted_changes(golden, g_sig)
         d_changes, d_times = _sorted_changes(dut, d_sig)
-        timeline = sorted({t for t, _ in g_changes} | {t for t, _ in d_changes})
+        width_matches = g_sig.width == d_sig.width
+        if not width_matches:
+            incompatible.append(name)
+            results.append(
+                {
+                    "signal": name,
+                    "width": g_sig.width,
+                    "dut_width": d_sig.width,
+                    "width_matches": False,
+                    "golden_changes": len(g_changes),
+                    "dut_changes": len(d_changes),
+                    "mismatch_count": 0,
+                    "first_mismatch": None,
+                    "mismatches": [],
+                    "skipped_reason": "width mismatch",
+                }
+            )
+            continue
+
+        if timescale_known:
+            timeline = sorted({t * g_fs for t in g_times} | {t * d_fs for t in d_times})
+        else:
+            timeline = sorted(set(g_times) | set(d_times))
         mismatches: list[dict[str, Any]] = []
+        count = 0
         for when in timeline:
-            gv = _value_at_changes(g_changes, g_times, when)
-            dv = _value_at_changes(d_changes, d_times, when)
+            if timescale_known:
+                gv = _value_at_changes(g_changes, g_times, when // g_fs)
+                dv = _value_at_changes(d_changes, d_times, when // d_fs)
+            else:
+                gv = _value_at_changes(g_changes, g_times, when)
+                dv = _value_at_changes(d_changes, d_times, when)
             if _norm_value(gv) != _norm_value(dv):
+                count += 1
                 if len(mismatches) < max_mismatches:
-                    mismatches.append({"time": when, "golden": gv, "dut": dv})
-                total += 1
+                    entry: dict[str, Any] = {
+                        "time": when // g_fs if timescale_known else when,
+                        "golden": gv,
+                        "dut": dv,
+                    }
+                    if timescale_known:
+                        entry["time_fs"] = when
+                        entry["golden_time"] = when // g_fs
+                        entry["dut_time"] = when // d_fs
+                    mismatches.append(entry)
+        total += count
         results.append(
             {
                 "signal": name,
                 "width": g_sig.width,
-                "width_matches": g_sig.width == d_sig.width,
+                "dut_width": d_sig.width,
+                "width_matches": True,
                 "golden_changes": len(g_changes),
                 "dut_changes": len(d_changes),
-                "mismatch_count": sum(
-                    1
-                    for when in timeline
-                    if _norm_value(_value_at_changes(g_changes, g_times, when))
-                    != _norm_value(_value_at_changes(d_changes, d_times, when))
-                ),
+                "mismatch_count": count,
                 "first_mismatch": mismatches[0] if mismatches else None,
                 "mismatches": mismatches,
             }
         )
 
     differing = [row for row in results if row["mismatch_count"]]
+    reasons: list[str] = []
+    if not comparable:
+        reasons.append("no comparable signals")
+    if missing_dut:
+        reasons.append(f"{len(missing_dut)} golden signal(s) missing in dut")
+    if missing_golden:
+        reasons.append(f"{len(missing_golden)} dut signal(s) missing in golden")
+    if incompatible:
+        reasons.append(f"{len(incompatible)} signal(s) have different widths")
+    if differing:
+        reasons.append(f"{total} value mismatch(es)")
+    if not timescale_known:
+        reasons.append("timescale missing/unparseable; raw ticks could not be verified")
+    max_time_matches = golden.max_time == dut.max_time
+    if not max_time_matches:
+        reasons.append("max_time differs")
+    elif golden.max_time is None:
+        reasons.append("no time markers in either VCD")
     return {
-        "ok": not differing and not missing_dut,
+        "ok": not reasons,
+        "reasons": reasons,
         "golden": str(golden_path),
         "dut": str(dut_path),
         "timescale": {"golden": golden.timescale, "dut": dut.timescale},
+        "timescale_fs": {"golden": g_fs, "dut": d_fs},
+        "timescale_comparable": timescale_known,
         "max_time": {"golden": golden.max_time, "dut": dut.max_time},
+        "max_time_matches": max_time_matches,
         "signal_count": len(comparable),
+        "compared_signal_count": len(comparable) - len(incompatible),
         "mismatch_total": total,
         "differing_signals": [row["signal"] for row in differing],
+        "incompatible_signals": incompatible,
         "missing_in_dut": missing_dut,
         "missing_in_golden": missing_golden,
         "results": results,
@@ -836,13 +959,21 @@ def render_waveform(
         out_path = SETTINGS.workspace / "build" / "waveforms" / out_name
     else:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        out_path = SETTINGS.workspace / "build" / "waveforms" / f"{path.stem}-{stamp}.png"
+        out_path = (
+            SETTINGS.workspace
+            / "build"
+            / "waveforms"
+            / f"{path.stem}-{stamp}-{uuid.uuid4().hex[:8]}.png"
+        )
     out_path = out_path.resolve()
     if not str(out_path).startswith(str(SETTINGS.workspace.resolve()) + os.sep):
         raise ValueError(f"output path escapes workspace: {out_path}")
     if out_path.exists():
         raise FileExistsError(f"refusing to overwrite existing file: {out_path}")
-    result = render_waveform_png(data, signals, out_path, title=title)
+    # matplotlib keeps process-global state; concurrent renders in the MCP
+    # worker pool must not interleave.
+    with _RENDER_LOCK:
+        result = render_waveform_png(data, signals, out_path, title=title)
     result["ok"] = True
     result["relative_path"] = _rel(out_path)
     result["vcd"] = _rel(path)
@@ -1238,8 +1369,7 @@ def set_port(
     ET.fromstring(new_text)  # raises on malformed XML
 
     sha_before = _sha256(path)
-    backup = path.with_name(path.name + ".bak-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
-    backup.write_text(text, encoding="utf-8", newline="")
+    backup = _backup_file(path)
     with path.open("w", encoding="utf-8", newline="") as handle:
         handle.write(new_text)
 
@@ -1334,8 +1464,13 @@ def _register_model_in_project(proj_path: Path, model_name: str) -> str:
 def _backup_file(target: Path) -> Path | None:
     if not target.exists():
         return None
-    backup = target.with_name(target.name + ".bak-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
-    backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    backup = target.with_name(target.name + ".bak-" + stamp)
+    counter = 1
+    while backup.exists():
+        backup = target.with_name(target.name + ".bak-" + stamp + f"-{counter}")
+        counter += 1
+    backup.write_bytes(target.read_bytes())
     return backup
 
 
@@ -1730,8 +1865,7 @@ def create_robei_model(
     ET.fromstring(xml_text)
     backup = None
     if target.exists():
-        backup = target.with_name(target.name + ".bak-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
-        backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+        backup = _backup_file(target)
     target.write_text(xml_text, encoding="utf-8", newline="\n")
     registration = _register_model_in_project(proj, name)
 

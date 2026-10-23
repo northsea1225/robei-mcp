@@ -60,13 +60,22 @@ async def _invoke(fn, ctx: Context | None, label: str, **kwargs):
     """
     token = runstate.RunToken()
     loop = asyncio.get_running_loop()
+    state = {"done": 0.0, "total": 1.0}
 
     def report(done: float, total: float, message: str) -> None:
         if ctx is None:
             return
         try:
+            # Tools use different totals (simulate: 2, lint: 4, ...).  Keep one
+            # non-decreasing total and never move the counter backwards.
+            total = float(total or 1.0)
+            if total <= 0:
+                total = 1.0
+            state["total"] = max(state["total"], total)
+            done = min(max(float(done), state["done"]), state["total"])
+            state["done"] = done
             asyncio.run_coroutine_threadsafe(
-                ctx.report_progress(done, total, f"{label}: {message}"), loop
+                ctx.report_progress(done, state["total"], f"{label}: {message}"), loop
             )
         except Exception:
             pass
@@ -81,7 +90,7 @@ async def _invoke(fn, ctx: Context | None, label: str, **kwargs):
     except anyio.get_cancelled_exc_class():
         token.abort()
         raise
-    await _quiet_progress(ctx, 1, 1, f"{label}: done")
+    await _quiet_progress(ctx, state["total"], state["total"], f"{label}: done")
     return result
 
 
@@ -482,15 +491,18 @@ def export_robei_xdc(
     out_name: str | None = None,
     iostandard: str = "LVCMOS33",
     also_build: bool = False,
+    quote_bus: bool = True,
 ) -> dict[str, Any]:
     """Project a .const into <proj>/constrain/<name>.xdc (PACKAGE_PIN + IOSTANDARD lines).
 
     also_build=True also writes <proj>/build/<name>.xdc, the copy Build > Route reads.
+    quote_bus=True emits standard Tcl ([get_ports {swt[0]}]); set it False only
+    for a Robei build that requires its legacy unquoted spelling.
     """
     try:
         return constraints.export_xdc(
             proj_path=proj_path, const_name=const_name, out_name=out_name,
-            iostandard=iostandard, also_build=also_build,
+            iostandard=iostandard, also_build=also_build, quote_bus=quote_bus,
         )
     except Exception as exc:
         return _error(exc)

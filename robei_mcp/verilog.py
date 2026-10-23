@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 from typing import Any
 
@@ -13,6 +14,11 @@ _DECL_RE = re.compile(
     rf"^\s*(input|output|inout)\b\s*(?:(wire|reg|logic|tri)\b)?\s*(?:(signed|unsigned)\b)?"
     rf"\s*(?:\[([^\]]*)\])?\s*(.+?)\s*$",
     re.IGNORECASE | re.DOTALL,
+)
+_BARE_PORT_RE = re.compile(rf"^\s*(?:\[([^\]]*)\])?\s*({IDENT})\s*$", re.IGNORECASE)
+_BODY_DECL_RE = re.compile(
+    r"(?:\A|(?<=;)|(?<=\n))[ \t]*(input|output|inout)\b[^;]*;",
+    re.IGNORECASE,
 )
 _COMMENT_RE = re.compile(r"//[^\n]*|/\*.*?\*/", re.DOTALL)
 
@@ -89,7 +95,12 @@ def module_header(text: str, top: str) -> str | None:
 
 
 def parse_module_ports(source: str, top: str) -> list[dict[str, Any]]:
-    """Parse ANSI-style ports (falls back to non-ANSI body declarations)."""
+    """Parse ANSI-style ports (falls back to non-ANSI body declarations).
+
+    ANSI shorthand is legal Verilog (``input wire [3:0] a, b, c``): every bare
+    name after the first declaration inherits its direction, type and range.
+    Widths are always stored without the surrounding brackets (``3:0``).
+    """
     text = strip_comments(source)
     header = module_header(text, top)
     if header is None:
@@ -100,19 +111,38 @@ def parse_module_ports(source: str, top: str) -> list[dict[str, Any]]:
     if paren != -1:
         end = _match_paren(header, paren)
         inner = header[paren + 1 : end if end != -1 else len(header)]
+        direction: str | None = None
+        datatype = "wire"
+        width = ""
         for item in _split_top_level(inner):
             match = _ANSI_PORT_RE.match(item)
-            if not match:
+            if match:
+                raw_direction, raw_type, _signed, raw_width, name = match.groups()
+                direction = raw_direction.lower()
+                datatype = (raw_type or "wire").lower()
+                width = (raw_width or "").strip()
+                ports.append(
+                    {
+                        "name": name,
+                        "direction": direction,
+                        "datatype": datatype,
+                        "width": width,
+                    }
+                )
                 continue
-            direction, datatype, _signed, width, name = match.groups()
-            ports.append(
-                {
-                    "name": name,
-                    "direction": direction.lower(),
-                    "datatype": (datatype or "wire").lower(),
-                    "width": (width or "").strip(),
-                }
-            )
+            bare = _BARE_PORT_RE.match(item)
+            if bare and direction:
+                raw_width, name = bare.groups()
+                if raw_width is not None:
+                    width = raw_width.strip()
+                ports.append(
+                    {
+                        "name": name,
+                        "direction": direction,
+                        "datatype": datatype,
+                        "width": width,
+                    }
+                )
 
     if ports:
         return ports
@@ -120,16 +150,20 @@ def parse_module_ports(source: str, top: str) -> list[dict[str, Any]]:
     # Non-ANSI: declarations in the module body.
     match = re.search(rf"\bmodule\s+{re.escape(top)}\b", text)
     body_start = match.end() if match else 0
-    body = text[body_start:]
-    for decl in re.finditer(r"(?m)^\s*(input|output|inout)\b[^;]*;", body):
-        statement = decl.group(0).rstrip(";")
+    body_end = text.find("endmodule", body_start)
+    body = text[body_start : body_end if body_end != -1 else len(text)]
+    # Declarations may follow the header on the same line
+    # (``module m(a); input a; output y; ...``), so require start-of-module,
+    # a newline or a preceding semicolon instead of only line starts.
+    for decl in _BODY_DECL_RE.finditer(body):
+        statement = decl.group(0).strip().rstrip(";")
         parsed = _DECL_RE.match(statement)
         if not parsed:
             continue
         direction, datatype, _signed, width, names = parsed.groups()
         for name in names.split(","):
             name = name.strip()
-            if IDENT.fullmatch(name) is None and not name:
+            if not name or re.fullmatch(IDENT, name) is None:
                 continue
             ports.append(
                 {
@@ -144,15 +178,69 @@ def parse_module_ports(source: str, top: str) -> list[dict[str, Any]]:
     return ports
 
 
+_CONST_EXPR_RE = re.compile(r"^[0-9+\-*/() \t]+$")
+
+
+def const_eval(text: str | None) -> int | None:
+    """Evaluate a constant integer expression such as ``4-1`` or ``2*4``.
+
+    Only decimal literals and ``+ - * / // %`` with parentheses are accepted.
+    Anything else (identifiers, bit selects, function calls) returns ``None``
+    so callers fall back to a conservative interpretation.  This deliberately
+    avoids ``eval``.
+    """
+    source = (text or "").strip()
+    if not source or not _CONST_EXPR_RE.match(source):
+        return None
+    try:
+        tree = ast.parse(source, mode="eval")
+    except (SyntaxError, ValueError, MemoryError):
+        return None
+
+    def visit(node: ast.AST) -> int:
+        if isinstance(node, ast.Expression):
+            return visit(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+            return node.value
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            value = visit(node.operand)
+            return value if isinstance(node.op, ast.UAdd) else -value
+        if isinstance(node, ast.BinOp):
+            left = visit(node.left)
+            right = visit(node.right)
+            if isinstance(node.op, ast.Add):
+                return left + right
+            if isinstance(node.op, ast.Sub):
+                return left - right
+            if isinstance(node.op, ast.Mult):
+                return left * right
+            if isinstance(node.op, ast.Div):
+                return left // right
+            if isinstance(node.op, ast.FloorDiv):
+                return left // right
+            if isinstance(node.op, ast.Mod):
+                return left % right
+        raise ValueError("unsupported expression")
+
+    try:
+        return visit(tree)
+    except (ValueError, ZeroDivisionError, RecursionError):
+        return None
+
+
 def width_of(range_text: str | None) -> int:
-    """``[3:0]`` -> 4, ``[7:4]`` -> 4, ``""`` -> 1."""
+    """``[3:0]``/``3:0`` -> 4, ``[7:4]`` -> 4, ``[4-1:0]`` -> 4, ``""`` -> 1."""
     text = (range_text or "").strip()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1].strip()
     if not text:
         return 1
-    match = re.fullmatch(r"\[\s*(\d+)\s*:\s*(\d+)\s*\]", text)
-    if not match:
+    high_text, sep, low_text = text.partition(":")
+    if not sep:
         return 1
-    high, low = int(match.group(1)), int(match.group(2))
+    high, low = const_eval(high_text), const_eval(low_text)
+    if high is None or low is None:
+        return 1
     return abs(high - low) + 1
 
 
@@ -193,6 +281,9 @@ def classify_control(ports: list[dict[str, Any]]) -> tuple[str | None, str | Non
 
 def _decl(direction: str, width: str, name: str, init: str = "") -> str:
     kind = "reg" if direction == "input" else "wire"
+    width = (width or "").strip()
+    if width.startswith("[") and width.endswith("]"):
+        width = width[1:-1].strip()
     range_part = f" [{width}]" if width else ""
     suffix = f" = {init}" if init else ""
     return f"    {kind}{range_part} {name}{suffix};"

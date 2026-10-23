@@ -32,3 +32,9 @@
 [limits]
 # default_timeout_s = 30
 # max_timeout_s = 120
+
+[security]
+# false lets simulate() compile `$readmemh(var)` / `$fopen(var)`-style code it
+# cannot verify statically.  The default (true) rejects such sources before the
+# compiler starts, including paths reached through `include.
+# strict_path_scan = true

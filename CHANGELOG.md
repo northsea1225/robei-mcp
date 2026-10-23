@@ -2,6 +2,82 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.0.2 — 2026-10-24
+
+**一轮完整的 QA 回归：38 个工具逐个打，修正 18 处行为。** 工具面不变（仍是 38 个），
+变的是"错了会报错"和"能跑通"的边界。本地 22 项回归测试 + Windows 实机 38 项端到端用例全过
+（其中 3 项是 1.0.1 遗留的真 bug：`[4-1:0]` 位宽、`runtime_status` 版本字段、include 越界用例）。
+
+### 解析与生成（会算错数的那一类）
+
+- **ANSI 端口简写**：`input wire [3:0] a, b, c` 以前只认第一个名字，`b`/`c` 丢失；
+  现在按 ANSI 规则继承方向/类型/位宽。
+- **一行写完的 non-ANSI 头**：`module m(a,y); input a; output y;` 以前整段抓不到端口；
+  现在按 `;`/换行边界解析，并限制在 `endmodule` 之前（多模块文件不再串端口）。
+- **同一行多个实例**：`and2 u1(...); and2 u2(...);` 以前只取第一个，`import_verilog_canvas`
+  出来的画布缺一半实例。
+- **`[4-1:0]` 位宽**：Robei 的 `Datasize="4"` 以前导出成 `[4-1:0]`，自家 `width_of` 只当 1 位，
+  于是 4 位输入的 `truth_table` 只出 2 行。现在导出直接折成 `[3:0]`，`width_of` 也能算
+  `4-1`/`3+1`/`2*4-1` 这类纯数字表达式（`ast` 白名单，不用 `eval`）。
+- **混合位宽真值表**：`[1:0] a` + `[3:0] b` 以前按"端口个数"移位，枚举顺序错乱；
+  现在按位打包，最后一个端口占最低位。
+
+### 波形
+
+- `compare_waveforms` 的 `signals=` 分支以前直接 `NameError`（漏导入 `match_signals`）。
+- 比对从"只报差异"改成**结构性差异也不放过**：缺信号、无共同信号、位宽不一致、
+  `max_time` 不一致、timescale 不可解析，全部 `ok=false` 并写进 `reasons`；timescale 不同
+  时按 fs 归一到共同时间轴再比。
+- `parse_vcd` 只认真有 `$var` + `$enddefinitions` 的文件，空文件/随便一段文本报
+  `invalid_argument`，不再返回"0 个信号"的假成功。
+- `render_waveform` 补上最后一个值的保持段（以前曲线到最后一个跳变就断），默认文件名加
+  `uuid8`，matplotlib 渲染串行化。
+
+### 安全
+
+- 静态路径扫描**递归跟 `` `include ``**（最多 8 层、visited 去重），被包含文件里的越界
+  字面量同样拦下。
+- 新增严格模式 `ROBEI_MCP_STRICT_PATHS`（默认开）：`$readmemh(PATH)`、`$fopen(name)`
+  这类无法静态判定的路径也计入拒绝，`simulate` 返回 `stage="security_scan"` 且不编译。
+  设 `0` 回到旧行为（只记 `unresolved`）。`runtime_status` 里能看到当前档位。
+
+### 约束与 XDC
+
+- `create_robei_const` 拒绝同一引脚被两个端口/两位占用（`G15` 给 `a[0]` 又给 `a[1]` 这种
+  以前会安静写进 `.const`，到 Route 才炸）。
+- `export_robei_xdc` 默认输出**标准 Tcl** `[get_ports {a[0]}]`；要喂回 Robei 自带 Route
+  解析器时传 `quote_bus=false`，回到 `[get_ports a[0]]`。返回值多了 `tcl_quoting`。
+
+### 备份与并发
+
+- 备份名带微秒 + 序号，同一秒内连改两次不再互相覆盖（`BACKUP-UNIQUE` 用例守着）。
+- `simulate_project`、`truth_table`、`render_waveform` 每次都进独立运行目录，同一工程/
+  同一 top 并行跑不串文件。
+- MCP 进度通知钳制成单调不减，结束时固定 `total/total`（以前会从 `2/2` 退回 `1/1`）。
+
+### GUI 与安装
+
+- GUI 依赖改成显式探测（`pywinauto`/`Pillow`/`pywin32` 缺一个就不注册那 10 个工具），
+  并新增 `gui` extra：`pip install "robei-mcp[gui]"`；`tools/setup.py --apply` 会补装。
+- `robei_gui_open_model` 在 10 模型工程里找 `const`：目录节点判定改成"无扩展名且未展开"，
+  最多 10 轮展开，搜索顺序 `model/` → `test/` → `const/` → `verilog/`，树读取上限 400；
+  `ok` 以 `active` 为准。
+- **console entry 修好**：wheel 的 `robei-mcp = robei_mcp.__main__:main` 以前指向不存在的
+  `main`，装完命令行直接 `ImportError`。`tests/check_wheel.py` 现在校验 entry_points、
+  LICENSE 与 `__main__.py`。
+
+### 非 ASCII 路径
+
+- Windows 上含中文的路径先转 8.3 短路径再交给 `iverilog`/`vvp`/`yosys`/`verilator`；
+  转不出来返回 `unsupported_path` 并说明原因，而不是让工具链吐乱码。
+
+### 测试
+
+- 新增 `tests/test_regressions.py`（22 项，本地与 Windows 全过），覆盖上面每一条。
+- QA 侧的 `verify_1_0_2.py` 实机脚本（真实 stdio MCP + 真实 Robei GUI，38 个用例）连同
+  `results.json` 留在 `test-results/qa_20261023122612/` 与 Windows 的
+  `workspace/_qa_runs/qa_20261023122612/verify_1_0_2/`，可照原样重跑。
+
 ## 1.0.1 — 2026-10-23
 
 **测试不再改仓库里的夹具。**
