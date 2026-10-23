@@ -15,7 +15,7 @@ from mcp.client.stdio import stdio_client
 
 ROOT = Path(r"C:\dev\robei-mcp")
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
-PROJ = ROOT / "workspace" / "counter4_native" / "counter4_native.proj"
+PROJ = ROOT / "workspace" / "counter4_scratch" / "counter4_scratch.proj"
 TEST = "tb_counter4.test"
 
 
@@ -72,7 +72,7 @@ async def main() -> int:
             check("create_robei_test", data.get("ok") is True, data)
             check("create_robei_test registers", data.get("registered_in_project") is True, data)
 
-            data = payload(await session.call_tool("read_robei_model", {"path": str(ROOT / "workspace" / "counter4_native" / "model" / "counter4.model")}))
+            data = payload(await session.call_tool("read_robei_model", {"path": str(ROOT / "workspace" / "counter4_scratch" / "model" / "counter4.model")}))
             check("read_robei_model", data.get("ok") is True and data.get("type") == "model", data)
 
             data = payload(await session.call_tool("simulate_project", {

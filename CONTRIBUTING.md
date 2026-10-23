@@ -23,6 +23,13 @@ GUI 测试前先注册 Session-1 助手任务：
 python tools\gui\register_task.py
 ```
 
+## 测试不写夹具
+
+`workspace/` 下被跟踪的工程（`counter4_native/`、`robei_samples/`、`counter4/`、`cases/`）是**只读夹具**：
+测试只许读，需要可变工程就自己在 `workspace/<name>_scratch/` 里建（已在 `.gitignore` 里）。
+
+判断标准很简单：**跑完任何 stage，`git status` 都应该是干净的**。脏了就是测试在改夹具，按 bug 处理。
+
 ## 代码约定
 
 - 所有对外能力走 `robei_mcp/server_app.py` 里的 `@mcp.tool`（GUI 工具走 `GUI_TOOLS` 清单），

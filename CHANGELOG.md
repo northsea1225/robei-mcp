@@ -2,6 +2,25 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.0.1 — 2026-10-23
+
+**测试不再改仓库里的夹具。**
+
+跑完 `stage7` / `stage9` / `stage10` 之后 `git status` 会脏几条，因为这几个脚本直接在被跟踪的样例工程里
+建模型、加端口、重建工程。1.0.1 把它们全部挪到临时工程：
+
+| 脚本 | 以前写这里 | 现在写这里 |
+|---|---|---|
+| `stage7_model_ports` | `robei_samples/port_probe/model/blank.model` | `workspace/port_scratch/`（自己用 `create_robei_project` + `create_robei_model` 建） |
+| `stage9_native_run` | `exp3_write/` | `workspace/and_gate_scratch/` |
+| `stage10/11/12` | `counter4_native/` | `workspace/counter4_scratch/` |
+
+- `workspace/exp3_write/` 从仓库移除（`robei_samples/exp1_and` 已是同类样例）。
+- `counter4_native/`、`robei_samples/`、`counter4/`、`cases/` 现在是**只读夹具**：
+  `portable_core`（CI）和 `stage14` 仍然读 `counter4_native`。
+- `CONTRIBUTING.md` 写入判据：跑完任何 stage，`git status` 必须干净，脏了按 bug 处理。
+- `.gitignore` 增加 `workspace/{port,and_gate,counter4}_scratch/`。
+
 ## 1.0.0 — 2026-10-23
 
 第一个稳定版。工具面固定为 **38 个**，文档分成「用户指南 / 工具参考 / 验证日志 / 变更记录」四层，

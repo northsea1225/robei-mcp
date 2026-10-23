@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path:
 
 from robei_mcp import tools
 
-PROJECT = "counter4_native"
+PROJECT = "counter4_scratch"  # scratch: never overwrite the tracked counter4_native
 TEST = "tb_counter4.test"
 
 CODE = """  always @(posedge clk or negedge rst_n) begin

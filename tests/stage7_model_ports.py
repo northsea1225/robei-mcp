@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
@@ -10,8 +11,9 @@ from mcp.client.stdio import stdio_client
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
-PROJECT = ROOT / "workspace" / "robei_samples" / "port_probe" / "port_probe.proj"
-MODEL = ROOT / "workspace" / "robei_samples" / "port_probe" / "model" / "blank.model"
+# Scratch project: built from scratch on every run so the tracked samples stay clean.
+PROJECT = ROOT / "workspace" / "port_scratch" / "port_scratch.proj"
+MODEL = ROOT / "workspace" / "port_scratch" / "model" / "blank.model"
 
 results: list[tuple[str, bool]] = []
 
@@ -42,6 +44,15 @@ async def main() -> int:
             names = [t.name for t in (await session.list_tools()).tools]
             print("TOOLS=" + json.dumps(names, ensure_ascii=False))
             record("tool_registration", "set_robei_port" in names, f"({len(names)} tools)")
+
+            if PROJECT.parent.exists():
+                shutil.rmtree(PROJECT.parent)
+            made = payload(await session.call_tool("create_robei_project", {"name": "port_scratch", "models": []}))
+            record("create_project", made.get("ok") is True, str(made.get("proj")))
+            created = payload(await session.call_tool("create_robei_model", {
+                "proj_path": str(PROJECT), "name": "blank", "ports": [], "code": "",
+            }))
+            record("create_model", created.get("ok") is True, str(created.get("path")))
 
             for port, direction in (("a", "input"), ("clk", "input"), ("y", "output")):
                 data = payload(

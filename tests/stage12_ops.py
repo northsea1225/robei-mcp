@@ -16,7 +16,7 @@ from mcp.client.stdio import stdio_client
 ROOT = Path(r"C:\dev\robei-mcp")
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 WS = ROOT / "workspace"
-COUNTER = WS / "counter4_native" / "counter4_native.proj"
+COUNTER = WS / "counter4_scratch" / "counter4_scratch.proj"
 TWO_LEVEL = WS / "robei_samples" / "two_level" / "two_level.proj"
 
 results: list[tuple[str, bool]] = []
@@ -55,8 +55,8 @@ async def main() -> int:
             data = payload(await session.call_tool("list_projects", {}))
             rels = [p["relative"] for p in data.get("projects", [])]
             check("list_projects ok", data.get("ok") is True, data)
-            check("finds counter4_native", any("counter4_native" in r for r in rels), rels)
-            entry = next((p for p in data["projects"] if "counter4_native" in p["relative"]), {})
+            check("finds counter4_scratch", any("counter4_scratch" in r for r in rels), rels)
+            entry = next((p for p in data["projects"] if "counter4_scratch" in p["relative"]), {})
             check("sees tests", entry.get("tests") == ["tb_counter4", "tb_counter4_mcp"], entry)
             # 0.11: the project's build/ no longer receives a VCD, because Robei's own
             # Build > Run is gone; simulations land under workspace/build/sim-*.

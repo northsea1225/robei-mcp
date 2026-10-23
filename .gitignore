@@ -18,6 +18,9 @@ workspace/**/.tmp/
 workspace/canvas_stage16/
 workspace/stage17_hardening/
 workspace/p1_demo/
+workspace/port_scratch/
+workspace/and_gate_scratch/
+workspace/counter4_scratch/
 workspace/const_demo/
 workspace/const_flow/
 workspace/const_flow2/

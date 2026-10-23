@@ -23,7 +23,7 @@ if str(ROOT) not in sys.path:
 
 from robei_mcp import gui, tools
 
-PROJECT = "exp3_write"
+PROJECT = "and_gate_scratch"  # scratch: the tracked samples are read-only
 TEST = "tb_and_gate.test"
 
 TB_CODE = """reg a; reg b; wire y;
