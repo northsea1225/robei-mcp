@@ -10,7 +10,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 
 from . import __version__
-from . import doctor, errors, gui, p1, runstate, tools
+from . import constraints, doctor, errors, gui, p1, runstate, tools
 
 mcp = MCPServer(
     name="robei-mcp",
@@ -454,6 +454,49 @@ def truth_table(
     try:
         return p1.truth_table(
             verilog_path=verilog_path, top=top, max_inputs=max_inputs, timeout_s=timeout_s, deps=deps
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=WRITE)
+def create_robei_const(
+    proj_path: str,
+    name: str,
+    model: str,
+    pins: dict[str, list[str]],
+    overwrite: bool = False,
+    kind: str = "constrain",
+) -> dict[str, Any]:
+    """Write a pin-constraint canvas: pins={"swt":["G15","P15","W13","T16"], "led":["M14",...]}."""
+    try:
+        return constraints.create_const(
+            proj_path=proj_path, name=name, model=model, pins=pins, overwrite=overwrite, kind=kind
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=READ)
+def read_robei_const(path: str) -> dict[str, Any]:
+    """Read a .const: kind, instance model, and the port -> bit -> FPGA pin map."""
+    try:
+        return constraints.read_const(path=path)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=WRITE)
+def export_robei_xdc(
+    proj_path: str,
+    const_name: str | None = None,
+    out_name: str | None = None,
+    iostandard: str = "LVCMOS33",
+) -> dict[str, Any]:
+    """Project a .const into <proj>/constrain/<name>.xdc (PACKAGE_PIN + IOSTANDARD lines)."""
+    try:
+        return constraints.export_xdc(
+            proj_path=proj_path, const_name=const_name, out_name=out_name, iostandard=iostandard
         )
     except Exception as exc:
         return _error(exc)
