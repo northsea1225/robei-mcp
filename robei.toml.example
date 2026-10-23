@@ -1,23 +1,34 @@
-# Copy to C:\dev\robei-mcp\robei.toml (or point ROBEI_MCP_CONFIG at a copy).
-# Precedence: environment variable > this file > built-in default.
+# Optional config. Copy to <repo>/robei.toml, or point ROBEI_MCP_CONFIG at a copy.
+# Precedence: environment variable > this file > auto-discovery > built-in default.
 # runtime_status().config.sources reports which one won for every key.
+#
+# Every value here is optional. With no file at all the server discovers Robei
+# and the Verilog toolchain on its own: PATH, %ProgramFiles%\Robei,
+# <drive>:\Robei, C:\msys64\{ucrt64,mingw64}\bin.
+# Uncomment only the lines that auto-discovery gets wrong on your machine.
 
 [paths]
 # Everything the server writes must live under workspace.
-workspace = "C:/dev/robei-mcp/workspace"
-robei_home = "E:/Robei"
-robei_exe = "E:/Robei/bin/Robei.exe"
-# The IDE the robei_gui_* tools drive. A copy outside E:\Robei keeps the
-# install tree read-only.
-gui_exe = "D:/robei-lab/robei/bin/Robei.exe"
-iverilog = "E:/Robei/bin/iverilog.exe"
-vvp = "E:/Robei/bin/vvp.exe"
-yosys = "E:/Robei/bin/yosys.exe"
-verilator = "C:/msys64/ucrt64/bin/verilator_bin.exe"
-verilator_root = "C:/msys64/ucrt64/share/verilator"
+# workspace = "<WORKSPACE_DIR>"           # default: <repo>/workspace
+
+# Robei install root, and the four tools it ships.
+# robei_home = "<ROBEI_HOME>"
+# robei_exe  = "<ROBEI_HOME>/bin/Robei.exe"
+# iverilog   = "<ROBEI_HOME>/bin/iverilog.exe"
+# vvp        = "<ROBEI_HOME>/bin/vvp.exe"
+# yosys      = "<ROBEI_HOME>/bin/yosys.exe"
+
+# The IDE the robei_gui_* tools drive. Point this at a copy outside the install
+# tree to keep <ROBEI_HOME> read-only.
+# gui_exe = "<ROBEI_HOME>/bin/Robei.exe"
+
+# Optional linters; both are skipped when absent.
+# verilator      = "<VERILATOR_BIN>"
+# verilator_root = "<VERILATOR_ROOT>"
+
 # Read-only roots that read_robei_model / read_robei_project may look into.
-model_roots = ["C:/ProgramData/Robei"]
+# model_roots = ["<ROBEI_DATA_DIR>"]
 
 [limits]
-default_timeout_s = 30
-max_timeout_s = 120
+# default_timeout_s = 30
+# max_timeout_s = 120

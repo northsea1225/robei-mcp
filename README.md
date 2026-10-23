@@ -4,6 +4,26 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
 
 ## 交付状态
 
+### 0.11：精简工具面（P0）
+
+47 → 38 个工具。移除的都是「只有本机 / 只有课堂场景才用得上」的部分：
+
+| 移除 | 原因 | 替代 |
+| --- | --- | --- |
+| `report_lab` | 唯一中文模板，绑死中国数电实验报告 | `simulate_project` + `read_waveform` + `render_waveform` |
+| `robei_gui_experiment` | 纯编排，与独立工具重复 | 按需组合 `open_project` → `open_model` → `compile` |
+| `robei_gui_run` | 仅对 `Type="test"` 有效 | `simulate_project`（同一套 iverilog/vvp，无需桌面） |
+| `robei_gui_wave` / `robei_gui_wave_load` | 打开 Wave dock 会让 UIA 树塌掉（`widgets 133 → 0`） | `render_waveform` / `read_waveform` |
+| `robei_gui_code_read` / `robei_gui_code_write` | 与文件级读写重复，且绕过备份与 XML 校验 | `read_robei_model` / `create_robei_model` |
+| `robei_gui_refresh` | `open_project` 已自动重载 | — |
+| `robei_gui_health` | 并入 `robei_gui_status(probe=True)` | `robei_gui_status` |
+
+配置也改了：`robei_home` 和四个工具路径现在自动发现（`PATH`、`%ProgramFiles%\Robei`、
+`<盘符>:\Robei`、`C:\msys64\{ucrt64,mingw64}\bin`），不再假定 `E:\Robei`。
+`runtime_status().config.sources` 会报告每个键是 `env` / `toml` / `discovered` / `default` 哪来的。
+
+下面「已验证（阶段 N）」各块是历史记录，其中提到的已移除工具以本节为准。
+
 已验证（阶段 2/3）：
 
 - MCP stdio 协议、4 位计数器 lint/simulate/waveform 闭环
@@ -527,20 +547,6 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
 ```
 
 不传 `signals` 时列信号；传 `signals` 时按原始 VCD 时间刻度取值。返回值含 `timescale`、`max_time`、`effective_time`、二进制 `value` 和可解析时的 `value_int`。
-
-### `report_lab`
-
-```json
-{"proj_path": "counter4_native/counter4_native.proj", "test_name": "tb_counter4.test",
- "title": "4 位计数器"}
-```
-
-用 `simulate_project` 跑一次（不需要 Robei、不需要桌面），把结果写成一份可以直接贴进
-实验报告的 Markdown：编译结论、`$display` 原文、信号表（位宽/类型/跳变次数）、
-每个信号前 N 次跳变、波形 PNG（相对路径嵌入）、以及 5 项自动检查
-（`$finish`、产生 VCD、无 X/Z、有 `$display`、全部通过）。
-
-输出在 `workspace/reports/`，同名文件不覆盖。
 
 ### `compare_waveforms`
 

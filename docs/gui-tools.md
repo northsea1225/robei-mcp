@@ -36,8 +36,6 @@ python tools\gui\register_task.py --remove   # 不再需要时删除
 | `robei_gui_open_model(name, timeout_s=90)` | 展开 Files 树（Qt 忽略 UIA 展开模式，改用 `点击 + →`）后双击模型 | `models` `tree` |
 | `robei_gui_compile(timeout_s=90)` | Build→Compile，解析 `Output` 增量 | `generated` `errors` `warnings` `missing_modules` `check_warnings` |
 | `robei_gui_output(lines=80)` | Output 面板末 N 行 | `text` `lines_total` |
-| `robei_gui_code_read()` | 切到画布 `Code` 页签，读当前模型的 Verilog 片段 | `model` `text` `length` |
-| `robei_gui_code_write(code, save=True)` | 写入 `Code` 页签并用 Ctrl+S 保存 | `changed` `written` `saved` `save_log` |
 | `robei_gui_close()` | `taskkill /F /IM Robei.exe` | `stdout` |
 
 路径校验：`robei_gui_open_project` 复用 `security.resolve_project_path`，
@@ -62,27 +60,17 @@ PASS  status_after_close
  "generated": ["C:/dev/robei-mcp/workspace/robei_samples/two_level/build/and2.v"]}
 ```
 
-## Code 页签读写
+## 模型的 Verilog 存在哪里
 
-模型画布底部有 `Graph | Code` 两个页签。`Code` 页签里的 `CodeEditor` 控件通过 UIA 暴露整段文本
-（auto_id 以 `...Design.qt_tabwidget_stackedwidget.CodeEditor` 结尾），所以读和写都不用模拟键盘：
+模型画布底部的 `Code` 页签对应 `.model` 里的 `Code` 属性（模块内部的 Verilog 片段，
+不是整份 `.v`；端口和参数在 `<Port>` 节点里）。
 
-- 读：`window_text()` 直接拿到 `.model` 里 `Code` 字段的原文；
-- 写：`ValuePattern.SetValue(text)` 一次替换全文，再 `Ctrl+S`，Robei 在 Output 打印
-  `|>File: .../and2.model saved.`，`save_log` 就是这条增量。
+读写这一层**不要走 GUI**：UIA 的 `CodeEditor` 能读写，但受窗口焦点和页签状态影响，
+而且写回绕过了备份与 XML 校验。用文件级工具即可：
 
-实测（`tests/stage6_gui_code.py`，11/11 PASS）：
-
-```
-read1    'assign y = a & b;'
-write    written=true saved=true  log='|>File: ...and2.model saved.'
-read2    'assign y = a & b;  // stage6 probe'
-restore  saved=true
-read3    'assign y = a & b;'    ← 原文已还原
-compile  ok  generated=[".../build/and2.v"]
-```
-
-写的是**模型的 `Code` 字段**（模块内部的 Verilog 片段），不是整份 `.v`；端口、参数仍在 `.model` 的 `<Port>` 节点里。
+- 读：`read_robei_model(path)` → `code`
+- 写：`create_robei_model(..., code=..., overwrite=True)` 或 `set_robei_port(...)`
+- 导出成可编译的 `.v`：`export_robei_verilog(...)`
 
 ## 已知限制
 
@@ -142,18 +130,17 @@ input wire a
 endmodule    //blank
 ```
 
-也就是说「端口（`set_robei_port`）+ 逻辑（`robei_gui_code_write`）+ 编译验证（`robei_gui_compile`）」
+也就是说「端口（`set_robei_port`）+ 逻辑（`create_robei_model` 的 `code`）+ 编译验证（`robei_gui_compile`）」
 已经能纯脚本造出一个 Robei 能编译的模型。
 
 ## 从零造工程：`create_robei_project` / `create_robei_model`
 
-配合 `set_robei_port` / `robei_gui_code_write`，现在已经不需要手写任何 XML：
+配合 `set_robei_port`，现在已经不需要手写任何 XML：
 
 | 工具 | 作用 |
 | --- | --- |
 | `create_robei_project(name, models=[])` | 在 workspace 下建 `<name>/`：`model/test/const/verilog` 四个目录 + `<name>.proj`（可顺带建空模型） |
 | `create_robei_model(proj_path, name, ports, code, comment, overwrite=False)` | 生成带端口和 `Code` 的 `.model`，并自动登记进 `.proj` 的 `<model>` 目录（文本插入，保留原格式） |
-| `robei_gui_refresh()` | Build→Refresh，让已运行的 Robei 重新读取磁盘上的 `.model/.proj` |
 
 安全约束：只能建在 `workspace` 内；目录已存在直接 `FileExistsError`；模型已存在需显式 `overwrite=True`（旧文件备份成 `.bak-<时间戳>`）。
 
@@ -171,24 +158,20 @@ simulate + read_waveform                                → 真值表 4/4 正确
   t=40000 a=1 b=1 s=0 c=1
 ```
 
-## Robei 自带的 Run / Wave（有限接入）
+## IDE 只负责「打开 + 编译」，仿真走无头路径
 
-| 工具 | 作用 | 实测返回 |
-| --- | --- | --- |
-| `robei_gui_run(timeout_s=90)` | Build→Run | 普通模块：`ok=false` + `hint`，delta 为 Robei 原话 |
-| `robei_gui_wave(timeout_s=60)` | Build→Wave | 未跑过仿真：`Please run the project first to get the waveform.` |
+`robei_gui_run` / `robei_gui_wave` / `robei_gui_wave_load` / `robei_gui_experiment`
+在 0.11 已移除。原因有两条，都是实测结论：
 
-Robei 原话（模型 `Type="model"` 时）：
+- Robei 的 Run 只对 `Type="test"` 的当前模型有效，普通模型直接报
+  `and_gate is not test, so there is no waveform generated`；
+- 打开 Wave dock 会让 Robei 的 UIA 树整体塌掉（`widgets 133 → 0` 且不再恢复），
+  自动化写入的信号无法再被验证。
 
-```
-|>Check complete with 0 warnings.
-|>Warning:and_gate is not test, so there is no waveform generated. If you want to see the waveform, make sure you have the "Type" changed to "test"
-```
-
-即：**只有当前激活模型是 test 类型，Run 才会产出波形**。
-本轮试过在 `test/` 下放 `Type="test"` 的 `tb_and_gate.model` 并在 `.proj` 的 `<test>` 里登记，
-Robei 重新打开工程后仍未把它当作可运行的测试模型（Run 依旧报 `and_gate is not test`），
-所以 **Robei 原生 Run/Wave 还没打通**；波形仍由 `simulate` + `read_waveform` / `render_waveform`（同一套 iverilog/vvp）提供。
+现在 GUI 只承担「IDE 自己才能做的事」：打开工程、编译、读 Output、综合、保存。
+仿真统一走 `simulate_project`（用 Robei 自带的 iverilog/vvp，无需桌面），
+波形统一走 `read_waveform` / `find_events` / `render_waveform`。
+如果确实需要 Robei 自己的 Run/Wave，人工在 IDE 里点即可——它不影响 MCP 返回的结果。
 
 ## 画布：点不动，但可以写（2026-10-22 / 阶段 16 更新）
 

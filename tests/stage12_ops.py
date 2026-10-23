@@ -1,4 +1,4 @@
-"""Stage 12: discovery, UIA health, self-heal, project-wide compile, one-call plot.
+"""Stage 12: discovery, bridge health, IDE compile, project-wide compile.
 
 Every step is a real MCP stdio call, so this is also the client-facing
 regression for the four tools added in this stage.
@@ -45,7 +45,7 @@ async def main() -> int:
             await session.initialize()
             names = [t.name for t in (await session.list_tools()).tools]
             print("TOOL_COUNT=", len(names))
-            for want in ("list_projects", "robei_gui_health", "robei_gui_compile_all"):
+            for want in ("list_projects", "robei_gui_status", "robei_gui_compile_all"):
                 check(f"registered {want}", want in names)
 
             await session.call_tool("robei_gui_close", {})
@@ -58,46 +58,43 @@ async def main() -> int:
             check("finds counter4_native", any("counter4_native" in r for r in rels), rels)
             entry = next((p for p in data["projects"] if "counter4_native" in p["relative"]), {})
             check("sees tests", entry.get("tests") == ["tb_counter4", "tb_counter4_mcp"], entry)
-            check("sees VCD", bool(entry.get("build", {}).get("vcd")), entry)
+            # 0.11: the project's build/ no longer receives a VCD, because Robei's own
+            # Build > Run is gone; simulations land under workspace/build/sim-*.
+            check("sees verilog export", "counter4.v" in entry.get("verilog", []), entry)
 
-            # --- 2. health while the IDE is closed ---------------------------
-            data = payload(await session.call_tool("robei_gui_health", {}))
-            check("health: not running", data.get("ok") is False and not data.get("running"), data)
+            # --- 2. status while the IDE is closed ---------------------------
+            data = payload(await session.call_tool("robei_gui_status", {"probe": True}))
+            check(
+                "status: not running",
+                data.get("running") is False and (data.get("bridge_health") or {}).get("ok") is False,
+                data,
+            )
+            print("   bridge:", (data.get("bridge_health") or {}).get("reason"))
 
-            # --- 3. one call: open -> compile -> run -> plot -----------------
-            data = payload(await session.call_tool("robei_gui_experiment", {
-                "proj_path": str(COUNTER),
-                "test_name": "tb_counter4.test",
-                "restart": True,
-                "timeout_s": 240,
+            # --- 3. open + compile inside the IDE, simulate headlessly --------
+            data = payload(await session.call_tool("robei_gui_launch", {"wait_s": 60}))
+            check("launch", data.get("ok") is True, data)
+            data = payload(await session.call_tool("robei_gui_open_project", {"proj_path": str(COUNTER)}))
+            check("open project", data.get("ok") is True, data)
+            data = payload(await session.call_tool("robei_gui_open_model", {"name": "tb_counter4.test"}))
+            check("open test model", data.get("ok") is True, data)
+            data = payload(await session.call_tool("robei_gui_compile", {"timeout_s": 90}))
+            check("compile test model", data.get("ok") is True, data)
+            print("   output tail:", (data.get("delta") or "").replace("\n", " | ")[:200])
+
+            data = payload(await session.call_tool("simulate_project", {
+                "proj_path": str(COUNTER), "test_name": "tb_counter4.test",
             }))
-            check("experiment ok", data.get("ok") is True, data)
-            print("   run:", (data.get("steps", {}).get("run", {}) or {}).get("delta", "").replace("\n", " | ")[:200])
-            plot = data.get("plot") or {}
-            check("experiment plotted PNG", plot.get("ok") is True and bool(plot.get("path")), plot)
-            print("   png:", plot.get("path"), "signals:", (plot.get("signals") or [])[:4])
-
-            data = payload(await session.call_tool("robei_gui_health", {}))
-            check("health: ok while idle", data.get("ok") is True, data)
-            print("   health:", {k: data.get(k) for k in ("widgets", "menu_items", "pid")})
-
-            # --- 4. Wave dock vs UIA bridge + self-heal ----------------------
-            data = payload(await session.call_tool("robei_gui_wave_load", {"signals": ["count", "clk"]}))
-            print("   wave_load:", {k: data.get(k) for k in ("ok", "rendered", "clicked")})
-            data = payload(await session.call_tool("robei_gui_health", {}))
-            broken = data.get("ok") is False
-            print("   health after wave:", {k: data.get(k) for k in ("ok", "running", "widgets", "reason")})
-            check("health detects broken bridge", broken, data)
-
-            data = payload(await session.call_tool("robei_gui_experiment", {
-                "proj_path": str(COUNTER),
-                "test_name": "tb_counter4.test",
-                "timeout_s": 240,
-            }))
-            healed = (data.get("steps", {}) or {}).get("heal")
-            check("experiment self-heals", data.get("ok") is True, data)
-            check("heal triggered after breakage", bool(healed) if broken else True, {"heal": healed, "broken": broken})
-            print("   heal:", healed)
+            check("simulate_project ok", data.get("ok") is True, data)
+            vcds = data.get("vcd_paths") or []
+            check("simulate_project VCD", bool(vcds), data)
+            if vcds:
+                data = payload(await session.call_tool("render_waveform", {
+                    "vcd_path": vcds[0],
+                    "signals": ["tb_counter4.clk", "tb_counter4.count"],
+                }))
+                check("render_waveform png", data.get("ok") is True and bool(data.get("path")), data)
+                print("   png:", data.get("path"))
 
             # --- 5. project-wide compile (needs the -y library) --------------
             data = payload(await session.call_tool("sync_robei_verilog", {"proj_path": str(TWO_LEVEL)}))

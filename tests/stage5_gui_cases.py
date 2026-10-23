@@ -51,7 +51,7 @@ async def main() -> int:
             names = [t.name for t in tools.tools]
             print("TOOLS=" + json.dumps(names, ensure_ascii=False))
             gui_tools = [n for n in names if n.startswith("robei_gui_")]
-            results.append(("tool_registration", len(gui_tools) == 18))
+            results.append(("tool_registration", len(gui_tools) == 10))
             print("GUI tools:", gui_tools)
 
             data = payload(await session.call_tool("robei_gui_status", {}))

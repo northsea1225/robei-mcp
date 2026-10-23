@@ -1,14 +1,25 @@
-"""Stage 9: build a project with the file-level tools, then run it inside Robei.
+"""Stage 9: build a project with the file-level tools, then run it.
 
 Verifies that a hand-written .test file (no GUI "New" dialog) is accepted by the
 IDE, that sync_robei_verilog supplies the ``-y`` library directory, and that the
-VCD produced by Robei's own vvp run is readable by our parser.
+VCD produced by Robei's bundled vvp is readable by our parser.
+
+The IDE is asked to open the project and compile the test (that is what proves
+acceptance); the VCD itself comes from ``simulate_project``, which drives the
+same bundled iverilog without a desktop.
 """
 from __future__ import annotations
 
 import json
 import shutil
 import traceback
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from robei_mcp import gui, tools
 
@@ -60,8 +71,18 @@ def main() -> None:
     try:
         report["build"] = build_project()
         proj = report["build"]["project"]["proj"]
-        report["experiment"] = gui.experiment(proj, TEST, restart=True, timeout_s=240)
-        vcds = report["experiment"].get("vcd") or []
+        report["ide"] = {
+            name: {key: (value or {}).get(key) for key in ("ok", "error")}
+            for name, value in (
+                ("launch", gui.launch(wait_s=60)),
+                ("open_project", gui.open_project(proj)),
+                ("open_model", gui.open_model(TEST)),
+                ("compile", gui.compile_model()),
+            )
+        }
+        sim = tools.simulate_project(proj, TEST)
+        report["simulate_project"] = {k: sim.get(k) for k in ("ok", "run_dir", "vcd_rel_paths")}
+        vcds = sim.get("vcd_paths") or []
         if vcds:
             vcd = vcds[0]
             report["vcd_abs"] = vcd

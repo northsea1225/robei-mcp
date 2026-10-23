@@ -256,6 +256,7 @@ def runtime_status() -> dict[str, Any]:
         "python_executable": sys.executable,
         "python_version": sys.version.split()[0],
         "workspace": str(SETTINGS.workspace),
+        "robei_home": str(SETTINGS.robei_home),
         "model_roots": [str(p) for p in SETTINGS.model_roots],
         "tools": tools,
         "limits": {
@@ -269,6 +270,7 @@ def runtime_status() -> dict[str, Any]:
             "exists": bool(SETTINGS.config_file and SETTINGS.config_file.is_file()),
             "error": SETTINGS.config_error,
             "sources": SETTINGS.sources,
+            "discovered": sorted(k for k, v in SETTINGS.sources.items() if v == "discovered"),
         },
     }
 
@@ -787,165 +789,6 @@ def compare_waveforms(
         "missing_in_dut": missing_dut,
         "missing_in_golden": missing_golden,
         "results": results,
-    }
-
-
-def _pad_value(value: str, width: int) -> str:
-    text = str(value)
-    if width > 1 and text and all(ch in "01" for ch in text):
-        return text.zfill(width)
-    return text
-
-
-def _md_escape(text: str) -> str:
-    return str(text).replace("|", "\\|")
-
-
-def report_lab(
-    proj_path: str,
-    test_name: str,
-    title: str | None = None,
-    out_name: str | None = None,
-    max_transitions: int = 12,
-    progress=None,
-) -> dict[str, Any]:
-    """Run a Robei test headlessly and write a markdown lab report next to the PNG."""
-    proj = resolve_project_path(proj_path)
-    if not is_within(proj, SETTINGS.workspace):
-        raise ValueError("refusing to report on a project outside the workspace")
-    _notify(progress, 0, 3, "simulating headlessly")
-    sim = simulate_project(str(proj), test_name, render=True)
-    _notify(progress, 2, 3, "writing report")
-    vcds = sim.get("vcd_paths") or []
-    display = sim.get("display_output") or ""
-    stem = test_name[:-5] if test_name.lower().endswith(".test") else test_name
-
-    data = parse_vcd(Path(vcds[0])) if vcds else None
-    rows: list[dict[str, Any]] = []
-    if data is not None:
-        for name, signal in data.signals.items():
-            changes = data.changes.get(signal.identifier, [])
-            rows.append(
-                {
-                    "signal": name,
-                    "width": signal.width,
-                    "type": signal.var_type,
-                    "changes": len(changes),
-                    "timeline": [
-                        {"time": t, "value": _pad_value(v, signal.width)}
-                        for t, v in changes[:max_transitions]
-                    ],
-                }
-            )
-
-    raw_values = []
-    if data is not None:
-        for signal in data.signals.values():
-            raw_values.extend(v for _, v in data.changes.get(signal.identifier, []))
-    has_xz = any(ch in str(v).lower() for v in raw_values for ch in ("x", "z"))
-
-    checks = [
-        {"name": "仿真正常结束（$finish）", "ok": "$finish" in display},
-        {"name": "产生波形文件", "ok": bool(vcds)},
-        {"name": "无 X/Z 态", "ok": bool(vcds) and not has_xz},
-        {"name": "有 $display 输出", "ok": any(line.startswith("t=") for line in display.splitlines())},
-    ]
-    checks.append({"name": "全部检查通过", "ok": all(c["ok"] for c in checks)})
-
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    reports_dir = SETTINGS.workspace / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    if out_name:
-        if not FILE_RE.match(out_name) or not out_name.lower().endswith(".md"):
-            raise ValueError("out_name must be a simple .md file name")
-        target = reports_dir / out_name
-        if target.exists():
-            raise FileExistsError(f"refusing to overwrite existing file: {target}")
-    else:
-        target = reports_dir / f"{proj.stem}-{stem}-{stamp}.md"
-
-    png = (sim.get("plot") or {}).get("path")
-    png_rel = None
-    if png:
-        png_rel = os.path.relpath(png, target.parent).replace("\\", "/")
-
-    lines: list[str] = []
-    heading = title or f"{proj.stem} / {stem}"
-    lines.append(f"# 实验报告：{heading}")
-    lines.append("")
-    lines.append(f"- 工程：`{proj.name}`（{_rel(proj)}）")
-    lines.append(f"- 测试模型：`{stem}.test`")
-    lines.append(f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    versions = runtime_status()["tools"]
-    tool_line = ", ".join(
-        f"{name} {entry.get('version') or '?'}"
-        for name, entry in versions.items()
-        if entry.get("exists")
-    )
-    lines.append(f"- 工具链：{tool_line or '未检测到'}")
-    lines.append("")
-    lines.append("## 1. 编译")
-    lines.append("")
-    lines.append(f"- 结果：{'通过' if sim.get('ok') else '失败'}")
-    if sim.get("headless"):
-        lines.append(f"- 生成源码：`{sim['headless']['tb_source_rel']}`")
-        deps = sim["headless"].get("dependencies") or []
-        lines.append(f"- 依赖模块：{', '.join(f'`{d}`' for d in deps) if deps else '无'}")
-    compile_info = sim.get("compile") or {}
-    if compile_info.get("stderr"):
-        lines.append("")
-        lines.append("```text")
-        lines.append(_clip(compile_info["stderr"], 2000))
-        lines.append("```")
-    lines.append("")
-    lines.append("## 2. 仿真输出")
-    lines.append("")
-    lines.append("```text")
-    lines.append(_clip(display.strip() or "(无输出)", 4000))
-    lines.append("```")
-    lines.append("")
-    lines.append("## 3. 信号一览")
-    lines.append("")
-    lines.append("| 信号 | 位宽 | 类型 | 跳变次数 |")
-    lines.append("| --- | --- | --- | --- |")
-    for row in rows:
-        lines.append(
-            f"| `{_md_escape(row['signal'])}` | {row['width']} | {row['type']} | {row['changes']} |"
-        )
-    lines.append("")
-    lines.append(f"## 4. 关键跳变（每个信号前 {max_transitions} 次）")
-    lines.append("")
-    for row in rows:
-        if not row["timeline"]:
-            continue
-        lines.append(f"### `{row['signal']}`")
-        lines.append("")
-        lines.append("| 时间 | 值 |")
-        lines.append("| --- | --- |")
-        for point in row["timeline"]:
-            lines.append(f"| {point['time']} | `{point['value']}` |")
-        lines.append("")
-    if png_rel:
-        lines.append("## 5. 波形")
-        lines.append("")
-        lines.append(f"![波形]({png_rel})")
-        lines.append("")
-    lines.append("## 6. 自动检查")
-    lines.append("")
-    for item in checks:
-        lines.append(f"- [{'x' if item['ok'] else ' '}] {item['name']}")
-    lines.append("")
-
-    target.write_text("\n".join(lines), encoding="utf-8", newline="\n")
-    return {
-        "ok": all(c["ok"] for c in checks),
-        "report_path": str(target),
-        "relative_path": _rel(target),
-        "png": png,
-        "vcd": vcds[0] if vcds else None,
-        "signals": [row["signal"] for row in rows],
-        "checks": checks,
-        "size_bytes": target.stat().st_size,
     }
 
 

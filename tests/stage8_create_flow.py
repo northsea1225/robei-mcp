@@ -73,7 +73,7 @@ async def main() -> int:
             print("TOOLS=" + str(len(names)))
             record(
                 "tool_registration",
-                {"create_robei_project", "create_robei_model", "robei_gui_refresh"} <= set(names),
+                {"create_robei_project", "create_robei_model", "robei_gui_status"} <= set(names),
                 str(len(names)),
             )
 

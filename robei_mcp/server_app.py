@@ -160,26 +160,6 @@ def compare_waveforms(
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
-async def report_lab(
-    proj_path: str,
-    test_name: str,
-    title: str | None = None,
-    out_name: str | None = None,
-    ctx: Context | None = None,
-) -> dict[str, Any]:
-    """Run a Robei test headlessly and write a markdown lab report (signals, transitions, PNG).
-
-    Returns the report path plus the automatic checks (finished, VCD produced, no X/Z).
-    """
-    try:
-        return await _invoke(tools.report_lab, ctx, "report_lab", 
-            proj_path=proj_path, test_name=test_name, title=title, out_name=out_name
-        )
-    except Exception as exc:
-        return _error(exc)
-
-
 @mcp.tool(annotations=READ)
 def find_events(
     vcd_path: str,
@@ -535,10 +515,14 @@ def waveform_stats(vcd_path: str, max_signals: int = 64) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=READ_GUI)
-def robei_gui_status(output_lines: int = 20) -> dict[str, Any]:
-    """Report whether Robei is running, the loaded project, open models and the Output tail."""
+def robei_gui_status(output_lines: int = 20, probe: bool = False) -> dict[str, Any]:
+    """Report whether Robei is running, the loaded project, open models and the Output tail.
+
+    ``probe=True`` also walks the UIA tree to prove the automation bridge still
+    answers; it costs a second or two and touches the IDE, so it is off by default.
+    """
     try:
-        return gui.status(output_lines=output_lines)
+        return gui.status(output_lines=output_lines, probe=probe)
     except Exception as exc:
         return _error(exc)
 
@@ -589,51 +573,6 @@ def robei_gui_output(lines: int = 80) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=WRITE_GUI)
-async def robei_gui_run(timeout_s: int = 90, ctx: Context | None = None) -> dict[str, Any]:
-    """Build > Run: let Robei compile and simulate the active model, returning the Output delta."""
-    try:
-        return await _invoke(gui.run_simulation, ctx, "robei_gui_run", timeout_s=timeout_s)
-    except Exception as exc:
-        return _error(exc)
-
-
-@mcp.tool(annotations=WRITE_GUI)
-async def robei_gui_wave(timeout_s: int = 60, ctx: Context | None = None) -> dict[str, Any]:
-    """Build > Wave: open Robei's wave viewer for the last run."""
-    try:
-        return await _invoke(gui.open_wave, ctx, "robei_gui_wave", timeout_s=timeout_s)
-    except Exception as exc:
-        return _error(exc)
-
-
-@mcp.tool(annotations=WRITE_GUI)
-def robei_gui_refresh() -> dict[str, Any]:
-    """Run Build > Refresh so Robei reloads changed .model/.proj files from disk."""
-    try:
-        return gui.refresh()
-    except Exception as exc:
-        return _error(exc)
-
-
-@mcp.tool(annotations=READ_GUI)
-def robei_gui_code_read() -> dict[str, Any]:
-    """Read the Verilog snippet in the active model's Code tab (the model's Code field)."""
-    try:
-        return gui.code_read()
-    except Exception as exc:
-        return _error(exc)
-
-
-@mcp.tool(annotations=DESTRUCTIVE_GUI)
-def robei_gui_code_write(code: str, save: bool = True) -> dict[str, Any]:
-    """Replace the active model's Code tab text and save it with Ctrl+S."""
-    try:
-        return gui.code_write(code=code, save=save)
-    except Exception as exc:
-        return _error(exc)
-
-
-@mcp.tool(annotations=WRITE_GUI)
 def robei_gui_save_project() -> dict[str, Any]:
     """File > Save in Robei (Build > Synthesis refuses to run on an unsaved project)."""
     try:
@@ -656,60 +595,6 @@ def robei_gui_close() -> dict[str, Any]:
     """Force-close the Robei IDE. Unsaved model edits are lost."""
     try:
         return gui.close()
-    except Exception as exc:
-        return _error(exc)
-
-
-@mcp.tool(annotations=WRITE_GUI)
-async def robei_gui_experiment(
-    proj_path: str,
-    test_name: str,
-    restart: bool = False,
-    wave: bool = False,
-    compile_timeout: int = 45,
-    run_timeout: int = 45,
-    signals: list[str] | None = None,
-    heal: bool = True,
-    plot: bool = True,
-    timeout_s: int = 240,
-    ctx: Context | None = None,
-) -> dict[str, Any]:
-    """Run the whole Robei loop: open project -> open test model -> Compile -> Run -> Wave.
-
-    Returns every step's raw output plus the produced VCD path. Set restart=True after
-    new models/tests were written to disk so the IDE reloads the .proj manifest.
-    """
-    try:
-        return await _invoke(gui.experiment, ctx, "robei_gui_experiment", 
-            proj_path=proj_path,
-            test_name=test_name,
-            restart=restart,
-            wave=wave,
-            compile_timeout=compile_timeout,
-            run_timeout=run_timeout,
-            signals=signals,
-            heal=heal,
-            plot=plot,
-            timeout_s=timeout_s,
-        )
-    except Exception as exc:
-        return _error(exc)
-
-
-@mcp.tool(annotations=WRITE_GUI)
-async def robei_gui_wave_load(signals: list[str] | None = None, max_signals: int = 12, ctx: Context | None = None) -> dict[str, Any]:
-    """Open the Wave dock, expand the VCD signal tree and click signals into the viewer."""
-    try:
-        return await _invoke(gui.wave_load, ctx, "robei_gui_wave_load", signals=signals, max_signals=max_signals)
-    except Exception as exc:
-        return _error(exc)
-
-
-@mcp.tool(annotations=READ_GUI)
-def robei_gui_health() -> dict[str, Any]:
-    """Check whether Robei's UIA bridge still answers (it goes silent after the Wave dock opens)."""
-    try:
-        return gui.health()
     except Exception as exc:
         return _error(exc)
 

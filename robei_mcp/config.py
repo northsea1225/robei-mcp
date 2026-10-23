@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import shutil
 
 try:  # ctypes.wintypes only exists on Windows
     import ctypes.wintypes as wintypes
@@ -16,16 +17,75 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 IS_WINDOWS = os.name == "nt"
 POSIX_BIN_DIRS = (Path("/usr/bin"), Path("/usr/local/bin"), Path("/opt/homebrew/bin"), Path("/opt/local/bin"))
 
+# Fallback directories for a standalone (non-Robei) toolchain install.
+WINDOWS_TOOL_DIRS = (
+    Path(r"C:\msys64\ucrt64\bin"),
+    Path(r"C:\msys64\mingw64\bin"),
+    Path(r"C:\ProgramData\chocolatey\bin"),
+)
 
-def _tool_default(name: str, bin_dir: Path) -> Path:
-    """Robei ships the toolchain next to the IDE on Windows; POSIX uses PATH dirs."""
-    if IS_WINDOWS:
-        return bin_dir / f"{name}.exe"
-    for directory in POSIX_BIN_DIRS:
-        candidate = directory / name
+# Robei may be installed on any drive; these are only guesses, never requirements.
+ROBEI_HOME_DRIVES = "CDEFGHIJ"
+
+
+def _which(name: str) -> Path | None:
+    """PATH lookup so a standalone iverilog/yosys install works without Robei."""
+    names = (f"{name}.exe", name) if IS_WINDOWS else (name,)
+    for candidate in names:
+        hit = shutil.which(candidate)
+        if hit:
+            return Path(hit)
+    for directory in WINDOWS_TOOL_DIRS:
+        suffix = ".exe" if IS_WINDOWS else ""
+        candidate = directory / f"{name}{suffix}"
         if candidate.is_file():
             return candidate
-    return POSIX_BIN_DIRS[0] / name
+    return None
+
+
+def _tool_default(name: str, bin_dir: Path) -> Path:
+    """Prefer the copy Robei ships, then PATH, then a known install dir."""
+    exe = f"{name}.exe" if IS_WINDOWS else name
+    bundled = bin_dir / exe
+    if bundled.is_file():
+        return bundled
+    found = _which(name)
+    if found is not None:
+        return found
+    if not IS_WINDOWS:
+        for directory in POSIX_BIN_DIRS:
+            candidate = directory / name
+            if candidate.is_file():
+                return candidate
+        return POSIX_BIN_DIRS[0] / name
+    return bundled  # stays missing; runtime_status reports it as absent
+
+
+def _robei_home_candidates() -> tuple[Path, ...]:
+    out: list[Path] = []
+    for var in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+        base = os.environ.get(var)
+        if base:
+            out.append(Path(base) / "Robei")
+    if IS_WINDOWS:
+        for letter in ROBEI_HOME_DRIVES:
+            out.append(Path(f"{letter}:\\Robei"))
+    return tuple(dict.fromkeys(out))
+
+
+def _find_robei_home() -> Path | None:
+    """Locate the IDE install root without hardcoding one machine's layout."""
+    candidates = _robei_home_candidates()
+    for candidate in candidates:
+        if (candidate / "bin" / "Robei.exe").is_file():
+            return candidate
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    exe = _which("Robei")
+    if exe is not None and exe.parent.name.lower() == "bin":
+        return exe.parent.parent
+    return None
 
 
 def _default_model_roots(workspace: Path) -> tuple[Path, ...]:
@@ -61,9 +121,12 @@ VERILATOR_ROOT_CANDIDATES = (
 
 
 def _default_gui_exe(robei_home: Path) -> Path:
-    """Prefer the sandbox copy of the IDE so the install tree stays untouched."""
-    sandbox = Path(r"D:\robei-lab\robei\bin\Robei.exe")
-    return sandbox if sandbox.is_file() else robei_home / "bin" / "Robei.exe"
+    """Prefer a sandbox copy of the IDE so the install tree stays untouched."""
+    for root in (Path(r"D:\robei-lab\robei"), Path(r"C:\robei-lab\robei")):
+        candidate = root / "bin" / "Robei.exe"
+        if candidate.is_file():
+            return candidate
+    return robei_home / "bin" / "Robei.exe"
 
 
 @dataclass(frozen=True)
@@ -153,6 +216,31 @@ def _pick_int(env_name: str, data: dict, section: str, key: str, default: int) -
     return default, "default"
 
 
+def _pick_discovered(
+    env_name: str,
+    data: dict,
+    section: str,
+    key: str,
+    base: Path,
+    discover,
+    fallback: Path,
+) -> tuple[Path, str]:
+    """env > toml > auto-discovery > built-in fallback."""
+    raw = os.environ.get(env_name)
+    if raw:
+        return Path(raw).expanduser(), "env"
+    value = (data.get(section) or {}).get(key) if isinstance(data.get(section), dict) else None
+    if isinstance(value, str) and value.strip():
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            candidate = base / candidate
+        return candidate, "toml"
+    found = discover()
+    if found is not None:
+        return found, "discovered"
+    return fallback, "default"
+
+
 def _pick_roots(env_name: str, data: dict, section: str, key: str, default: tuple[Path, ...], base: Path) -> tuple[tuple[Path, ...], str]:
     raw = os.environ.get(env_name)
     if raw:
@@ -181,8 +269,14 @@ def load_settings() -> Settings:
         "ROBEI_MCP_WORKSPACE", data, "paths", "workspace", PROJECT_ROOT / "workspace", base
     )
     workspace = workspace.resolve()
-    robei_home, sources["robei_home"] = _pick(
-        "ROBEI_HOME", data, "paths", "robei_home", Path(r"E:\Robei"), base
+    robei_home, sources["robei_home"] = _pick_discovered(
+        "ROBEI_HOME",
+        data,
+        "paths",
+        "robei_home",
+        base,
+        _find_robei_home,
+        Path(r"E:\Robei") if IS_WINDOWS else Path("/opt/robei"),
     )
     robei_home = robei_home.resolve()
     bin_dir = robei_home / "bin"

@@ -1,7 +1,7 @@
-"""Stage 10: 4-bit counter, built and simulated entirely inside Robei.
+"""Stage 10: 4-bit counter, built as Robei XML and simulated headlessly.
 
 Uses only the MCP tools: create_robei_project -> create_robei_model ->
-create_robei_test (+ verilog library sync) -> robei_gui_experiment ->
+create_robei_test (+ verilog library sync) -> simulate_project ->
 read_waveform / find_events / render_waveform.
 """
 from __future__ import annotations
@@ -11,7 +11,14 @@ import shutil
 import traceback
 from pathlib import Path
 
-from robei_mcp import gui, tools
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from robei_mcp import tools
 
 PROJECT = "counter4_native"
 TEST = "tb_counter4.test"
@@ -65,8 +72,10 @@ def main() -> None:
         report["export"] = tools.export_robei_verilog(
             str(root / "model" / "counter4.model"), out_name="counter4_native.v"
         ) if not (tools.SETTINGS.workspace / "build" / "export" / "counter4_native.v").exists() else "exists"
-        report["experiment"] = gui.experiment(proj, TEST, restart=True, timeout_s=240)
-        vcds = report["experiment"].get("vcd") or []
+        # Robei's own Build > Run was dropped in 0.11; simulate_project drives the
+        # same bundled iverilog over the same generated .test, without the IDE.
+        report["simulate_project"] = tools.simulate_project(proj, TEST)
+        vcds = report["simulate_project"].get("vcd_paths") or []
         if vcds:
             vcd = vcds[0]
             report["vcd"] = vcd

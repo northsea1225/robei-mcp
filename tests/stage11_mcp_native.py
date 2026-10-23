@@ -47,7 +47,7 @@ async def main() -> int:
             tools = await session.list_tools()
             names = [t.name for t in tools.tools]
             print("TOOL_COUNT=", len(names))
-            for want in ("sync_robei_verilog", "create_robei_test", "robei_gui_experiment", "robei_gui_wave_load"):
+            for want in ("sync_robei_verilog", "create_robei_test", "simulate_project"):
                 check(f"registered {want}", want in names)
 
             data = payload(await session.call_tool("sync_robei_verilog", {"proj_path": str(PROJ)}))
@@ -75,14 +75,13 @@ async def main() -> int:
             data = payload(await session.call_tool("read_robei_model", {"path": str(ROOT / "workspace" / "counter4_native" / "model" / "counter4.model")}))
             check("read_robei_model", data.get("ok") is True and data.get("type") == "model", data)
 
-            data = payload(await session.call_tool("robei_gui_experiment", {
-                "proj_path": str(PROJ), "test_name": "tb_counter4_mcp.test", "restart": True, "timeout_s": 240,
+            data = payload(await session.call_tool("simulate_project", {
+                "proj_path": str(PROJ), "test_name": "tb_counter4_mcp.test",
             }))
-            check("robei_gui_experiment", data.get("ok") is True, data)
-            run_delta = (data.get("steps", {}).get("run", {}) or {}).get("delta", "")
-            print("   run output:", run_delta.replace("\n", " | ")[:300])
-            vcds = data.get("vcd") or []
-            check("experiment produced VCD", bool(vcds), data)
+            check("simulate_project", data.get("ok") is True, data)
+            print("   display:", (data.get("display_output") or "").replace("\n", " | ")[:300])
+            vcds = data.get("vcd_paths") or []
+            check("simulate_project produced VCD", bool(vcds), data)
 
             if vcds:
                 data = payload(await session.call_tool("read_waveform", {"vcd_path": vcds[0]}))

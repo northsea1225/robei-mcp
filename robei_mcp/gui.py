@@ -272,9 +272,11 @@ def call(op: str, args: dict[str, Any] | None = None, timeout_s: int | None = No
 # --------------------------------------------------------------------------
 # tool wrappers
 # --------------------------------------------------------------------------
-def status(output_lines: int = 20) -> dict[str, Any]:
+def status(output_lines: int = 20, probe: bool = False) -> dict[str, Any]:
     payload = call("status", {"output_lines": output_lines})
     payload["bridge"] = transport()
+    if probe:
+        payload["bridge_health"] = health()
     return payload
 
 
@@ -299,70 +301,8 @@ def output(lines: int = 80) -> dict[str, Any]:
     return call("output", {"lines": lines})
 
 
-def run_simulation(timeout_s: int = 90) -> dict[str, Any]:
-    return call("run", {"timeout_s": 25}, timeout_s=timeout_s)
-
-
-def open_wave(timeout_s: int = 60) -> dict[str, Any]:
-    return call("wave", {"timeout_s": 15}, timeout_s=timeout_s)
-
-
-def refresh() -> dict[str, Any]:
-    return call("refresh", {})
-
-
-def code_read() -> dict[str, Any]:
-    return call("code_read", {})
-
-
-def code_write(code: str, save: bool = True, timeout_s: int = 90) -> dict[str, Any]:
-    return call("code_write", {"code": code, "save": save}, timeout_s=timeout_s)
-
-
 def close(timeout_s: int = 60) -> dict[str, Any]:
     return call("close", {}, timeout_s=timeout_s)
-
-
-def experiment(
-    proj_path: str,
-    test_name: str,
-    restart: bool = False,
-    wave: bool = False,
-    compile_timeout: int = 45,
-    run_timeout: int = 45,
-    signals: list[str] | None = None,
-    heal: bool = True,
-    plot: bool = True,
-    timeout_s: int = 240,
-) -> dict[str, Any]:
-    path = resolve_project_path(proj_path)
-    # The Wave dock is opened in a second job: creating it invalidates the UIA
-    # element cache of the process that opened it, so wave_load needs a fresh one.
-    result = call(
-        "experiment",
-        {
-            "exe": str(SETTINGS.robei_gui_exe),
-            "path": str(path),
-            "test": test_name,
-            "restart": restart,
-            "wave": False,
-            "compile_timeout": compile_timeout,
-            "run_timeout": run_timeout,
-            "signals": signals,
-            "heal": heal,
-        },
-        timeout_s=timeout_s,
-    )
-    if wave and result.get("ok"):
-        result["wave"] = call("wave_load", {"signals": signals, "max_signals": 12}, timeout_s=120)
-        result["wave_transport"] = result["wave"].get("transport")
-    if plot and result.get("ok") and result.get("vcd"):
-        result["plot"] = _plot(result["vcd"][0], test_name)
-    return result
-
-
-def wave_load(signals: list[str] | None = None, max_signals: int = 12, timeout_s: int = 120) -> dict[str, Any]:
-    return call("wave_load", {"signals": signals, "max_signals": max_signals}, timeout_s=timeout_s)
 
 
 def health() -> dict[str, Any]:
@@ -385,19 +325,3 @@ def synthesis(timeout_s: int = 300) -> dict[str, Any]:
     return call("synthesis", {"timeout_s": timeout_s}, timeout_s=timeout_s + 60)
 
 
-def _plot(vcd_path: str, label: str) -> dict[str, Any]:
-    """Render the VCD Robei just produced into workspace/build/waveforms."""
-    try:
-        from . import tools as _tools
-
-        listing = _tools.read_waveform(vcd_path)
-        names = [s["name"] for s in listing.get("signals", [])][:16]
-        png = _tools.render_waveform(vcd_path, names, title=f"{label} (Robei vvp)")
-        return {
-            "ok": png.get("ok"),
-            "path": png.get("path"),
-            "relative_path": png.get("relative_path"),
-            "signals": names,
-        }
-    except Exception as exc:
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
