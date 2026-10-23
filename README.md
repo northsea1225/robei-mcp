@@ -1100,6 +1100,11 @@ C:\dev\robei-mcp\workspace\robei_counter4_project\
   `.xdc`**：只在 `build/` 落 `<name>.json`（网表），`constrain/` 里最多出现它自己的
   `<name>.constrain` 画布副本。所以 `export_robei_xdc` 仍是我们按 Robei 的格式自己投影的
   ——已与网络工程里 Robei 生成的 xdc 逐行比对一致。
+- 更深一层的实测：`Build→Synthesis` 产出的 `build/<name>.json` 是 **9.5 MB 的 Xilinx 库网表
+  （428 个 cell 模块，找不到 `light` 这类设计模块）**，所以 `Build→Route` 报
+  `No candidate top level modules / Failed to autodetect top module`，`Package` 因缺 `.fasm`
+  和 prjxray 映射库失败。反过来在**设计模型**上跑 Synthesis 会被拒绝（`is not constrain file`）。
+  也就是说这个安装的 FPGA 后端只能跑到"综合完成"，生成不出 xdc/bitstream——0.8.0 记录的是这条边界的实测结果。
 - 器件信息（`Vendor/Device/Family`）只能写进 `.const` 的属性；Robei 的 `Setting → Configure`
   对话框只有 5 个下拉框，读出来是 Bezier / Circuit / Bottom / Side 这类画布选项，
   **不是器件选择器**，所以没法从 UI 里问到合法的器件名。
