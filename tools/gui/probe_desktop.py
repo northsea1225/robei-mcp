@@ -50,6 +50,16 @@ def run() -> dict:
         out["display_error"] = f"{type(exc).__name__}: {exc}"
 
     try:
+        class LII(ctypes.Structure):
+            _fields_ = [("cbSize", wt.UINT), ("dwTime", wt.DWORD)]
+        li = LII(); li.cbSize = ctypes.sizeof(LII)
+        user32.GetLastInputInfo(ctypes.byref(li))
+        out["last_input_ms"] = int(li.dwTime)
+        out["tick_ms"] = int(ctypes.windll.kernel32.GetTickCount())
+    except Exception as exc:
+        out["last_input_error"] = f"{type(exc).__name__}: {exc}"
+
+    try:
         hwnd = user32.GetForegroundWindow()
         title = ctypes.create_unicode_buffer(256)
         user32.GetWindowTextW(hwnd, title, 256)

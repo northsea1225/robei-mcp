@@ -55,7 +55,9 @@ class FakeDock:
 
 
 def unit_tests() -> None:
-    import robei_ui as ui
+    # The real module, not the tools/gui/robei_ui shim: monkeypatching a shim
+    # would not touch the globals that _wait_for actually reads.
+    from robei_mcp.gui_agent import ui
 
     base = "|>Welcome\n"
     frames = [
