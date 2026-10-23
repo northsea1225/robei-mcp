@@ -14,14 +14,14 @@ python tools\gui\register_task.py --remove   # 不再需要时删除
 ```
 
 `register_task.py` 用当前用户名注册 `/IT`（仅交互式）任务，动作是
-`C:\dev\robei-mcp\.venv\Scripts\pythonw.exe C:\dev\robei-mcp\tools\gui\agent_launch.py`。
+`C:\dev\robei-mcp\.venv\Scripts\pythonw.exe C:\dev\robei-mcp\robei_mcp\gui_agent\launcher.py`。
 
 ## 传输方式
 
 | 场景 | mode | 行为 |
 | --- | --- | --- |
-| MCP 服务器跑在交互桌面 | `direct` | 在同一进程里直接调 `tools/gui/robei_ui.py` |
-| MCP 服务器跑在 Session 0（SSH / 服务） | `queued` | 写 `tools/gui/agent-job.json` → `schtasks /Run RobeiMCP_GuiAgent` → 轮询 `workspace/gui_shots/last.json` 匹配 `job_id` |
+| MCP 服务器跑在交互桌面 | `direct` | 在同一进程里直接调 `robei_mcp.gui_agent.ui` |
+| MCP 服务器跑在 Session 0（SSH / 服务） | `queued` | 写 `workspace/gui_agent/agent-job.json` → `schtasks /Run RobeiMCP_GuiAgent` → 轮询 `workspace/gui_shots/last.json` 匹配 `job_id` |
 
 `robei_gui_status` 返回里的 `bridge` 字段会给出 `server_session` / `console_session` / `task_state`，
 可直接判断当前是哪种模式。单个任务串行执行，默认超时 90 秒（上限 180 秒）。

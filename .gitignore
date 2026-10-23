@@ -3,16 +3,14 @@ __pycache__/
 workspace/build/
 workspace/testbench/
 workspace/gui_shots/
+workspace/gui_agent/
 *.pyc
-tools/gui/agent-job.json
 workspace/**/build/
-tools/gui/agent-args.txt
 *.bak-*
 *.model.bak*
 workspace/mcp_sandbox/
 workspace/logs/
 workspace/reports/
-tools/gui/agent.lock
 *.egg-info/
 .pytest_cache/
 workspace/.tmp/
@@ -23,3 +21,5 @@ workspace/p1_demo/
 workspace/const_demo/
 workspace/const_flow/
 workspace/const_flow2/
+build/
+dist/

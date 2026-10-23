@@ -18,6 +18,13 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
 | `robei_gui_refresh` | `open_project` 已自动重载 | — |
 | `robei_gui_health` | 并入 `robei_gui_status(probe=True)` | `robei_gui_status` |
 
+打包也修了：GUI 驱动（`ui.py` / `driver.py` / `job.py` / `launcher.py`）搬进
+`robei_mcp/gui_agent/`，wheel 现在带得上（0.11.0 的 wheel 只有 24 个文件、完全没有
+`tools/gui`，`pip install` 后 10 个 GUI 工具必然报"找不到脚本"）。控制文件（job / args / lock）
+改放到 `workspace/gui_agent/`，不再写进安装目录；装成 wheel 时 workspace 默认落在
+`%LOCALAPPDATA%\robei-mcp\workspace`。`ROBEI_MCP_GUI=0` 可以在 Windows 上强制关掉 GUI 面，
+此时 `tools/list` 只有 28 个工具。
+
 配置也改了：`robei_home` 和四个工具路径现在自动发现（`PATH`、`%ProgramFiles%\Robei`、
 `<盘符>:\Robei`、`C:\msys64\{ucrt64,mingw64}\bin`），不再假定 `E:\Robei`。
 `runtime_status().config.sources` 会报告每个键是 `env` / `toml` / `discovered` / `default` 哪来的。
@@ -112,7 +119,7 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
   `t=155 golden=1111 dut=1110`（只报这一个信号）
 - `workspace/logs/mcp-YYYYMMDD.log`：每次子进程 / 每次 GUI 往返一行 JSON
   （`tool` / `rc` / `ms` / `timeout` / `ok`），出问题能复盘
-- GUI 加互斥锁 `tools/gui/agent.lock`：第二个并发调用立刻返回
+- GUI 加互斥锁 `workspace/gui_agent/agent.lock`：第二个并发调用立刻返回
   `another GUI job is still running`，不再互相覆盖 job 文件后一起超时
 - 工程化：`pyproject.toml`（0.3.0，`requires-python>=3.10`，可选 `dev` = pytest），
   `tests/test_portable.py` 用 pytest 参数化跑 5 个子系统
@@ -951,11 +958,11 @@ Windows 交互桌面上跑，不进 CI。
   `tool / rc / ms / timeout / cwd / stderr 尾部`，GUI 记录 `op / transport / ok / ms / error`。
   日志写入失败会静默跳过，绝不影响工具返回。
 - **GUI 互斥**：所有 `robei_gui_*` 共用一份 `agent-job.json`，因此 `gui.call()`
-  先用 `O_CREAT|O_EXCL` 抢 `tools/gui/agent.lock`；抢不到就立刻返回
+  先用 `O_CREAT|O_EXCL` 抢 `workspace/gui_agent/agent.lock`；抢不到就立刻返回
   `another GUI job is still running`（超过 `MAX_TIMEOUT_S` 的陈旧锁会被自动清掉）。
   这是"失败得快"，不是排队——目前没有任务队列。
 - 两者都在 `.gitignore` 里（`workspace/logs/`、`workspace/reports/`、
-  `tools/gui/agent.lock`）。
+  `workspace/gui_agent/agent.lock`）。
 
 ## 安全边界
 
@@ -1191,7 +1198,7 @@ Credential Manager 里，Session 0 读写不到（`Unable to persist credentials
 C:\dev\robei-mcp\.venv\Scripts\python.exe C:\dev\robei-mcp\tools\gui\probe_push.py
 
 # 或从 SSH 触发
-echo probe_push > C:\dev\robei-mcp\tools\gui\agent-args.txt
+echo probe_push > C:\dev\robei-mcp\workspace\gui_agent\agent-args.txt
 schtasks /Run /TN RobeiMCP_GuiAgent
 ```
 

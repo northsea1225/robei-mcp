@@ -97,6 +97,15 @@ def _default_model_roots(workspace: Path) -> tuple[Path, ...]:
     return (workspace,)
 
 
+def _default_workspace() -> Path:
+    """A source checkout keeps <repo>/workspace; an installed wheel does not own
+    site-packages, so it falls back to a per-user directory."""
+    if (PROJECT_ROOT / "pyproject.toml").is_file():
+        return PROJECT_ROOT / "workspace"
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("USERPROFILE") or Path.home()
+    return Path(base) / "robei-mcp" / "workspace"
+
+
 def _first_existing(candidates: tuple[Path, ...]) -> Path | None:
     for candidate in candidates:
         if candidate.is_file():
@@ -266,7 +275,7 @@ def load_settings() -> Settings:
     sources: dict[str, str] = {}
 
     workspace, sources["workspace"] = _pick(
-        "ROBEI_MCP_WORKSPACE", data, "paths", "workspace", PROJECT_ROOT / "workspace", base
+        "ROBEI_MCP_WORKSPACE", data, "paths", "workspace", _default_workspace(), base
     )
     workspace = workspace.resolve()
     robei_home, sources["robei_home"] = _pick_discovered(

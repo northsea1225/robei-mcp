@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "robei-mcp"
-version = "0.11.0"
+version = "0.11.1"
 description = "MCP server for Robei EDA: Verilog toolchain, project XML, and IDE automation over UIA"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,7 +20,7 @@ dev = ["pytest>=8"]
 robei-mcp = "robei_mcp.__main__:main"
 
 [tool.setuptools]
-packages = ["robei_mcp"]
+packages = ["robei_mcp", "robei_mcp.gui_agent"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

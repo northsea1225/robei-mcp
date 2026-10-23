@@ -1,8 +1,8 @@
 """Register (or remove) the Session-1 helper task used by the robei_gui_* tools.
 
 The MCP server often runs in Session 0 (SSH), where Windows refuses to attach to
-the desktop. The task re-runs tools/gui/agent_launch.py with pythonw.exe inside
-the logged-in session, so UIA can reach the Robei window.
+the desktop. The task re-runs robei_mcp/gui_agent/launcher.py with pythonw.exe
+inside the logged-in session, so UIA can reach the Robei window.
 
 Usage:
     python tools/gui/register_task.py            # create / refresh the task
@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PYTHONW = ROOT / ".venv" / "Scripts" / "pythonw.exe"
-LAUNCHER = ROOT / "tools" / "gui" / "agent_launch.py"
+LAUNCHER = ROOT / "robei_mcp" / "gui_agent" / "launcher.py"
 TASK = "RobeiMCP_GuiAgent"
 
 

@@ -514,7 +514,6 @@ def waveform_stats(vcd_path: str, max_signals: int = 64) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool(annotations=READ_GUI)
 def robei_gui_status(output_lines: int = 20, probe: bool = False) -> dict[str, Any]:
     """Report whether Robei is running, the loaded project, open models and the Output tail.
 
@@ -527,7 +526,6 @@ def robei_gui_status(output_lines: int = 20, probe: bool = False) -> dict[str, A
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE_GUI)
 async def robei_gui_launch(wait_s: int = 30, ctx: Context | None = None) -> dict[str, Any]:
     """Start the Robei IDE on the interactive desktop and wait for its main window."""
     try:
@@ -536,7 +534,6 @@ async def robei_gui_launch(wait_s: int = 30, ctx: Context | None = None) -> dict
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE_GUI)
 async def robei_gui_open_project(proj_path: str, timeout_s: int = 90, ctx: Context | None = None) -> dict[str, Any]:
     """Open a .proj through File > Open and verify the Files tree shows that project."""
     try:
@@ -545,7 +542,6 @@ async def robei_gui_open_project(proj_path: str, timeout_s: int = 90, ctx: Conte
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE_GUI)
 def robei_gui_open_model(name: str, timeout_s: int = 90) -> dict[str, Any]:
     """Double-click a model in the Robei Files tree so its canvas becomes the current one."""
     try:
@@ -554,7 +550,6 @@ def robei_gui_open_model(name: str, timeout_s: int = 90) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE_GUI)
 async def robei_gui_compile(timeout_s: int = 90, ctx: Context | None = None) -> dict[str, Any]:
     """Run Build > Compile on the open model and return the new Output lines."""
     try:
@@ -563,7 +558,6 @@ async def robei_gui_compile(timeout_s: int = 90, ctx: Context | None = None) -> 
         return _error(exc)
 
 
-@mcp.tool(annotations=READ_GUI)
 def robei_gui_output(lines: int = 80) -> dict[str, Any]:
     """Read the last N lines of the Robei Output dock."""
     try:
@@ -572,7 +566,6 @@ def robei_gui_output(lines: int = 80) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE_GUI)
 def robei_gui_save_project() -> dict[str, Any]:
     """File > Save in Robei (Build > Synthesis refuses to run on an unsaved project)."""
     try:
@@ -581,7 +574,6 @@ def robei_gui_save_project() -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE_GUI)
 def robei_gui_synthesis(timeout_s: int = 300) -> dict[str, Any]:
     """Build > Synthesis on the open constrain model; waits for 'Synthesis complete'."""
     try:
@@ -590,7 +582,6 @@ def robei_gui_synthesis(timeout_s: int = 300) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool(annotations=DESTRUCTIVE_GUI)
 def robei_gui_close() -> dict[str, Any]:
     """Force-close the Robei IDE. Unsaved model edits are lost."""
     try:
@@ -599,10 +590,33 @@ def robei_gui_close() -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE_GUI)
 async def robei_gui_compile_all(models: list[str] | None = None, ctx: Context | None = None) -> dict[str, Any]:
     """Compile every .model of the open Robei project and report per-model warnings/errors."""
     try:
         return await _invoke(gui.compile_all, ctx, "robei_gui_compile_all", models=models)
     except Exception as exc:
         return _error(exc)
+
+
+# ---------------------------------------------------------------------------
+# The GUI bridge is optional: Windows plus the driver package must be present.
+# When it cannot run the tools are not advertised at all, instead of failing
+# only when a client calls them.
+# ---------------------------------------------------------------------------
+GUI_TOOLS: tuple[tuple[Any, Any], ...] = (
+    (robei_gui_status, READ_GUI),
+    (robei_gui_launch, WRITE_GUI),
+    (robei_gui_open_project, WRITE_GUI),
+    (robei_gui_open_model, WRITE_GUI),
+    (robei_gui_compile, WRITE_GUI),
+    (robei_gui_output, READ_GUI),
+    (robei_gui_save_project, WRITE_GUI),
+    (robei_gui_synthesis, WRITE_GUI),
+    (robei_gui_close, DESTRUCTIVE_GUI),
+    (robei_gui_compile_all, WRITE_GUI),
+)
+
+GUI_ENABLED = gui.available()
+if GUI_ENABLED:
+    for _fn, _ann in GUI_TOOLS:
+        mcp.add_tool(_fn, annotations=_ann)

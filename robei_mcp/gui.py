@@ -2,9 +2,13 @@
 
 The MCP server may run in Session 0 (SSH) while the desktop lives in Session 1.
 In that case every request is queued to the scheduled task ``RobeiMCP_GuiAgent``,
-which runs ``tools/gui/agent_launch.py`` with pythonw.exe inside the interactive
-session. When the server itself already runs on the interactive desktop the
-same operations are executed in-process.
+which runs ``robei_mcp/gui_agent/launcher.py`` with pythonw.exe inside the
+interactive session. When the server itself already runs on the interactive
+desktop the same operations are executed in-process.
+
+The driver ships inside the package, so an installed wheel works too; when it is
+missing (or the host is not Windows) ``available()`` returns False and the
+server never advertises the ``robei_gui_*`` tools.
 """
 from __future__ import annotations
 
@@ -12,24 +16,37 @@ import ctypes
 import json
 import os
 import subprocess
-import sys
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 from .config import SETTINGS
+from .gui_agent.paths import ARGS_FILE, JOB_FILE, LAST_JSON, LOCK_FILE, ensure_run_dir
 from .security import resolve_project_path
 
 TASK_NAME = "RobeiMCP_GuiAgent"
-GUI_DIR = SETTINGS.project_root / "tools" / "gui"
-JOB_FILE = GUI_DIR / "agent-job.json"
-ARGS_FILE = GUI_DIR / "agent-args.txt"
-LAST_JSON = SETTINGS.workspace / "gui_shots" / "last.json"
-LOCK_FILE = GUI_DIR / "agent.lock"
+GUI_DIR = Path(__file__).resolve().parent / "gui_agent"
 
 DEFAULT_TIMEOUT_S = 90
 MAX_TIMEOUT_S = 300
+
+
+def available() -> bool:
+    """True when the GUI bridge can actually run on this host.
+
+    ``ROBEI_MCP_GUI=0`` forces it off even on Windows, which hides the tools
+    from ``tools/list`` entirely (useful for CI and for file-level-only use).
+    """
+    if os.environ.get("ROBEI_MCP_GUI", "").strip().lower() in {"0", "false", "off", "no"}:
+        return False
+    if os.name != "nt":
+        return False
+    try:
+        from .gui_agent import driver, ui  # noqa: F401
+    except Exception:
+        return False
+    return True
 
 
 def _session_id() -> int:
@@ -100,12 +117,8 @@ def _read_last() -> dict[str, Any] | None:
 
 
 def _run_direct(op: str, args: dict[str, Any]) -> dict[str, Any]:
-    if str(GUI_DIR) not in sys.path:
-        sys.path.insert(0, str(GUI_DIR))
-    import importlib
+    from .gui_agent import ui as module
 
-    module = importlib.import_module("robei_ui")
-    importlib.reload(module)
     if op == "status":
         payload = module.status(int(args.get("output_lines", 20)))
     elif op == "open_project":
@@ -118,35 +131,14 @@ def _run_direct(op: str, args: dict[str, Any]) -> dict[str, Any]:
         payload = module.open_model(args["name"])
     elif op == "launch":
         payload = module.launch(args["exe"], float(args.get("wait_s", 20)))
-    elif op == "run":
-        payload = module.run_simulation(float(args.get("timeout_s", 25)))
-    elif op == "wave":
-        payload = module.open_wave(float(args.get("timeout_s", 15)))
-    elif op == "refresh":
-        payload = module.refresh()
-    elif op == "code_read":
-        payload = module.code_read()
-    elif op == "code_write":
-        payload = module.code_write(args["code"], bool(args.get("save", True)))
-    elif op == "experiment":
-        payload = module.experiment(
-            args["exe"],
-            args["path"],
-            args["test"],
-            bool(args.get("restart", False)),
-            bool(args.get("wave", True)),
-            float(args.get("compile_timeout", 45)),
-            float(args.get("run_timeout", 45)),
-            args.get("signals"),
-        )
-    elif op == "wave_load":
-        payload = module.wave_load(args.get("signals"), int(args.get("max_signals", 12)))
     elif op == "health":
         payload = module.uia_health()
     elif op == "compile_all":
-        payload = module.compile_all(
-            float(args.get("compile_timeout", 45)), args.get("models")
-        )
+        payload = module.compile_all(float(args.get("compile_timeout", 45)), args.get("models"))
+    elif op == "save_project":
+        payload = module.save_project()
+    elif op == "synthesis":
+        payload = module.synthesis(float(args.get("timeout_s", 300)))
     elif op == "close":
         payload = module.close()
     else:
@@ -178,7 +170,7 @@ def _run_queued_locked(op: str, args: dict[str, Any], timeout_s: int) -> dict[st
             "transport": "schtasks",
         }
     job_id = uuid.uuid4().hex[:12]
-    GUI_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_run_dir()
     JOB_FILE.write_text(
         json.dumps({"job_id": job_id, "op": op, "args": args}, ensure_ascii=False),
         encoding="utf-8",
