@@ -164,6 +164,21 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
   `is not constrain file`）、工程里要有 `build/` 目录（否则最后一步
   `Can't open output file .../build/<name>.json`）
 
+已验证（阶段 20，GUI 可靠性，`tests/stage20_gui_robustness.py`，14/14 PASS）：
+
+- **完成标记 + 输出静止 双条件**：`_wait_for` 只在"看到 `Compile done` / `Synthesis complete` /
+  `Finished to generate constrain file` **并且** 输出连续 800ms 不变"时才返回，避免标记先到、
+  错误行后到的竞态；`ERROR:` 之类的停止标记会立即返回
+- **`unknown_state` 自动重试一次**：既没有标记、也没有错误行的情况（stage16 真遇到过）
+  现在会重打一次 Compile，并在结果里标 `retried: true`
+- **`compile_all` 每个模型都带 `state` / `marker` / `output_tail`**，不再是空的
+  `{"ok": false, "error": null}`
+- **输入注入失败自动补救**：所有鼠标点击走 `_mouse()`，遇到
+  `There is no active desktop required for moving mouse cursor` 先 `SetForegroundWindow`
+  再重试一次（今天 open_project 就是被这个卡住的）
+- 标记字符串集中在 `COMPILE_MARKERS` / `CONSTRAIN_MARKERS` / `SYNTH_MARKERS`，
+  Robei 换版本改文案只需要动一处
+
 仅可见 / 待定：
 
 - Robei GUI 打开和编译：当前 SSH 在 Session 0，交互桌面在 Session 1，无法从 SSH 看到/点击 GUI；已准备 `workspace\robei_counter4_project` 和手动步骤，待人工验证。
@@ -177,7 +192,7 @@ C:\dev\robei-mcp\
   .gitignore
   .mcp.json                      Windows Claude Code 项目配置
   README.md
-  pyproject.toml                 0.9.0，requires-python>=3.10，可选 dev=pytest
+  pyproject.toml                 0.10.0，requires-python>=3.10，可选 dev=pytest
   robei.toml.example             路径/限额配置样例（复制成 robei.toml 生效）
   requirements.txt               mcp==2.3.0, matplotlib
   run-mcp.cmd                    Windows stdio 包装脚本
@@ -216,6 +231,7 @@ C:\dev\robei-mcp\
     stage17_hardening.py         annotations、错误码、XML 防护、进度、取消、robei.toml
     stage18_p1.py                Verilog→画布、ERC、真值表、波形断言/统计、combo TB
     stage19_constraints.py       引脚约束：写 .const、读回、投影 .xdc、Robei 打开
+    stage20_gui_robustness.py    标记/静止双条件、unknown_state 重试、compile_all 字段
   workspace\
     counter4\
       counter4.v                 4 位计数器
@@ -734,6 +750,12 @@ Robei 自己写的版本 `IOSTANDARD` 为空，Route 会因此报参数个数错
 
 点 File → Save。Build → Synthesis 之前必须做一次，否则 Robei 只回
 `Error: please save your current project first.`。
+
+### `robei_gui_compile_all` 的新字段
+
+每个模型的结果现在固定带 `state`（`ok` / `failed` / `unknown_state`）、`marker`
+（实际命中的完成标记）和 `output_tail`（Output 尾部，失败时用来定位），
+`unknown_state` 会自动重试一次并标 `retried: true`。
 
 ### `robei_gui_synthesis`
 

@@ -79,6 +79,80 @@ def _rect(obj) -> list[int]:
 def _center(rect: list[int]) -> tuple[int, int]:
     return ((rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2)
 
+# Completion markers Robei prints into the Output dock. Kept in one place so a
+# wording change shows up as one diff instead of five silent timeouts.
+COMPILE_MARKERS = ("Compile done",)
+CONSTRAIN_MARKERS = ("Finished to generate constrain file",)
+SYNTH_MARKERS = ("Synthesis complete",)
+
+
+def _foreground() -> None:
+    """Bring Robei to the front; input injection fails when it is not."""
+    try:
+        import win32gui
+
+        _, win = main_window()
+        if win and win.get("hwnd"):
+            win32gui.SetForegroundWindow(win["hwnd"])
+    except Exception:
+        pass
+
+
+def _mouse(action: str, coords, retries: int = 1):
+    """Click, retrying once after a focus if the desktop refused input."""
+    from pywinauto import mouse
+
+    for attempt in range(retries + 1):
+        try:
+            if action == "double":
+                mouse.double_click(button="left", coords=coords)
+            else:
+                mouse.click(button="left", coords=coords)
+            return
+        except Exception as exc:
+            if attempt < retries and "active desktop" in str(exc).lower():
+                _foreground()
+                time.sleep(0.8)
+                continue
+            raise
+
+
+def _click(coords):
+    _mouse("click", coords)
+
+
+def _double_click(coords):
+    _mouse("double", coords)
+
+
+def _wait_for(dlg, before: str, markers: tuple[str, ...], timeout_s: float,
+              quiet_s: float = 0.8, stop_markers: tuple[str, ...] = ()):
+    """Wait for a marker *and* 800 ms of unchanged output; stop early on errors.
+
+    Marker-only waiting raced with Robei's buffered writes: the line appeared
+    while the rest of the output (errors!) was still pending. Returns
+    (after, delta, marker, stopped).
+    """
+    deadline = time.time() + timeout_s
+    after = before
+    last = before
+    stable_since = time.time()
+    while time.time() < deadline:
+        after = read_output(dlg)
+        delta = after[len(before):] if after.startswith(before) else after
+        if after != last:
+            last = after
+            stable_since = time.time()
+        if any(stop in delta for stop in stop_markers):
+            return after, delta, None, True
+        hit = next((marker for marker in markers if marker in delta), None)
+        if hit and (time.time() - stable_since) >= quiet_s:
+            return after, delta, hit, False
+        time.sleep(0.25)
+    delta = after[len(before):] if after.startswith(before) else after
+    return after, delta, None, False
+
+
 
 def attach(hwnd: int):
     from pywinauto import Application
@@ -229,7 +303,7 @@ def click_menu(dlg, title: str, item: str, attempts: int = 3) -> dict:
             pass
         keyboard.send_keys("{ESC}")
         time.sleep(0.4)
-        mouse.click(button="left", coords=_center(headers[title]))
+        _click(_center(headers[title]))
         time.sleep(1.2)
         found = [p for p in popups() if any(i["name"] == item for i in p["items"])]
         tries.append(
@@ -238,7 +312,7 @@ def click_menu(dlg, title: str, item: str, attempts: int = 3) -> dict:
         for popup in found:
             for entry in popup["items"]:
                 if entry["name"] == item and entry["rect"]:
-                    mouse.click(button="left", coords=_center(entry["rect"]))
+                    _click(_center(entry["rect"]))
                     time.sleep(1.2)
                     return {"ok": True, "menu": title, "item": item, "tries": len(tries)}
         keyboard.send_keys("{ESC}")
@@ -288,7 +362,7 @@ def select_file_in_dialog(path: str) -> dict:
     if combo is None:
         keyboard.send_keys("{ESC}")
         return {"ok": False, "error": "filename field not found"}
-    mouse.click(button="left", coords=_center(combo["rect"]))
+    _click(_center(combo["rect"]))
     time.sleep(0.3)
     keyboard.send_keys("^a")
     keyboard.send_keys(path, with_spaces=True, pause=0.005)
@@ -301,7 +375,7 @@ def select_file_in_dialog(path: str) -> dict:
         time.sleep(0.3)
     button = next((c for c in controls if c["type"] == "Button" and re.match(r"^(打开|Open)", c["name"] or "")), None)
     if button is not None:
-        mouse.click(button="left", coords=_center(button["rect"]))
+        _click(_center(button["rect"]))
         deadline = time.time() + 20.0
         while time.time() < deadline:
             if not any(w["class"] == DIALOG_CLASS for w in windows()):
@@ -436,19 +510,13 @@ def compile_model(timeout_s: float = 25.0) -> dict:
     click = click_menu(dlg, "Build", "Compile")
     if not click.get("ok"):
         return {"ok": False, "error": "could not reach Build>Compile", "detail": click}
-    deadline = time.time() + timeout_s
-    after = before
-    while time.time() < deadline:
-        after = read_output(dlg)
-        if after != before and "Compile done" in after[len(before):]:
-            break
-        time.sleep(0.4)
-    delta = after[len(before):] if after.startswith(before) else after
+    after, delta, marker, stopped = _wait_for(dlg, before, COMPILE_MARKERS + CONSTRAIN_MARKERS, timeout_s)
     lines = [line for line in delta.splitlines() if line.strip()]
     errors = [line for line in lines if ": error:" in line]
     warnings = [line for line in lines if ": warning:" in line]
     generated = re.findall(r"Generating (.+?)\.\.\.", delta)
-    done = "Compile done" in delta or "Finished to generate constrain file" in delta
+    done = marker is not None
+    constrain = marker in CONSTRAIN_MARKERS
     missing: list[str] = []
     if "*** These modules were missing:" in delta:
         block = delta.split("*** These modules were missing:", 1)[1]
@@ -457,7 +525,9 @@ def compile_model(timeout_s: float = 25.0) -> dict:
     return {
         "ok": done and not errors,
         "compiled": done,
-        "constrain": "Finished to generate constrain file" in delta,
+        "constrain": constrain,
+        "state": "ok" if done and not errors else ("failed" if errors else "unknown_state"),
+        "marker": marker,
         "model": models,
         "check_warnings": int(check.group(1)) if check else None,
         "error_count": len(errors),
@@ -502,15 +572,10 @@ def synthesis(timeout_s: float = 300.0) -> dict:
     click = click_menu(dlg, "Build", "Synthesis")
     if not click.get("ok"):
         return {"ok": False, "error": "could not reach Build>Synthesis", "detail": click}
-    deadline = time.time() + timeout_s
-    after = before
-    delta = ""
-    while time.time() < deadline:
-        after = read_output(dlg)
-        delta = after[len(before):] if after.startswith(before) else after
-        if "Synthesis complete" in delta or "ERROR:" in delta or "is not constrain file" in delta:
-            break
-        time.sleep(0.8)
+    after, delta, marker, stopped = _wait_for(
+        dlg, before, SYNTH_MARKERS, timeout_s,
+        quiet_s=1.0, stop_markers=("ERROR:", "is not constrain file"),
+    )
     lines = [line for line in delta.splitlines() if line.strip()]
     board = [line for line in lines if "has no" in line and "configured" in line]
     errors = [
@@ -519,10 +584,11 @@ def synthesis(timeout_s: float = 300.0) -> dict:
         if (line.startswith("ERROR") or line.startswith("|>Error")) and line not in board
     ]
     warnings = [line for line in lines if line.startswith("Warning") or line.startswith("|>Warning")]
-    complete = "Synthesis complete" in delta
+    complete = marker in SYNTH_MARKERS
     return {
         "ok": complete and not errors,
         "completed": complete,
+        "state": "ok" if complete and not errors else ("failed" if (errors or stopped) else "unknown_state"),
         "model": models,
         "error_count": len(errors),
         "errors": errors[:20],
@@ -583,15 +649,26 @@ def compile_all(compile_timeout: float = 45.0, models: list[str] | None = None) 
             results.append({"model": name, "ok": False, "error": opened.get("error")})
             continue
         compiled = compile_model(compile_timeout)
+        retried = False
+        if compiled.get("state") == "unknown_state":
+            # No marker, no error, no product: Robei swallowed the click. One retry
+            # is enough in practice (stage16 hit exactly this).
+            time.sleep(1.0)
+            compiled = compile_model(compile_timeout)
+            retried = True
         results.append(
             {
                 "model": name,
                 "ok": bool(compiled.get("compiled")) and not compiled.get("errors"),
+                "state": compiled.get("state"),
+                "marker": compiled.get("marker"),
+                "retried": retried,
                 "check_warnings": compiled.get("check_warnings"),
                 "warnings": compiled.get("warnings", [])[:5],
                 "errors": compiled.get("errors", [])[:5],
                 "missing_modules": compiled.get("missing_modules", [])[:5],
                 "generated": compiled.get("generated", []),
+                "output_tail": compiled.get("output_tail"),
             }
         )
     passed = sum(1 for row in results if row.get("ok"))
@@ -755,7 +832,7 @@ def wave_load(signals: list[str] | None = None, max_signals: int = 12) -> dict:
             break
         for row in todo[:6]:
             try:
-                mouse.double_click(button="left", coords=_center(row["rect"]))
+                _double_click(_center(row["rect"]))
                 tried.add(row["text"])
                 time.sleep(0.5)
             except Exception:
@@ -774,7 +851,7 @@ def wave_load(signals: list[str] | None = None, max_signals: int = 12) -> dict:
         if leaf is None:
             break
         try:
-            mouse.click(button="left", coords=_center(leaf["rect"]))
+            _click(_center(leaf["rect"]))
             clicked.append(leaf["text"])
             time.sleep(0.4)
         except Exception:
@@ -849,7 +926,7 @@ def _code_editor(dlg, activate: bool = True):
         tab = _design_tab_item(dlg, "code")
         if tab is None:
             return None
-        mouse.click(button="left", coords=_center(_rect(tab.element_info.rectangle)))
+        _click(_center(_rect(tab.element_info.rectangle)))
         time.sleep(1.0)
     for ctrl in dlg.descendants():
         try:
@@ -902,7 +979,7 @@ def code_write(code: str, save: bool = True) -> dict:
         editor.iface_value.SetValue(code)
     except Exception as exc:
         method = f"type_keys (SetValue failed: {type(exc).__name__})"
-        mouse.click(button="left", coords=_center(_rect(editor.element_info.rectangle)))
+        _click(_center(_rect(editor.element_info.rectangle)))
         time.sleep(0.2)
         keyboard.send_keys("^a")
         keyboard.send_keys(code, with_spaces=True, pause=0.005)
@@ -959,7 +1036,7 @@ def _expand_tree_item(item) -> int | None:
     from pywinauto import keyboard, mouse
 
     rect = _rect(item.element_info.rectangle)
-    mouse.click(button="left", coords=_center(rect))
+    _click(_center(rect))
     time.sleep(0.3)
     state = _tree_state(item)
     if state == 0:
@@ -967,7 +1044,7 @@ def _expand_tree_item(item) -> int | None:
         time.sleep(0.6)
         state = _tree_state(item)
     if state == 0:
-        mouse.click(button="left", coords=(rect[0] + 6, _center(rect)[1]))
+        _click((rect[0] + 6, _center(rect)[1]))
         time.sleep(0.6)
         state = _tree_state(item)
     return state
@@ -1023,7 +1100,7 @@ def open_model(name: str) -> dict:
             "tree": [e["text"] for e in _tree_entries(tree)],
         }
     rect = _rect(target.element_info.rectangle)
-    mouse.double_click(button="left", coords=_center(rect))
+    _double_click(_center(rect))
     time.sleep(2.5)
     models = model_tabs(dlg)
     return {
