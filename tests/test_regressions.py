@@ -136,6 +136,21 @@ def test_non_ansi_ports_on_one_line_are_scoped_per_module() -> None:
     assert [p["name"] for p in parse_module_ports(source, "b")] == ["p", "q"]
 
 
+def test_parameterised_header_on_one_line() -> None:
+    source = (
+        "module m #(parameter WIDTH=4)"
+        "(input [WIDTH-1:0] a, output [WIDTH-1:0] y);\n"
+        "  assign y = a;\nendmodule\n"
+    )
+    ports = parse_module_ports(source, "m")
+    assert [(p["name"], p["direction"], p["width"]) for p in ports] == [
+        ("a", "input", "WIDTH-1:0"),
+        ("y", "output", "WIDTH-1:0"),
+    ]
+    module = parse_module(source, "m")
+    assert [p["name"] for p in module["ports"]] == ["a", "y"]
+
+
 def test_instances_on_the_same_line() -> None:
     source = (
         "module top(input wire a, output wire y);\n"
@@ -325,6 +340,51 @@ def test_workspace_prefix_is_not_doubled(work: Path) -> None:
     # Creation paths follow the same rule instead of nesting workspace/workspace.
     fresh = f"workspace/{relative.parent.as_posix()}/new-model.model"
     assert resolve_workspace_path(fresh, must_exist=False) == source.parent / "new-model.model"
+
+
+def test_workspace_prefix_strips_before_the_directory_exists(work: Path) -> None:
+    from robei_mcp.security import resolve_workspace_path
+
+    relative = work.relative_to(SETTINGS.workspace)
+    fresh = f"workspace/{relative.as_posix()}/brand-new/new.v"
+    resolved = resolve_workspace_path(fresh, must_exist=False)
+    assert resolved == work / "brand-new" / "new.v"
+    assert resolved.relative_to(SETTINGS.workspace).parts[0] != "workspace"
+
+
+def test_workspace_prefix_accepts_windows_separators(work: Path) -> None:
+    from robei_mcp.security import resolve_workspace_path
+
+    relative = work.relative_to(SETTINGS.workspace)
+    raw = "Workspace\\" + str(relative).replace("/", "\\") + "\\new.v"
+    assert resolve_workspace_path(raw, must_exist=False) == work / "new.v"
+
+
+def test_workspace_prefix_cannot_escape(work: Path) -> None:
+    from robei_mcp.security import resolve_workspace_path
+
+    with pytest.raises(ValueError, match="escapes workspace"):
+        resolve_workspace_path("workspace/../outside.v", must_exist=False)
+
+
+def test_nested_workspace_directory_is_ambiguous(work: Path) -> None:
+    from robei_mcp.security import resolve_workspace_path
+
+    relative = work.relative_to(SETTINGS.workspace)
+    nested_root = SETTINGS.workspace / "workspace"
+    created_root = not nested_root.exists()
+    nested = nested_root / relative / "amb"
+    try:
+        nested.mkdir(parents=True, exist_ok=True)
+        (nested / "same.v").write_text("module same; endmodule\n", encoding="utf-8")
+        (work / "amb").mkdir(exist_ok=True)
+        (work / "amb" / "same.v").write_text("module same; endmodule\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="ambiguous path"):
+            resolve_workspace_path(f"workspace/{relative.as_posix()}/amb/same.v")
+    finally:
+        shutil.rmtree(nested_root / relative, ignore_errors=True)
+        if created_root:
+            shutil.rmtree(nested_root, ignore_errors=True)
 
 
 def test_backups_do_not_collide(work: Path) -> None:

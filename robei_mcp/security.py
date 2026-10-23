@@ -18,42 +18,65 @@ def is_within(path: Path, root: Path) -> bool:
     return p == r or p.startswith(r + os.sep)
 
 
-def _relative_readings(value: str | Path, base: Path) -> list[Path]:
-    """Plausible readings of a workspace-relative path.
+def _strip_base_prefix(value: Path, base: Path) -> Path | None:
+    """Drop a leading ``<base.name>/`` from a relative path.
 
-    Tools resolve ``foo/bar.v`` against the workspace.  Docs and humans often
-    write the same thing repo-relative (``workspace/foo/bar.v``); accepting the
-    extra prefix avoids the surprising ``workspace/workspace/foo`` nesting.
+    Matching is case-insensitive and accepts both ``/`` and ``\\``, so
+    ``Workspace\\proj\\a.v`` and ``workspace/proj/a.v`` both resolve the same
+    way.  The remainder is still resolved and escape-checked by the caller.
+    """
+    raw = str(value)
+    match = re.match(rf"^(?i:{re.escape(base.name)})[\\/]+(.+)$", raw)
+    if not match:
+        return None
+    rest = match.group(1).replace("\\", "/")
+    if rest.strip() in {"", ".", ".."}:
+        return None
+    return Path(rest)
+
+
+def _base_readings(value: str | Path, base: Path) -> list[tuple[Path, Path | None]]:
+    """``(preferred, plain)`` readings for one base directory.
+
+    ``preferred`` has the redundant ``workspace/`` prefix removed; ``plain`` is
+    kept only to detect a genuine ``<workspace>/workspace/`` child.
     """
     candidate = Path(value)
     if candidate.is_absolute():
-        return [candidate]
-    readings = [base / candidate]
-    parts = candidate.parts
-    if len(parts) > 1 and parts[0].lower() == base.name.lower():
-        readings.append(base.joinpath(*parts[1:]))
-    return readings
+        return [(candidate, None)]
+    stripped = _strip_base_prefix(candidate, base)
+    if stripped is None:
+        return [(base / candidate, None)]
+    return [(base / stripped, base / candidate)]
+
+
+def _ambiguous(value: str | Path, preferred: Path, plain: Path | None) -> None:
+    if plain is None:
+        return
+    try:
+        fallback = plain.resolve()
+    except OSError:
+        return
+    if preferred == fallback:
+        return
+    if preferred.exists() and fallback.exists():
+        raise ValueError(
+            f"ambiguous path {str(value)!r}: both {preferred} and {fallback} exist; "
+            "drop the leading workspace/ prefix or rename one of them"
+        )
 
 
 def resolve_workspace_path(value: str | Path, *, must_exist: bool = True) -> Path:
-    readings = _relative_readings(value, SETTINGS.workspace)
-    resolved = [path.resolve() for path in readings]
-    for path in resolved:
-        if not is_within(path, SETTINGS.workspace):
-            raise ValueError(f"path escapes workspace: {path}")
-    if must_exist:
-        for path in resolved:
-            if path.is_file():
-                return path
-        raise FileNotFoundError(f"file not found in workspace: {resolved[-1]}")
-    for path in resolved:
-        if path.exists():
-            return path
-    # Creating something new: prefer the repo-relative reading only when its
-    # parent already exists, so ``workspace/newproj`` lands under workspace/.
-    if len(resolved) > 1 and resolved[1].parent.is_dir() and not resolved[0].parent.is_dir():
-        return resolved[1]
-    return resolved[0]
+    for preferred, plain in _base_readings(value, SETTINGS.workspace):
+        resolved = preferred.resolve()
+        if not is_within(resolved, SETTINGS.workspace):
+            raise ValueError(f"path escapes workspace: {resolved}")
+        _ambiguous(value, resolved, plain)
+        if not must_exist:
+            return resolved
+        if resolved.is_file():
+            return resolved
+    raise FileNotFoundError(f"file not found in workspace: {value}")
 
 
 def resolve_source_files(files: list[str] | tuple[str, ...]) -> list[Path]:
@@ -84,15 +107,15 @@ def resolve_vcd_path(value: str | Path) -> Path:
 
 def resolve_model_path(value: str | Path) -> Path:
     candidate = Path(value)
+    roots = (SETTINGS.workspace, *SETTINGS.model_roots)
     if candidate.is_absolute():
-        candidates = [candidate]
+        candidates: list[tuple[Path, Path | None]] = [(candidate, None)]
     else:
         candidates = []
-        for base in (SETTINGS.workspace, *SETTINGS.model_roots):
-            candidates.extend(_relative_readings(candidate, base))
+        for base in roots:
+            candidates.extend(_base_readings(candidate, base))
 
-    roots = (SETTINGS.workspace, *SETTINGS.model_roots)
-    for item in candidates:
+    for item, plain in candidates:
         try:
             resolved = item.resolve()
         except OSError:
@@ -106,6 +129,7 @@ def resolve_model_path(value: str | Path) -> Path:
                     + "; ".join(str(r) for r in roots)
                 )
             continue
+        _ambiguous(value, resolved, plain)
         if resolved.suffix.lower() != ".model":
             raise ValueError(f"model file must have a .model extension: {resolved}")
         if resolved.is_file():
@@ -121,27 +145,27 @@ def resolve_project_path(value: str | Path) -> Path:
     """Resolve a Robei .proj path. Read-only: the project is never written back."""
     candidate = Path(value)
     roots = (SETTINGS.workspace, *SETTINGS.model_roots, SETTINGS.robei_home / "project")
-    readings = [candidate] if candidate.is_absolute() else [
-        path
-        for base in roots
-        for path in _relative_readings(candidate, base)
-    ]
-    resolved = []
-    for path in readings:
+    readings: list[tuple[Path, Path | None]] = (
+        [(candidate, None)] if candidate.is_absolute()
+        else [pair for base in roots for pair in _base_readings(candidate, base)]
+    )
+    resolved_paths: list[Path] = []
+    for path, plain in readings:
         try:
             item = path.resolve()
         except OSError:
             continue
         if not any(is_within(item, root) for root in roots):
             raise ValueError(f"project path escapes allowed roots: {item}")
+        _ambiguous(value, item, plain)
         if item.suffix.lower() != ".proj":
             raise ValueError("project file must have .proj extension")
-        resolved.append(item)
+        resolved_paths.append(item)
         if item.is_file():
             return item
-    if not resolved:
+    if not resolved_paths:
         raise FileNotFoundError(f"project not found: {candidate}")
-    raise FileNotFoundError(f"project not found: {resolved[0]}")
+    raise FileNotFoundError(f"project not found: {resolved_paths[0]}")
 
 
 # ---------------------------------------------------------------------------

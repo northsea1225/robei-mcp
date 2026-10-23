@@ -4,9 +4,11 @@
 
 > 这份文件是从早期 README 拆出来的，示例里的时间戳/路径是当时的真实输出，不要当成当前默认值。
 
-**路径约定**：所有文件参数都相对 `workspace/` 解析。`counter4/counter4.v` 和
-`workspace/counter4/counter4.v` 等价（不会解析成 `workspace/workspace/...`）；
-绝对路径必须落在 workspace / 模型根目录之内。
+**路径约定**：所有文件参数都相对 `workspace/` 解析。开头的 `workspace/`（大小写不敏感，
+`/` 和 `\` 都算）一律去掉，所以 `counter4/counter4.v`、`workspace/counter4/counter4.v`
+和 `Workspace\counter4\counter4.v` 等价；去掉前缀后仍然做逃逸检查
+（`workspace/../x` 直接被拒）。若工作区里确实存在 `workspace/` 子目录且与根目录同名路径
+同时存在，返回 `ambiguous path`。绝对路径必须落在 workspace / 模型根目录之内。
 
 ## 工具清单
 
@@ -267,6 +269,8 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 - 端口解析支持 ANSI 简写继承（`input wire [3:0] a, b, c`）、一行写的 non-ANSI
   （`module m(a,y); input a; output y;`），以及同一行里的多个实例
 - 默认写到 `workspace/testbench/<top>_tb.v`，已存在则拒绝覆盖
+- 端口位宽必须是能算出整数的常量表达式；`[WIDTH-1:0]` 这种**不会代入参数默认值**，
+  而是直接报错（先把参数展开成具体位宽再生成）
 - 生成模块名固定为 `<top>_tb`
 - 多时钟：所有 `clk`/`clock`/`*_clk` 输入都会生成 `always` 翻转
 - 默认：其余输入先置 0，复位释放后把第一个非时钟/复位输入拉高，并留 TODO 提示
@@ -397,7 +401,8 @@ Robei 自己写的版本 `IOSTANDARD` 为空，Route 会因此报参数个数错
 - `n` 是**输入总位数**，不是端口个数：`input [1:0] a` + `input [3:0] b` 算 6 位（64 行），
   超过 `max_inputs` 返回 `invalid_argument`
 - 枚举按位打包：最后一个输入端口的位是最低位，`rows[1]` 只让最后一个端口 +1
-- 位宽支持常量表达式（`[4-1:0]` 按 4 位算），不认识的表达式按 1 位处理并在 `inputs` 里体现
+- 位宽支持常量表达式（`[4-1:0]` 按 4 位算）；`[WIDTH-1:0]` 这类参数化位宽**不支持**
+  （不会拿 `Parameters` 的默认值去代入），会返回 `invalid_argument` 而不是按 1 位枚举
 - 生成的 testbench 写在 `build/truth-<top>-<时间戳>-<uuid8>/`，每次调用独立
 
 ### `expect_waveform`

@@ -94,6 +94,31 @@ def module_header(text: str, top: str) -> str | None:
     return None
 
 
+def _port_paren(header: str) -> int:
+    """Index of the port-list ``(``, skipping an optional ``#(parameter ...)``."""
+    index = 0
+    while index < len(header):
+        char = header[index]
+        if char.isspace():
+            index += 1
+            continue
+        if char == "#":
+            open_index = header.find("(", index)
+            if open_index == -1:
+                return -1
+            close_index = _match_paren(header, open_index)
+            if close_index == -1:
+                return -1
+            index = close_index + 1
+            continue
+        if char == "(":
+            return index
+        if char == ";":
+            return -1
+        index += 1
+    return -1
+
+
 def parse_module_ports(source: str, top: str) -> list[dict[str, Any]]:
     """Parse ANSI-style ports (falls back to non-ANSI body declarations).
 
@@ -107,7 +132,7 @@ def parse_module_ports(source: str, top: str) -> list[dict[str, Any]]:
         raise ValueError(f"module {top} not found")
 
     ports: list[dict[str, Any]] = []
-    paren = header.find("(")
+    paren = _port_paren(header)
     if paren != -1:
         end = _match_paren(header, paren)
         inner = header[paren + 1 : end if end != -1 else len(header)]

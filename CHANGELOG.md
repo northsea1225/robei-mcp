@@ -91,9 +91,14 @@
   单边多出的内部信号记进 `missing_*` 但不判失败。
 - **安全拒绝时顶层字段补齐**：`simulate` 被拒时顶层也有 `strict` / `rejected` /
   `unresolved` / `scanned_files`，不再只有 `security.*`；成功时 `rejected` 为空数组。
-- **路径不再多套一层**：`workspace/proj/a.v` 与 `proj/a.v` 等价，
-  `resolve_workspace_path` / `resolve_model_path` / `resolve_project_path` 都接受两种写法，
-  新建路径也一样（不会出现 `workspace/workspace/...`）。
+- **路径前缀规则写死**：开头的 `workspace/`（大小写不敏感，`/` 与 `\` 都算）**一律去掉**再解析，
+  所以新建路径也不会落到 `workspace/workspace/...`；去掉前缀后仍做逃逸检查
+  （`workspace/../x` 直接拒绝）。如果工作区里真有 `workspace/` 子目录，且根目录下同名路径也存在，
+  返回 `ambiguous path`，不静默选一个。`resolve_workspace_path` / `resolve_model_path` /
+  `resolve_project_path` 用的是同一套规则。
+- **一行写的参数化模块头**：`module m #(parameter WIDTH=4)(input [WIDTH-1:0] a, …)` 以前报
+  `no ports parsed`，现在能正常解析（端口位宽保留为 `WIDTH-1:0`）。把参数默认值代入位宽仍不支持，
+  `truth_table` / `generate_testbench` 会明确报错。
 - **`const_eval` 改用 Verilog 整数语义**：`-1/2 == 0`（向零截断）、`-1%2 == -1`（余数随被除数），
   之前是 Python 的 floor 语义。
 - **参数化位宽不再静默当 1 位**：`width_info("LEN-1:0")` 返回 `resolved:false`，
