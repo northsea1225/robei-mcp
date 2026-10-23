@@ -139,7 +139,7 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
 - **波形统计**：`waveform_stats` 识别时钟周期 `10 ns`（`100 MHz`）、单比特 level coverage `1.0`
 - **testbench 升级**：`generate_testbench(full_combo=true)` 自动穷举输入组合（4 行 `combo` 输出）
 
-已验证（阶段 19，引脚约束 + FPGA 前端流程，`tests/stage19_constraints.py`，21/21 PASS，47 个工具）：
+已验证（阶段 19，引脚约束 + FPGA 前端流程，`tests/stage19_constraints.py`，25/25 PASS，47 个工具）：
 
 - `.const` 的真实 schema 来自网络（`wwkkww1983/uart` 的 `prac_04_led/light_constrain.const`）：
   `Type="constrain"` 画布 + 嵌套 `<Module Type="model">` + 每根 FPGA 引脚一个 `<Port>` +
@@ -153,6 +153,10 @@ Windows 本地 MCP 服务器，把 Robei EDA 自带的 Icarus Verilog、vvp 和 
   那份**逐行相同**（18 行 PACKAGE_PIN + IOSTANDARD）
 - 负向：引脚数不匹配 / 端口不存在 / 引脚名非法 / 重复创建，分别返回
   `invalid_argument` 与 `already_exists`
+- **Robei 自己就会导出 xdc，入口是 Compile 而不是 Synthesis**：constrain 模型保存后按
+  Build→Compile，Robei 写出 `build/<name>.v` + `build/<name>.xdc`（引脚逐行与
+  `export_robei_xdc` 一致）；Compile 的完成标记是 `Finished to generate constrain file!`
+  （不是 `Compile done`，这也是之前误判“没有产物”的原因）
 - **Robei 自己的 FPGA 前端跑通了**：`robei_gui_save_project`（File→Save）+ `robei_gui_synthesis`
   （Build→Synthesis）在生成的 `.const` 上跑完 yosys Xilinx 流程，输出 `Synthesis complete`
   并写出 `build/<name>.json`。三个前提都是实测踩出来并已修进工具的：根节点必须是
@@ -173,7 +177,7 @@ C:\dev\robei-mcp\
   .gitignore
   .mcp.json                      Windows Claude Code 项目配置
   README.md
-  pyproject.toml                 0.8.0，requires-python>=3.10，可选 dev=pytest
+  pyproject.toml                 0.9.0，requires-python>=3.10，可选 dev=pytest
   robei.toml.example             路径/限额配置样例（复制成 robei.toml 生效）
   requirements.txt               mcp==2.3.0, matplotlib
   run-mcp.cmd                    Windows stdio 包装脚本
@@ -688,6 +692,7 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 - 文件写到 `<工程>/const/<name>.const`，并登记进 `.proj` 的 `<const>` 目录
 - `kind` 默认 **`const`**（Robei 5.x 的 FPGA 流程认这个；传 `constrain` 会被 Build→Synthesis
   拒绝为 `is not constrain file`）
+- `iostandard`（默认 `LVCMOS33`）写进每个引脚 `<Port Function="...">`
 - `vendor` / `device` / `family` 只在 `kind="const"` 时写入根节点；留空时 Robei 会提示
   `has no Device/Family configured`（综合仍会跑完），填成目标板卡的器件名即可消掉
 - 已存在要 `overwrite=true`（留 `.bak-<时间戳>`）
@@ -715,7 +720,11 @@ set_property PACKAGE_PIN G15 [get_ports swt[0]]
 set_property IOSTANDARD LVCMOS33 [get_ports swt[0]]
 ```
 
-端口顺序按 `.const` 里的声明顺序，和 Robei 自己生成的一致（已逐行比对过）。
+端口顺序按 `.const` 里的声明顺序；`PACKAGE_PIN` 行与 Robei 自己生成的 `build/<name>.xdc`
+逐行相同（头部注释与空 `IOSTANDARD` 两处例外）。
+
+`also_build=true` 同时覆盖 `<工程>/build/<name>.xdc`——那是 `Build→Route` 实际解析的副本，
+Robei 自己写的版本 `IOSTANDARD` 为空，Route 会因此报参数个数错误。
 
 ### `robei_gui_save_project`
 
@@ -1096,15 +1105,15 @@ C:\dev\robei-mcp\workspace\robei_counter4_project\
 - `waveform_stats` 的时钟识别是启发式（边沿间隔近似恒定），不做抖动/占空比签核。
 - 这版 Robei 的 `compile_all` 有时只留下最后编译那个模型的 `build/*.v`，所以判断"编译成功"
   要看每个模型的 `warnings`/`errors`，不能只看某个 `.v` 是否出现。
-- `.const` 能写能读，FPGA 前端（Save + Synthesis）也跑通了，但**这版 Robei 在综合阶段不写
-  `.xdc`**：只在 `build/` 落 `<name>.json`（网表），`constrain/` 里最多出现它自己的
-  `<name>.constrain` 画布副本。所以 `export_robei_xdc` 仍是我们按 Robei 的格式自己投影的
-  ——已与网络工程里 Robei 生成的 xdc 逐行比对一致。
-- 更深一层的实测：`Build→Synthesis` 产出的 `build/<name>.json` 是 **9.5 MB 的 Xilinx 库网表
-  （428 个 cell 模块，找不到 `light` 这类设计模块）**，所以 `Build→Route` 报
-  `No candidate top level modules / Failed to autodetect top module`，`Package` 因缺 `.fasm`
-  和 prjxray 映射库失败。反过来在**设计模型**上跑 Synthesis 会被拒绝（`is not constrain file`）。
-  也就是说这个安装的 FPGA 后端只能跑到"综合完成"，生成不出 xdc/bitstream——0.8.0 记录的是这条边界的实测结果。
+- xdc 的真实来源是 **Compile**（`build/<name>.xdc`），综合只写 `<name>.json`。Robei 5.0 这份
+  xdc 里 `IOSTANDARD` 是空值（`set_property IOSTANDARD  [get_ports swt[0]]`），nextpnr/Vivado
+  会直接报 `expected four arguments to 'set_property'`；`export_robei_xdc(also_build=true)`
+  用来把 `build/<name>.xdc` 覆盖成带 `LVCMOS33` 的版本。
+- `Build→Route` 现在能进 nextpnr 布局，但会因**引脚不属于所选器件**失败（示例板引脚 `M14`
+  不在 `xc7a50tfgg484` 上）；本机 chipdb 只有 xc7a100t/xc7a50t/xc7a200t fgg484 与
+  xc7z020 clg400/clg484 五个器件。
+- `Build→Package` 需要 `build/<name>.fasm`（Route 产物）和 prjxray 的
+  `xilinx/mapping/devices.yaml`（本机该目录为空），烧写链在这台机器上走不到底。
 - 器件信息（`Vendor/Device/Family`）只能写进 `.const` 的属性；Robei 的 `Setting → Configure`
   对话框只有 5 个下拉框，读出来是 Bezier / Circuit / Bottom / Side 这类画布选项，
   **不是器件选择器**，所以没法从 UI 里问到合法的器件名。

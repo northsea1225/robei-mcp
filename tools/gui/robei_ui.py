@@ -448,7 +448,7 @@ def compile_model(timeout_s: float = 25.0) -> dict:
     errors = [line for line in lines if ": error:" in line]
     warnings = [line for line in lines if ": warning:" in line]
     generated = re.findall(r"Generating (.+?)\.\.\.", delta)
-    done = "Compile done" in delta
+    done = "Compile done" in delta or "Finished to generate constrain file" in delta
     missing: list[str] = []
     if "*** These modules were missing:" in delta:
         block = delta.split("*** These modules were missing:", 1)[1]
@@ -457,6 +457,7 @@ def compile_model(timeout_s: float = 25.0) -> dict:
     return {
         "ok": done and not errors,
         "compiled": done,
+        "constrain": "Finished to generate constrain file" in delta,
         "model": models,
         "check_warnings": int(check.group(1)) if check else None,
         "error_count": len(errors),

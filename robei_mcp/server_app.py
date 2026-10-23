@@ -470,6 +470,7 @@ def create_robei_const(
     vendor: str = "AMD",
     device: str = "",
     family: str = "",
+    iostandard: str = "LVCMOS33",
 ) -> dict[str, Any]:
     """Write a pin-constraint canvas: pins={"swt":["G15","P15","W13","T16"], "led":["M14",...]}.
 
@@ -479,7 +480,7 @@ def create_robei_const(
     try:
         return constraints.create_const(
             proj_path=proj_path, name=name, model=model, pins=pins, overwrite=overwrite,
-            kind=kind, vendor=vendor, device=device, family=family,
+            kind=kind, vendor=vendor, device=device, family=family, iostandard=iostandard,
         )
     except Exception as exc:
         return _error(exc)
@@ -500,11 +501,16 @@ def export_robei_xdc(
     const_name: str | None = None,
     out_name: str | None = None,
     iostandard: str = "LVCMOS33",
+    also_build: bool = False,
 ) -> dict[str, Any]:
-    """Project a .const into <proj>/constrain/<name>.xdc (PACKAGE_PIN + IOSTANDARD lines)."""
+    """Project a .const into <proj>/constrain/<name>.xdc (PACKAGE_PIN + IOSTANDARD lines).
+
+    also_build=True also writes <proj>/build/<name>.xdc, the copy Build > Route reads.
+    """
     try:
         return constraints.export_xdc(
-            proj_path=proj_path, const_name=const_name, out_name=out_name, iostandard=iostandard
+            proj_path=proj_path, const_name=const_name, out_name=out_name,
+            iostandard=iostandard, also_build=also_build,
         )
     except Exception as exc:
         return _error(exc)

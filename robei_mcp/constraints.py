@@ -37,11 +37,12 @@ def _attr(value: Any) -> str:
     )
 
 
-def _port_xml(name: str, direction: str, width: int, x: float, y: float, parent: str, datatype: str = "wire") -> str:
+def _port_xml(name: str, direction: str, width: int, x: float, y: float, parent: str,
+              datatype: str = "wire", function: str = "") -> str:
     color = "#0000ff" if direction == "input" else "#b8860b"
     side = "left" if direction == "input" else "right"
     return (
-        f'  <Port Height="20" Side="{side}" Inout="{direction}" Width="20" X="{x:.6f}" Function="" '
+        f'  <Port Height="20" Side="{side}" Inout="{direction}" Width="20" X="{x:.6f}" Function="{_attr(function)}" '
         f'Parent="{_attr(parent)}" Name="{_attr(name)}" Color="{color}" Y="{y:.6f}" '
         f'Datatype="{datatype}" Datasize="{width}"/>'
     )
@@ -58,6 +59,7 @@ def create_const(
     vendor: str = "AMD",
     device: str = "",
     family: str = "",
+    iostandard: str = "LVCMOS33",
 ) -> dict[str, Any]:
     """Write a pin-constraint canvas: ``pins = {"swt": ["G15","P15","W13","T16"], "led": [...]}``."""
     proj = resolve_project_path(proj_path)
@@ -121,7 +123,7 @@ def create_const(
             y = 0.148 + slot * 0.166
             slot += 1
             x = -0.017 if port["inout"] == "input" else 0.983
-            lines.append(_port_xml(str(pin), port["inout"] or "input", 1, x, y, name))
+            lines.append(_port_xml(str(pin), port["inout"] or "input", 1, x, y, name, function=iostandard))
 
     for port in ports:
         width = int(port["datasize"] or 1)
@@ -169,7 +171,7 @@ def create_const(
         "relative_path": tools._rel(target),
         "model": model_stem,
         "pins": pins,
-        "board": {"vendor": vendor, "device": device, "family": family},
+        "board": {"vendor": vendor, "device": device, "family": family, "iostandard": iostandard},
         "registered_in_project": registration in ("created", "exists"),
         "registration": registration,
         "backup": str(backup) if backup else None,
@@ -215,8 +217,13 @@ def export_xdc(
     const_name: str | None = None,
     out_name: str | None = None,
     iostandard: str = "LVCMOS33",
+    also_build: bool = False,
 ) -> dict[str, Any]:
-    """Project a .const into ``<proj>/constrain/<name>.xdc`` (same text Robei generates)."""
+    """Project a .const into ``<proj>/constrain/<name>.xdc`` (same text Robei generates).
+
+    ``also_build=True`` additionally overwrites ``<proj>/build/<name>.xdc`` - that is the
+    copy Robei's Build > Route parses, and Robei's own version leaves IOSTANDARD empty.
+    """
     proj = resolve_project_path(proj_path)
     if not is_within(proj, SETTINGS.workspace):
         raise ValueError("refusing to write a project outside the workspace")
@@ -248,10 +255,18 @@ def export_xdc(
             lines.append(f"set_property IOSTANDARD {iostandard} [get_ports {port}{suffix}]")
     text = "\n".join(lines) + "\n"
     target.write_text(text, encoding="utf-8", newline="\n")
+    build_copy = None
+    if also_build:
+        build_dir = proj.parent / "build"
+        build_dir.mkdir(exist_ok=True)
+        build_copy = build_dir / f"{stem}.xdc"
+        build_copy.write_text(text, encoding="utf-8", newline="\n")
+
     return {
         "ok": True,
         "path": str(target),
         "relative_path": target.relative_to(SETTINGS.workspace).as_posix(),
+        "build_copy": str(build_copy) if build_copy else None,
         "const": str(const_path),
         "constraints": info,
         "line_count": len(lines),

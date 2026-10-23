@@ -135,8 +135,27 @@ async def main() -> int:
 
             saved = payload(await session.call_tool("robei_gui_save_project", {}))
             check("Robei saves the project", saved.get("ok") is True, saved)
+
+            compiled = payload(await session.call_tool("robei_gui_compile", {"timeout_s": 90}))
+            check("Compile on a constrain model succeeds",
+                  compiled.get("ok") is True and compiled.get("constrain") is True, compiled)
+            robei_xdc = WS / "const_demo" / "build" / "light_constrain.xdc"
+            check("Robei exported its own build/<name>.xdc", robei_xdc.is_file(), compiled.get("delta"))
+
+            def pin_lines(body: str) -> list[str]:
+                return [line for line in body.splitlines() if line.startswith("set_property PACKAGE_PIN")]
+
+            check("Robei pin lines match our export",
+                  robei_xdc.is_file() and pin_lines(robei_xdc.read_text(encoding="utf-8")) == pin_lines(text),
+                  robei_xdc.read_text(encoding="utf-8")[:200] if robei_xdc.is_file() else None)
+
             syn = payload(await session.call_tool("robei_gui_synthesis", {"timeout_s": 240}))
             check("Build > Synthesis completes", syn.get("completed") is True and syn.get("ok") is True, syn)
+            patched = payload(await session.call_tool("export_robei_xdc", {
+                "proj_path": proj, "also_build": True}))
+            check("export_robei_xdc repairs build/*.xdc for Route",
+                  patched.get("ok") is True and (WS / "const_demo" / "build" / "light_constrain.xdc")
+                  .read_text(encoding="utf-8").count("LVCMOS33") == 8, patched)
             check("synthesis wrote build/light_constrain.json",
                   (WS / "const_demo" / "build" / "light_constrain.json").is_file(), syn.get("output_tail"))
             await session.call_tool("robei_gui_close", {})
