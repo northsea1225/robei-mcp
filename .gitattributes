@@ -1,0 +1,10 @@
+# Keep the repository LF-normalised; CRLF only where Windows insists.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.vcd binary
+*.vvp binary

@@ -70,6 +70,7 @@ C:\dev\robei-mcp\
 说明：
 
 - `robei_mcp/gui_agent/` 是 0.11.1 起 GUI 驱动的正式位置（`ui` / `driver` / `job` / `launcher` / `paths`）。
-  `tools/gui/` 下同名文件只是向后兼容的 shim，给已注册的计划任务和 `archive/` 里的历史探针用。
-- `tools/gui/archive/` 是开发期的一次性探针，只作证据，不再维护。
+  `tools/gui/` 下同名文件只是向后兼容的 shim，给已注册的计划任务用。
+- `tools/gui/` 里只剩还会用到的脚本：`register_task.py`（注册助手任务）、`probe_push.py`（交互会话里推送）、
+  `probe_desktop.py` / `probe_input.py`（输入管道诊断）、`prune.py`；其余一次性探针已在 1.0.0 移除。
 - `workspace/` 下的 `build/`、`logs/`、`gui_shots/`、`gui_agent/`、`reports/` 都在 `.gitignore` 里。

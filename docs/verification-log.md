@@ -159,7 +159,7 @@
 - 进度上报：一次 `simulate` 发出 5 条 `notifications/progress`（started → iverilog → vvp → done）
 - 路径逃逸与"文件不存在"现在能区分：越界文件报 `invalid_argument`，缺文件报 `not_found`
 - `robei.toml` 生效，`runtime_status().config.sources` 逐键报告 `env` / `toml` / `default`
-- 65 个一次性 GUI 探针移到 `tools/gui/archive/`（`probe.py` / `probe_push.py` 仍在使用）
+- 65 个一次性 GUI 探针曾集中到 `tools/gui/archive/`，1.0.0 时随仓库整理移除（结论保留在 `docs/gui-tools.md`）
 
 已验证（阶段 18，P1 第一批，`tests/stage18_p1.py`，29/29 PASS，42 个工具）：
 

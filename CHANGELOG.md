@@ -2,6 +2,29 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.0.0 — 2026-10-23
+
+第一个稳定版。工具面固定为 **38 个**，文档分成「用户指南 / 工具参考 / 验证日志 / 变更记录」四层，
+打包与可选 GUI 面都有测试守着。
+
+**这一版做了什么**
+
+- 仓库整理：删掉 84 个开发期文件（71 个一次性 GUI 探针 `tools/gui/archive/`、
+  4 个被 `agent.py` 取代的截图/画布脚本、`workspace/part2_exp12/` 课程实验残留），
+  跟踪文件 209 → 125。
+- 新增 `.gitattributes`（仓库内统一 LF，`.cmd` 保持 CRLF）。
+- 新增 `CONTRIBUTING.md`：环境、哪些测试需要 Robei/桌面、五条硬约定（不走 shell、路径白名单、
+  错误可分类、不写安装目录、默认不覆盖）。
+- CI 增加 `wheel` 作业：构建 wheel 后用 `tests/check_wheel.py` 断言
+  `robei_mcp/gui_agent/*` 五个模块与 LICENSE 都在包里、且没有把 `tools/gui/`、`.venv/`、
+  `workspace/build/` 打进去 —— 0.11.0 那个"装完 GUI 全废"的回归从此会被 CI 拦住。
+
+**1.0 的边界（先说清楚，避免误解）**
+
+- 核心能力（检查/仿真/波形/工程 XML/约束）跨平台；`robei_gui_*` 是 Windows + 交互桌面专属，可关闭。
+- GUI 只到「打开、编译、读 Output、综合、保存」；已有画布上的拖拽/改连线做不到，但可以生成画布级 XML。
+- FPGA 后端只到「生成约束 + 综合出网表」，Route/Package 在本机环境走不到底。
+
 ## 0.11.1 — 2026-10-23
 
 **打包修复：GUI 驱动进 wheel，工具面按可用性注册。**

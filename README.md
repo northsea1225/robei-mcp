@@ -3,6 +3,8 @@
 > An MCP server that turns Robei EDA into AI-callable tools: Verilog lint, simulation,
 > waveform analysis, project XML, and optional GUI automation. Docs are in Chinese.
 
+**状态：1.0.0**（首个稳定版，38 个工具）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md)
+
 把 Robei EDA 变成 AI 能直接调用的工具集：Verilog 检查、仿真、波形、工程文件读写，
 以及（可选）驱动 Robei 本体 GUI。基于 MCP（Model Context Protocol）stdio 传输，
 可在 Codex / Claude Code 里直接用自然语言完成「写代码 → 检查 → 仿真 → 看波形」。

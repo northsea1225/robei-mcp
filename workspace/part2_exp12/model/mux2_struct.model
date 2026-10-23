@@ -1,7 +1,0 @@
-<!DOCTYPE Robei>
-<Module Category="Current" Class="module" Code="wire nsel;&#xa;wire ya;&#xa;wire yb;&#xa;not u_not (nsel, sel);&#xa;and u_and_a (ya, a, nsel);&#xa;and u_and_b (yb, b, sel);&#xa;or u_or (y, ya, yb);" Color="#d3d3d3" Comment="实验2：二选一数据选择器，门级结构描述" Height="1080" Name="mux2_struct" Parameters="" Parent="0" Type="model" Width="1600" X="0" Y="0">
- <Port Color="#faebd7" Connect="" Datasize="1" Datatype="wire" Description="" Height="30" Inout="input" Name="a" Parent="mux2_struct" Side="left" Width="30" X="-0.01875" Y="0.163889"/>
- <Port Color="#faebd7" Connect="" Datasize="1" Datatype="wire" Description="" Height="30" Inout="input" Name="b" Parent="mux2_struct" Side="left" Width="30" X="-0.01875" Y="0.308889"/>
- <Port Color="#faebd7" Connect="" Datasize="1" Datatype="wire" Description="" Height="30" Inout="input" Name="sel" Parent="mux2_struct" Side="left" Width="30" X="-0.01875" Y="0.453889"/>
- <Port Color="#f0ffff" Connect="" Datasize="1" Datatype="wire" Description="" Height="30" Inout="output" Name="y" Parent="mux2_struct" Side="right" Width="30" X="0.98125" Y="0.598889"/>
-</Module>
