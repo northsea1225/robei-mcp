@@ -2,6 +2,46 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.4.0 — Unreleased
+
+**画布能画位选，实例能带参数覆盖。** 工具面仍是 49 个（文件级 38 + GUI 11），
+`ROBEI_MCP_GUI=0` 时 38 个——本版只加参数和 op，不加工具。
+
+### F1 画布位选 / 切片
+
+- `create_robei_canvas_model` / `edit_robei_canvas` 的端点接受 `a[0]` 和 `a[7:4]`，
+  落盘成实例端口的 `Connect="a[0]"`，**不生成 `<Wire>`**。这是 Robei 5.0 自己保存的写法
+  （`D:\Temp\robei_samples\gui_probe\pp_p1`），编译出来是 `.x(a[0])`。
+- **坑**：把位选写进 `<Wire>`（`From="top>a[0]"`）Robei 保存时会静默删线，端口变悬空
+  `.x()`（反例样本 `pp_b2`）。所以 `<Wire>` 端点里只要带 `[` 就报 `invalid_argument`，
+  hint 直接给出正确写法。
+- 校验：父端口存在、索引不越界、切片宽度 == 实例端口宽度（否则 `invalid_argument` /
+  `width_mismatch`）；父端口宽度是 `LEN-1:0` 这类表达式时只给 warning 后放行。
+- 读取侧：`model_to_verilog` 不再把 `a[0]` 当成内部网络声明成 `wire a[0];`（1.3 之前会，
+  iverilog 直接报错）；`import_verilog_canvas` 把 `sub u1(.x(a[0]))` 导入成 `Connect`，
+  不再落进 `skipped_connections`。
+
+### F2 实例参数覆盖
+
+- `parameters` 接受对象：`{"LEN": 8}` → `Parameters="LEN = 8;"`；多参数按 key 排序、用
+  `&#xa;` 拼接（`A = 1;&#xa;B = 2;`）。Robei 保存时原样保留，编译成 `#(.A(1), .B(2))`。
+- 拒收：子模型没声明的参数、非法参数名、值里带 `;`/换行、重复参数；以及 `#(.LEN(8))`、
+  `.LEN(8)`、`parameter LEN = 8;` 三种 Verilog 写法（hint 指向 `{"LEN": 8}`）。
+- `edit_robei_canvas` 新增 `set_parameters` op（没有新增独立工具）。
+
+### F3 两处安全小修
+
+- `gui_agent/driver.py` 的 `kill` 子命令不再 `taskkill /F /IM Robei.exe`：只杀
+  `owned_pid()` 记录的进程，没有记录时明确报错并拒绝（`/IM` 会连带杀掉手工启动的 IDE）。
+- `owned_pid()` 的 exe 路径比对先 `os.path.realpath` 再比，junction / 符号链接不再被误判成
+  "不是自己启动的"；不匹配仍然丢弃记录（方向不变）。
+
+### 未做
+
+- 没有给"新建模型声明根级参数"的工具：`create_robei_model` 写出的 `Parameters` 仍是空的，
+  想试参数覆盖只能先 `import_library_model` 一个带参数的库模型（本版的 GUI 回归就是这么做的）。
+- 位选只支持常量索引/切片，`a[i]`、`a[LEN-1:0]` 这类动态/参数化写法不在范围内。
+
 ## 1.3.0 — 2026-10-25
 
 **GUI 不再依赖鼠标、工程可以嵌套、产物落在工程里。** 工具面仍是 49 个（文件级 38 + GUI 11），

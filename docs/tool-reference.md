@@ -323,10 +323,23 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 
 - 实例的 `Class` 写**被引用模型的模型名**（Robei 自己的写法），`File` 指向
   `Current/<模型>.model`；实例端口从被引用模型自动读取，不需要手填
-- 每个实例可以带 `parameters` 字符串（如 `"W = 4;"`），原样写进嵌套 `<Module Parameters>`。
-  **experimental**：还没有 Robei GUI 保存的样本，格式按根节点的 `NAME = value;` 推断；
-  解析不出来时导出不会生成 `#(...)`，并在 `warnings` 里说明；行尾 `//` 注释与根级
-  `Parameters` 走同一套解析（`"W = 4; // four"` 仍然生成 `#(.W(4))`）
+- 实例参数写对象：`"parameters": {"LEN": 8}`。落盘规范成 `LEN = 8;`，多个参数按 key 排序、
+  换行拼接（XML 属性里是 `&#xa;`，不能写字面换行）。Robei 保存时原样保留，编译时生成
+  `#(.LEN(8))`；多参数实测（`gui_probe` 之后新增的 `LEN = 8;&#xa;N = 3;`）同样保留
+  （`D:\Temp\robei_samples\gui_probe\pp_p1` 是单参数样本）
+  - 也接受 Robei 自己写的 `"LEN = 8;"` 字符串（含行尾 `//` 注释），原样写回
+  - 拒收：子模型没声明的参数名、非法参数名、值里带 `;` 或换行、同一参数写两次
+  - 拒收三种 Verilog 写法并提示改用对象：`#(.LEN(8))`、`.LEN(8)`、`parameter LEN = 8;`
+    （Robei 会静默丢弃前两种、把第三种写成坏的 `.parameterLEN`）
+  - 参数解析不出来时仍按原文写入，返回 `warnings` 且导出不生成 `#(...)`（与 1.0.4 一致）
+- 位选和切片写在 `wire` 端点上：`{"from": "a[0]", "to": "u1.x"}`、
+  `{"from": "data_in[7:0]", "to": "u1.d"}`。落盘成实例端口的 `Connect="a[0]"`，**不生成
+  `<Wire>`**（这正是 Robei 自己的存法，生成的 Verilog 是 `.x(a[0])`）
+  - 父端口必须存在；索引不能越界；切片宽度必须等于实例端口宽度，否则 `invalid_argument`
+  - 父端口宽度是参数表达式（`LEN-1:0`）时无法静态校验，返回 warning 后照常写入
+  - 只有父端口一侧能带位选；两端都带位选、或位选落在实例端口一侧，都报错
+  - **`<Wire>` 的端点里带 `[` 一律拒绝**：Robei 保存时会静默删除这种线，端口变悬空
+    `.x()`；官方样本 `gui_probe/pp_b2` 就是这个反例，`pp_p1` 是正确写法
 - 每条 `wire` 可以带 `datasize`；导出 Verilog 时按它生成 `wire [N-1:0]`，丢失会变成 1 位
 - 校验：实例名 / 模型名合法、被引用模型存在于同工程 `model/`、连线端点存在
 - 只写 workspace 内的工程；目标已存在要 `overwrite=true`（并留 `.bak-<时间戳>`）
@@ -352,12 +365,20 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 | `remove_instance` | `name` | 连带删掉接在该实例上的 wire |
 | `add_port` | `name`, `direction`, `width`, 可选 `side` / `datatype` | 顶层端口；`direction` 是 input/output/inout，`side` 默认左进右出 |
 | `remove_port` | `name` | 连带删掉接在这个端口上的 wire，`wires_dropped` 是条数 |
-| `connect` | `from`, `to`, 可选 `net` / `datasize` | 端点写 `u1.a` 或顶层端口 `a`；两端位宽必须一致 |
-| `disconnect` | `net` / `from` / `to` 至少一个 | 匹配不到任何线就报错 |
+| `connect` | `from`, `to`, 可选 `net` / `datasize` | 端点写 `u1.a` 或顶层端口 `a`；两端位宽必须一致。端点带位选（`a[0]`、`a[7:4]`）时改写成实例端口的 `Connect`，不建 wire |
+| `disconnect` | `net` / `from` / `to` 至少一个 | 匹配不到任何线就报错；`from`/`to` 命中某个实例端口的 `Connect` 时一并清空（`connects_cleared`） |
+| `set_parameters` | `name`, `parameters`（对象或 `"A = 1;"` 字符串） | 重写该实例的 `Parameters`（`LEN=8` / 多参数都走同一套校验），`""` 表示清空 |
 | `rename_wire` | `net`（或 `from`）+ `new_name` | 新名字不能和已有 net 撞 |
 
 - 位宽按 Robei 的语义算：`Datasize="4"` 是 4 位、`"3:0"` 是 4 位；`"LEN-1:0"` 这种
   解析不出来的表达式要求两端字面量一致。不一致返回 `code=width_mismatch`，消息里带两边位宽
+- `connect` 的位选（`a[0]` / `a[7:0]`）与 `create_robei_canvas_model` 同规则：父端口越界、
+  切片宽度与实例端口不等、两端都带位选都报错；参数化宽度只给 warning
+- `set_parameters` 是对实例参数的最小改法（没有新增独立工具，工具数仍是 49 / 38）：子模型没
+  声明的名字直接报错，名字大小写按子模型的声明改写（`len` → `LEN`）
+- `diff` 里除了 wire，还会报 `connects_added` / `connects_changed` / `connects_removed` /
+  `parameters_changed`，位选和参数改动不会"看起来没动"
+- `dry_run=true` 时同样会校验并算出 `verilog_preview`
 - 端点不存在 / 实例重名 / 未知 op → `invalid_argument`
 - 返回 `diff`（增删的实例与 wire）、`ports`、`instances`、`wires`、`netlist`、`verilog_preview`
 - 写盘前留 `.bak-<时间戳>`；`dry_run=true` 只返回预览

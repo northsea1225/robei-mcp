@@ -12,6 +12,78 @@
 
 ## 交付状态
 
+### 1.4.0：画布位选、实例参数覆盖（未发布，2026-10-25）
+
+工具面仍是 **49 个（文件级 38 + GUI 11）**，`ROBEI_MCP_GUI=0` 时 38 个。
+
+**取证样本**（只读，不参与构建）：`D:\Temp\robei_samples\gui_probe\`
+
+| 样本 | 写法 | Robei 保存后的结果 |
+|---|---|---|
+| `pp_p1` | 实例 `<Module Parameters="LEN = 8;">` + `<Port Connect="a[0]">` | 保留；`top.v` 里是 `sub #(.LEN(8)) u1(.x(a[0]))` |
+| `pp_p6` | `"LEN = 8; //override"` | 保留注释，仍生成 `#(.LEN(8))` |
+| `pp_b2` | `<Wire From="top>a[0]" To="top#u1>x">` + `Connect=""` | **线被删除**，端口变 `.x()` |
+
+**真实 GUI 闭环**（Session 1，`robei_gui_open_project` → `open_model` → `compile` → `save_project`，
+工程 `workspace/_qa_runs/lab14`，探针 `tools/gui/probe_m14.py`、`probe_m14b.py`，跑完已删）
+
+```text
+创建（新工具）：top1 = shift_register + {"LEN": 8} + a[0..3] 位选
+                top2 = ring_counter  + {"LEN": 8, "N": 3} + a[0]/a[1]
+                top3 = sub           + a[0] 位选（pp_p1 的 x 端口形状）
+open_project -> ok, restarted=true, pid=48964, 树根=lab14
+compile_all  -> 6/6 ok（每模型 "Check complete with 0 warnings" + "Compile done"）
+Robei 自己写出的 build/top1.v:
+      shift_register #(
+      .LEN(8)
+      )
+      u1( .clk(a[2]), .rstn(a[3]), .out(y), .d(a[0]), .en(a[1]), .dir(a[0]) );
+build/top2.v:  ring_counter #( .LEN(8), .N(3) ) u2( .clk(a[0]), .rstn(a[1]), .out(y) );
+build/top3.v:  sub u3( .x(a[0]), .y(y) );      ← 没有 .x() 悬空
+保存后回读：top1 Parameters="LEN = 8;"；top2 Parameters="LEN = 8;&#xa;N = 3;"
+            Connect 全部逐字未变；没有任何 <Wire> 端点带 "["（no_wire_with_select）
+iverilog -g2012：top1(+shift_register.v) rc=0、top2(+ring_counter.v) rc=0、top3(+sub.v) rc=0
+截图：workspace/gui_shots/m14_canvas-20261025-042207.png（3200×2000）、
+      workspace/gui_shots/m14_top2-20261025-042346.png（3200×2000）
+```
+
+注意：Robei 的 Compile 会清掉 `<工程>/build` 的顶层文件（1.3 已记录），所以 `compile_all`
+之后只剩最后一个模型和它的依赖；要看 `top1.v` 必须单独 `open_model` + `compile`。
+
+**回归**
+
+| 项 | 结果 |
+|---|---|
+| `pytest -q tests` | 213 passed（1.3 基线 178 + 新增 35） |
+| `tests/portable_core.py` | 16 passed, 0 failed |
+| stage5 / 7 / 8 / 11 / 12 / 13 / 14 | 10/10、12/12、10/10、13/13、18/18、18/18、9/9 |
+| stage16 / 17 / 18 / 19 / 20 / 21 | 12/12、28/28、29/29、26/26、14/14、18/18 |
+| stage2 / 3 / 4 / 9 / 10 | rc=0（只打印结果） |
+
+**新增 pytest（`tests/test_1_4.py`，35 条）**：位选单比特/切片/越界/宽度不等/两端都带位选/
+实例端口带位选/参数化宽度只 warning/`<Wire>` 带 `[` 被拒/`disconnect` 清空 Connect/
+`import_verilog_canvas` 保留位选；参数单个/多个排序与 `&#xa;`/未声明/非法名/含 `;` 或换行/
+重复/三种 Verilog 写法/等于默认值不生成 `#(`/解析失败只 warning/`set_parameters` 与
+`add_instance` 的参数、非恒定下标（`a[LEN-1]`）给出明确提示、未知实例仍被拒；以及 driver
+只杀 owned pid、拒绝按镜像名清场、`_same_image` 走 realpath。
+
+**MCP transport**：`mcp__robei_remote` 背后是会话启动时拉起的常驻 stdio 服务
+（`ssh my-win ... C:/dev/robei-mcp/run-mcp.cmd`），本会话内它仍跑 1.3 的代码——直接调
+`create_robei_canvas_model` 传 `a[0]` 会得到旧行为（`invalid_argument: wire references
+unknown top-level port 'a[0]'`）。用 `server.py` 另起一个 stdio 服务实测（`mcp.ClientSession`）：
+
+```text
+tools/list                -> 49
+create_robei_canvas_model -> ok=true, warnings=[], Parameters="LEN = 8;\nN = 3;",
+                             Connect={clk: a[0], rstn: a[1]}
+a[9]                      -> code=invalid_argument "a[9] is out of range: a is 4 bit(s) wide"
+"#(.LEN(8))"              -> code=invalid_argument，hint 指向 {"LEN": 8}
+edit_robei_canvas dry_run -> ok=true，parameters_changed 显示 LEN=8;\nN=3; -> LEN=8;
+```
+
+**待定**：常驻的 `mcp__robei_remote` 服务要等 Codex 重开（或重启该服务）才会加载 1.4 的
+代码；本会话内的真实调用走的是仓库里的新代码。
+
 ### 1.3.0：GUI 去鼠标化、嵌套工程、工程内产物（2026-10-25）
 
 工具面 **49 个（文件级 38 + GUI 11）**，`ROBEI_MCP_GUI=0` 时 38 个（本版只加参数，不加工具）。
