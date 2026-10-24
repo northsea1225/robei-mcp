@@ -21,6 +21,7 @@ from robei_mcp.vcd import VcdParseError, parse_vcd, timescale_fs
 from robei_mcp.verilog import generate_testbench, parse_module_ports, width_of
 from robei_mcp.verilog_ast import parse_module
 from robei_mcp import p1
+from robei_mcp.model import model_to_verilog, parse_robei_model
 
 
 @pytest.fixture()
@@ -529,3 +530,282 @@ def test_console_entry_point_exists() -> None:
     from robei_mcp.__main__ import main
 
     assert callable(main)
+
+
+# ---------------------------------------------------------------------------
+# 1.0.3 — hierarchical export, path codes, QA filtering, constraints
+# ---------------------------------------------------------------------------
+
+
+def _param_model_xml(name: str, parameters: str, ports: list[tuple[str, str, str]], code: str) -> str:
+    lines = [
+        "<!DOCTYPE Robei>",
+        f'<Module Category="Current" Class="module" Code="{code}" Comment="" Height="600" '
+        f'Name="{name}" Parameters="{parameters}" Parent="0" Type="model" Width="900" X="0" Y="0">',
+    ]
+    for index, (port_name, direction, width) in enumerate(ports):
+        lines.append(
+            f' <Port Color="#faebd7" Connect="" Datasize="{width}" Datatype="wire" '
+            f'Description="" Height="30" Inout="{direction}" Name="{port_name}" Parent="{name}" '
+            f'Side="left" Width="30" X="-0.02" Y="{0.2 + index * 0.2:.3f}"/>'
+        )
+    lines.append("</Module>")
+    return "\n".join(lines) + "\n"
+
+
+@pytest.mark.skipif(not Path(SETTINGS.iverilog).exists(), reason="iverilog not installed")
+def test_canvas_bus_chain_keeps_width_and_simulates(work: Path) -> None:
+    name = f"regress_chain_{uuid.uuid4().hex[:8]}"
+    project = tools.create_robei_project(name, models=[])
+    try:
+        proj = project["proj"]
+        tools.create_robei_model(
+            proj_path=proj,
+            name="buf4",
+            ports=[
+                {"name": "a", "direction": "input", "width": 4},
+                {"name": "y", "direction": "output", "width": 4},
+            ],
+            code="assign y = a;",
+        )
+        canvas = tools.create_robei_canvas_model(
+            proj_path=proj,
+            name="chain",
+            ports=[
+                {"name": "a", "direction": "input", "width": 4},
+                {"name": "y", "direction": "output", "width": 4},
+            ],
+            instances=[{"name": "u1", "model": "buf4"}, {"name": "u2", "model": "buf4"}],
+            wires=[
+                {"from": "a", "to": "u1.a", "net": "a_n", "datasize": 4},
+                {"from": "u1.y", "to": "u2.a", "net": "mid", "datasize": 4},
+                {"from": "u2.y", "to": "y", "net": "y_n", "datasize": 4},
+            ],
+        )
+        verilog = model_to_verilog(parse_robei_model(Path(canvas["path"])))
+        assert "wire [3:0] mid;" in verilog
+        assert "buf4 u1(" in verilog and "buf4 u2(" in verilog
+
+        dut = work / "chain.v"
+        dut.write_text(verilog, encoding="utf-8")
+        child = model_to_verilog(parse_robei_model(Path(canvas["path"]).parent / "buf4.model"))
+        child_path = work / "buf4.v"
+        child_path.write_text(child, encoding="utf-8")
+        tb = work / "tb.v"
+        tb.write_text(
+            "module tb;\n"
+            "  reg [3:0] a;\n  wire [3:0] y;\n"
+            "  chain dut(.a(a), .y(y));\n"
+            "  initial begin\n"
+            "    a = 4'b1011; #10;\n"
+            '    $display("Y=%b", y);\n'
+            '    if (y !== 4\'b1011) $fatal(1, "MISMATCH");\n'
+            "    $finish;\n"
+            "  end\n"
+            "endmodule\n",
+            encoding="utf-8",
+        )
+        sim = tools.simulate([str(child_path), str(dut), str(tb)], "tb", timeout_s=30)
+        assert sim["ok"] is True, sim
+        assert "Y=1011" in (sim.get("display_output") or "")
+    finally:
+        shutil.rmtree(SETTINGS.workspace / name, ignore_errors=True)
+
+
+def test_canvas_mixes_single_bit_and_bus_wires(work: Path) -> None:
+    name = f"regress_mixw_{uuid.uuid4().hex[:8]}"
+    project = tools.create_robei_project(name, models=[])
+    try:
+        proj = project["proj"]
+        tools.create_robei_model(
+            proj_path=proj, name="buf1",
+            ports=[{"name": "a", "direction": "input"}, {"name": "y", "direction": "output"}],
+            code="assign y = a;",
+        )
+        tools.create_robei_model(
+            proj_path=proj, name="buf4",
+            ports=[{"name": "a", "direction": "input", "width": 4},
+                   {"name": "y", "direction": "output", "width": 4}],
+            code="assign y = a;",
+        )
+        canvas = tools.create_robei_canvas_model(
+            proj_path=proj, name="mix",
+            ports=[
+                {"name": "a", "direction": "input", "width": 4},
+                {"name": "y", "direction": "output", "width": 4},
+                {"name": "bit", "direction": "input"},
+                {"name": "bout", "direction": "output"},
+            ],
+            instances=[
+                {"name": "u1", "model": "buf4"}, {"name": "u2", "model": "buf4"},
+                {"name": "u3", "model": "buf1"}, {"name": "u4", "model": "buf1"},
+            ],
+            wires=[
+                {"from": "a", "to": "u1.a", "net": "a_n", "datasize": 4},
+                {"from": "u1.y", "to": "u2.a", "net": "mid", "datasize": 4},
+                {"from": "u2.y", "to": "y", "net": "y_n", "datasize": 4},
+                {"from": "bit", "to": "u3.a", "net": "bit_n", "datasize": 1},
+                {"from": "u3.y", "to": "u4.a", "net": "t1", "datasize": 1},
+                {"from": "u4.y", "to": "bout", "net": "bout_n", "datasize": 1},
+            ],
+        )
+        verilog = model_to_verilog(parse_robei_model(Path(canvas["path"])))
+        assert "wire [3:0] mid;" in verilog
+        assert "wire t1;" in verilog
+        assert "wire [3:0] t1;" not in verilog
+    finally:
+        shutil.rmtree(SETTINGS.workspace / name, ignore_errors=True)
+
+
+def test_instance_parameter_overrides_are_emitted(work: Path) -> None:
+    name = f"regress_param_{uuid.uuid4().hex[:8]}"
+    project = tools.create_robei_project(name, models=[])
+    try:
+        proj = Path(project["proj"])
+        model_dir = proj.parent / "model"
+        (model_dir / "pw.model").write_text(
+            _param_model_xml(
+                "pw",
+                "W = 1; // width",
+                [("a", "input", "W-1:0"), ("y", "output", "W-1:0")],
+                "assign y = a;",
+            ),
+            encoding="utf-8",
+        )
+        tools._register_model_in_project(proj, "pw")
+
+        override = tools.create_robei_canvas_model(
+            proj_path=str(proj), name="top_override",
+            ports=[{"name": "a", "direction": "input", "width": 4},
+                   {"name": "y", "direction": "output", "width": 4}],
+            instances=[{"name": "u1", "model": "pw", "parameters": "W = 4;"}],
+            wires=[{"from": "a", "to": "u1.a", "net": "a_n", "datasize": 4},
+                   {"from": "u1.y", "to": "y", "net": "y_n", "datasize": 4}],
+        )
+        text = model_to_verilog(parse_robei_model(Path(override["path"])))
+        assert "pw #(.W(4)) u1(" in text
+
+        same_default = tools.create_robei_canvas_model(
+            proj_path=str(proj), name="top_default",
+            ports=[{"name": "a", "direction": "input"},
+                   {"name": "y", "direction": "output"}],
+            instances=[{"name": "u1", "model": "pw", "parameters": "W = 1;"}],
+            wires=[{"from": "a", "to": "u1.a", "net": "a_n", "datasize": 1},
+                   {"from": "u1.y", "to": "y", "net": "y_n", "datasize": 1}],
+        )
+        plain = model_to_verilog(parse_robei_model(Path(same_default["path"])))
+        assert "pw u1(" in plain
+        assert "#(" not in plain
+    finally:
+        shutil.rmtree(SETTINGS.workspace / name, ignore_errors=True)
+
+
+def test_path_escape_has_its_own_code() -> None:
+    from robei_mcp.errors import PathEscape, code_for
+    from robei_mcp.security import resolve_workspace_path
+
+    with pytest.raises(PathEscape):
+        resolve_workspace_path("../outside.v", must_exist=False)
+    assert code_for(PathEscape("x")) == "path_escape"
+
+
+def test_bare_workspace_resolves_to_the_root() -> None:
+    from robei_mcp.security import resolve_workspace_path
+
+    assert resolve_workspace_path("workspace", must_exist=False) == SETTINGS.workspace
+    assert resolve_workspace_path("Workspace", must_exist=False) == SETTINGS.workspace
+
+
+def test_model_roots_are_deduplicated() -> None:
+    from robei_mcp.config import _dedupe_paths
+    from robei_mcp.security import _unique_roots
+
+    workspace = SETTINGS.workspace
+    assert len(_dedupe_paths([workspace, workspace, workspace / "."])) == 1
+    combined = _unique_roots((workspace, workspace, *SETTINGS.model_roots))
+    assert len(combined) == len({str(item).lower() for item in combined})
+
+
+def test_modules_without_ports_parse_consistently() -> None:
+    assert parse_module_ports("module m; endmodule", "m") == []
+    assert parse_module_ports("module m(); endmodule", "m") == []
+    assert parse_module("module m; endmodule", "m")["ports"] == []
+    with pytest.raises(ValueError, match="not found"):
+        parse_module_ports("module n; endmodule", "m")
+
+
+def test_list_projects_skips_qa_trees() -> None:
+    tag = uuid.uuid4().hex[:8]
+    qa_dir = SETTINGS.workspace / f"qa_regress_{tag}"
+    runs_dir = SETTINGS.workspace / "_qa_runs" / f"regress_{tag}"
+    qa_dir.mkdir(parents=True)
+    runs_dir.mkdir(parents=True)
+    try:
+        (qa_dir / f"qa_regress_{tag}.proj").write_text(
+            f'<qa_regress_{tag} name="qa_regress_{tag}" parent="0" type="proj"/>\n',
+            encoding="utf-8",
+        )
+        (runs_dir / f"runs_{tag}.proj").write_text(
+            f'<runs_{tag} name="runs_{tag}" parent="0" type="proj"/>\n',
+            encoding="utf-8",
+        )
+        default = tools.list_projects(include_qa=False)
+        names = {item["name"] for item in default["projects"]}
+        assert f"qa_regress_{tag}" not in names
+        assert f"runs_{tag}" not in names
+        wide = tools.list_projects(include_qa=True)
+        wide_names = {item["name"] for item in wide["projects"]}
+        assert f"qa_regress_{tag}" in wide_names
+        assert f"runs_{tag}" in wide_names
+    finally:
+        shutil.rmtree(qa_dir, ignore_errors=True)
+        shutil.rmtree(SETTINGS.workspace / "_qa_runs" / f"regress_{tag}", ignore_errors=True)
+
+
+def test_const_drive_pull_and_voltage_reach_xdc(work: Path) -> None:
+    name = f"regress_const_{uuid.uuid4().hex[:8]}"
+    project = tools.create_robei_project(name, models=[])
+    try:
+        proj = Path(project["proj"])
+        (proj.parent / "model" / "tiny.model").write_text(
+            _param_model_xml(
+                "tiny", "", [("a", "input", "1"), ("y", "output", "1")], "assign y = a;"
+            ),
+            encoding="utf-8",
+        )
+        tools._register_model_in_project(proj, "tiny")
+        const_dir = proj.parent / "const"
+        const_dir.mkdir(exist_ok=True)
+        (const_dir / "pins.const").write_text(
+            "<!DOCTYPE Robei>\n"
+            '<Module Height="547" Type="const" Vendor="AMD" Device="" Family="" Width="1185" '
+            'Class="module" Code="" Color="#d3d3d3" Comment="" Name="pins" Parent="0" '
+            'File="Current/pins.const">\n'
+            ' <Module Type="model" Class="tiny" Name="pins_inst" Parent="pins">\n'
+            '  <Port Name="a" Inout="input" Datasize="1" Datatype="wire" Parent="pins_inst"/>\n'
+            '  <Port Name="y" Inout="output" Datasize="1" Datatype="wire" Parent="pins_inst"/>\n'
+            " </Module>\n"
+            ' <Port Name="G15" Inout="input" Datasize="1" Datatype="wire" Parent="pins" '
+            'Drive="8" Pull="up" Voltage="3.3"/>\n'
+            ' <Port Name="M14" Inout="output" Datasize="1" Datatype="wire" Parent="pins" '
+            'Drive="4" Pull="down" Voltage=""/>\n'
+            ' <Wire Name="0" From="pins>G15" To="pins#pins_inst>a" Datasize="1"/>\n'
+            ' <Wire Name="0" From="pins#pins_inst>y" To="pins>M14" Datasize="1"/>\n'
+            "</Module>\n",
+            encoding="utf-8",
+        )
+        info = constraints.read_const(str(const_dir / "pins.const"))
+        assert info["pin_options"]["G15"]["drive"] == "8"
+        assert info["pin_options"]["G15"]["pull"] == "up"
+
+        exported = constraints.export_xdc(str(proj), "pins")
+        text = Path(exported["path"]).read_text(encoding="utf-8")
+        # get_ports targets the model port; the pin name only keys the options.
+        assert "set_property DRIVE 8 [get_ports a]" in text
+        assert "set_property PULLUP TRUE [get_ports a]" in text
+        assert "set_property DRIVE 4 [get_ports y]" in text
+        assert "set_property PULLDOWN TRUE [get_ports y]" in text
+        assert "3.3" not in text
+        assert exported["voltage_hints"] == [{"port": "a", "voltage": "3.3"}]
+    finally:
+        shutil.rmtree(SETTINGS.workspace / name, ignore_errors=True)

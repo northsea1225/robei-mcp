@@ -230,10 +230,14 @@ def robei_doctor(deep: bool = False) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=READ)
-def list_projects(limit: int = 200) -> dict[str, Any]:
-    """List every Robei project in the workspace with its models, tests, verilog and VCDs."""
+def list_projects(limit: int = 200, include_qa: bool = False) -> dict[str, Any]:
+    """List every Robei project in the workspace with its models, tests, verilog and VCDs.
+
+    QA scratch trees (workspace/_qa_runs, workspace/qa_*) are skipped unless
+    include_qa=true.
+    """
     try:
-        return tools.list_projects(limit=limit)
+        return tools.list_projects(limit=limit, include_qa=include_qa)
     except Exception as exc:
         return _error(exc)
 
@@ -621,6 +625,14 @@ async def robei_gui_compile_all(models: list[str] | None = None, ctx: Context | 
         return _error(exc)
 
 
+def robei_gui_screenshot(label: str = "shot") -> dict[str, Any]:
+    """Grab the interactive desktop and save a PNG under workspace/gui_shots."""
+    try:
+        return gui.screenshot(label=label)
+    except Exception as exc:
+        return _error(exc)
+
+
 # ---------------------------------------------------------------------------
 # The GUI bridge is optional: Windows plus the driver package must be present.
 # When it cannot run the tools are not advertised at all, instead of failing
@@ -637,6 +649,7 @@ GUI_TOOLS: tuple[tuple[Any, Any], ...] = (
     (robei_gui_synthesis, WRITE_GUI),
     (robei_gui_close, DESTRUCTIVE_GUI),
     (robei_gui_compile_all, WRITE_GUI),
+    (robei_gui_screenshot, WRITE_GUI),
 )
 
 GUI_ENABLED = gui.available()

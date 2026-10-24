@@ -78,6 +78,11 @@ def _parse_port(element: ET.Element) -> dict[str, Any]:
         "side": _attr_ci(element, "Side") or "",
         "parent": _attr_ci(element, "Parent") or "",
         "description": _attr_ci(element, "Description") or "",
+        # Pin-constraint canvases use these; empty on ordinary ports.
+        "function": _attr_ci(element, "Function") or "",
+        "drive": _attr_ci(element, "Drive") or "",
+        "pull": _attr_ci(element, "Pull") or "",
+        "voltage": _attr_ci(element, "Voltage") or "",
     }
 
 
@@ -292,9 +297,12 @@ def model_to_verilog(
 
     instances = model.get("instances") or []
     if instances:
+        from .verilog import width_of
+
         port_names = {p.get("name") for p in (model.get("ports") or [])}
         connections: dict[tuple[str, str], str] = {}
-        for wire in model.get("wires") or []:
+        wires = model.get("wires") or []
+        for wire in wires:
             endpoints = [wire.get("from") or {}, wire.get("to") or {}]
             # A wire that ends on a top-level port uses that port as the expression,
             # exactly like Robei's own generated instantiation list.
@@ -318,20 +326,71 @@ def model_to_verilog(
                 if net and net not in port_names and not re.search(rf"\bwire\b[^;]*\b{re.escape(net)}\b", body)
             }
         )
+        # A <Wire> carries its own Datasize/Datatype.  Losing it turned every
+        # internal bus into a 1-bit wire, which iverilog then flagged as a
+        # width mismatch (and the simulation produced 0 instead of the input).
+        wire_meta: dict[str, dict[str, Any]] = {}
+        for wire in wires:
+            net = (wire.get("net") or "").strip()
+            if not net:
+                continue
+            previous = wire_meta.get(net)
+            if previous is None or width_of(wire.get("datasize") or "") > width_of(
+                previous.get("datasize") or ""
+            ):
+                wire_meta[net] = wire
         lines.append("")
         for net in internal:
-            lines.append(f"    wire {net};")
+            wire = wire_meta.get(net) or {}
+            datatype = (wire.get("datatype") or "wire").strip() or "wire"
+            if datatype not in {"wire", "reg", "logic"}:
+                datatype = "wire"
+            lines.append(f"    {datatype}{_range_suffix(wire.get('datasize') or '')} {net};")
         lines.append("")
         lines.append("    //---Module instantiation---")
+        model_dir = Path(model["path"]).parent
+        defaults_cache: dict[str, dict[str, str]] = {}
+
+        def child_defaults(module_name: str) -> dict[str, str]:
+            key = module_name.lower()
+            if key in defaults_cache:
+                return defaults_cache[key]
+            values: dict[str, str] = {}
+            child_path = model_dir / f"{module_name}.model"
+            if child_path.is_file():
+                try:
+                    child = parse_robei_model(child_path)
+                    values = {
+                        item["name"].upper(): item["default"].strip()
+                        for item in child.get("parameter_list") or []
+                    }
+                except Exception:
+                    values = {}
+            defaults_cache[key] = values
+            return values
+
         for inst in instances:
             source = inst.get("model_file") or ""
             module = Path(source).stem if source else ""
             module = module or inst.get("class") or ""
+            overrides: list[tuple[str, str]] = []
+            raw_parameters = (inst.get("parameters") or "").strip()
+            if raw_parameters:
+                defaults = child_defaults(module)
+                for param in parse_parameter_text(raw_parameters):
+                    value = (param["default"] or "").strip()
+                    default = defaults.get(param["name"].upper())
+                    if default is not None and value == default:
+                        continue
+                    overrides.append((param["name"], value))
             rendered = []
             for port in inst.get("ports") or []:
                 expr = connections.get((inst["instance"], port["name"]), "")
                 rendered.append(f"        .{port['name']}({expr})")
-            lines.append(f"    {module} {inst['instance']}(")
+            header = f"    {module}"
+            if overrides:
+                header += " #(" + ", ".join(f".{name}({value})" for name, value in overrides) + ")"
+            lines.append(f"{header} {inst['instance']}(")
             lines.append(",\n".join(rendered))
             lines.append("    );")
     lines.append("")

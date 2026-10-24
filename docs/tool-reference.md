@@ -1,6 +1,6 @@
 # 工具参考
 
-38 个工具的完整参数、返回值和真实调用示例。工具名、参数名、返回字段保持英文。
+39 个工具的完整参数、返回值和真实调用示例。工具名、参数名、返回字段保持英文。
 
 > 这份文件是从早期 README 拆出来的，示例里的时间戳/路径是当时的真实输出，不要当成当前默认值。
 
@@ -159,12 +159,13 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
 ### `list_projects`
 
 ```json
-{"limit": 200}
+{"limit": 200, "include_qa": false}
 ```
 
 列出 workspace 里所有 `.proj`（含递归子目录）：工程名、`model/` 下的模型、`test/` 下的
 test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.proj` 里声明的条目数。
-只读，用来回答「我现在有哪些工程、哪个已经跑过」。
+只读，用来回答「我现在有哪些工程、哪个已经跑过」。默认跳过 `workspace/_qa_runs` 与
+`workspace/qa_*` 这些 QA 临时树；要连它们一起列就传 `include_qa=true`。
 
 ### `read_robei_project`
 
@@ -251,6 +252,8 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 
 - 实例的 `Class` 写**被引用模型的模型名**（Robei 自己的写法），`File` 指向
   `Current/<模型>.model`；实例端口从被引用模型自动读取，不需要手填
+- 每个实例可以带 `parameters` 字符串（如 `"W = 4;"`），原样写进嵌套 `<Module Parameters>`
+- 每条 `wire` 可以带 `datasize`；导出 Verilog 时按它生成 `wire [N-1:0]`，丢失会变成 1 位
 - 校验：实例名 / 模型名合法、被引用模型存在于同工程 `model/`、连线端点存在
 - 只写 workspace 内的工程；目标已存在要 `overwrite=true`（并留 `.bak-<时间戳>`）
 - 返回写回的 `sha256`、`instances` / `wires` / `netlist`（可直接检查有没有悬空端口）
@@ -292,6 +295,8 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 - `kind` 默认 **`const`**（Robei 5.x 的 FPGA 流程认这个；传 `constrain` 会被 Build→Synthesis
   拒绝为 `is not constrain file`）
 - `iostandard`（默认 `LVCMOS33`）写进每个引脚 `<Port Function="...">`
+- 引脚 `<Port>` 同时写出空的 `Drive` / `Pull` / `Voltage` 属性（Robei 的字段），
+  由 `export_robei_xdc` 读取并映射
 - **同一引脚不能出现在两个端口/同一位**（跳过大小写差异），否则整个调用
   `code=invalid_argument`，不写文件
 - `vendor` / `device` / `family` 只在 `kind="const"` 时写入根节点；留空时 Robei 会提示
@@ -304,7 +309,8 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 {"path": "const_demo/const/light_constrain.const"}
 ```
 
-返回 `kind`、`instance`、`model`、`pins`（`{端口: {位: 引脚}}`）、`ports`、`wires` 和 SHA256。只读。
+返回 `kind`、`instance`、`model`、`pins`（`{端口: {位: 引脚}}`）、`pin_options`
+（引脚 → `function` / `drive` / `pull` / `voltage`）、`ports`、`wires` 和 SHA256。只读。
 
 ### `export_robei_xdc`
 
@@ -331,6 +337,12 @@ Vivado 直接可用。Robei 自带的 Route 解析器只认不带花括号的 `[
 `also_build=true` 同时覆盖 `<工程>/build/<name>.xdc`——那是 `Build→Route` 实际解析的副本，
 Robei 自己写的版本 `IOSTANDARD` 为空，Route 会因此报参数个数错误。
 
+**Drive / Pull / Voltage**：`.const` 引脚上的 `Drive` 非空时输出
+`set_property DRIVE <值>`；`Pull` 接受 `up`/`pullup`/`pull-up` 与
+`down`/`pulldown`/`pull-down`，映射成 `PULLUP TRUE` / `PULLDOWN TRUE`，其他值记进
+`pull_warnings` 并跳过；`Voltage` **不会**被猜成 IOSTANDARD，只放进
+`voltage_hints: [{port, voltage}]` 供调用方判断。空字段不产生任何行。
+
 ### `robei_gui_save_project`
 
 ```json
@@ -345,6 +357,16 @@ Robei 自己写的版本 `IOSTANDARD` 为空，Route 会因此报参数个数错
 每个模型的结果现在固定带 `state`（`ok` / `failed` / `unknown_state`）、`marker`
 （实际命中的完成标记）和 `output_tail`（Output 尾部，失败时用来定位），
 `unknown_state` 会自动重试一次并标 `retried: true`。
+
+### `robei_gui_screenshot`
+
+```json
+{"label": "canvas-check"}
+```
+
+抓取整个交互桌面并保存为 `workspace/gui_shots/<label>-<时间戳>.png`，返回 `path`、
+`size_bytes`、`width`/`height`、`mean_rgb` 和亮度范围。和其它 GUI 工具一样走
+Session-1 桥（direct 或 schtasks）；用来在排查编译/布局问题时"看一眼屏幕"。
 
 ### `robei_gui_synthesis`
 
@@ -472,6 +494,7 @@ Robei 自己写的版本 `IOSTANDARD` 为空，Route 会因此报参数个数错
 | `timeout` | 超过 `timeout_s` 或 `max_timeout_s` |
 | `compile_failed` / `run_failed` | iverilog 编译失败 / vvp 运行失败（看 `compile` / `simulation` 段） |
 | `path_rejected` | `simulate` 的安全扫描在编译前拒绝了 `include` / `$fopen` 等越界路径 |
+| `path_escape` | 传入路径解析到 workspace / 允许根目录之外；hint 会说明"路径必须在 workspace 内" |
 
 **进度**：`simulate` / `simulate_project` / `lint_verilog` 在阶段边界上报
 `notifications/progress`（`total` 是阶段数，不是时间估计）。客户端不订阅就静默无副作用。

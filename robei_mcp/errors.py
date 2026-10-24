@@ -5,8 +5,17 @@ from typing import Any
 
 from .xmlsafe import UnsafeXml
 
+
+class PathEscape(ValueError):
+    """A supplied path resolved outside every root the tool is allowed to touch."""
+
+
 HINTS = {
     "unsafe_xml": "the XML declares a DTD or entities; Robei files never do",
+    "path_escape": (
+        "the path must stay inside the workspace: write it relative to workspace/ "
+        "(e.g. proj/a.v), never with ../ or an absolute path outside"
+    ),
     "not_found": "the path must exist and, for models/projects, sit under an allowed root",
     "already_exists": "pass overwrite=true (the previous file is kept as .bak-<timestamp>)",
     "permission_denied": "the server may only write inside the configured workspace",
@@ -22,6 +31,8 @@ HINTS = {
 def code_for(exc: BaseException) -> str:
     if isinstance(exc, UnsafeXml):
         return "unsafe_xml"
+    if isinstance(exc, PathEscape):
+        return "path_escape"
     if isinstance(exc, FileNotFoundError):
         return "not_found"
     if isinstance(exc, FileExistsError):

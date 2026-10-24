@@ -3,7 +3,7 @@
 > An MCP server that turns Robei EDA into AI-callable tools: Verilog lint, simulation,
 > waveform analysis, project XML, and optional GUI automation. Docs are in Chinese.
 
-**状态：稳定版**（38 个工具）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
+**状态：稳定版**（39 个工具）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
 
 > **升级注意（1.0.2 起）**：`simulate` 默认开启**严格路径扫描**。像
 > `$readmemh(PATH, mem)` 这种无法静态判定路径的写法，以前能跑，现在会直接返回
@@ -14,7 +14,7 @@
 以及（可选）驱动 Robei 本体 GUI。基于 MCP（Model Context Protocol）stdio 传输，
 可在 Codex / Claude Code 里直接用自然语言完成「写代码 → 检查 → 仿真 → 看波形」。
 
-- **38 个工具**，其中 28 个不需要 Robei、不需要桌面：只要有 `iverilog`/`vvp`/`yosys` 就能跑。
+- **39 个工具**，其中 28 个不需要 Robei、不需要桌面：只要有 `iverilog`/`vvp`/`yosys` 就能跑。
 - **不碰安装目录**：`E:\Robei` 全程只读，所有产物写在 `workspace/`。
 - **可回滚**：每次运行独立目录，默认不覆盖已有文件，改模型前先备份。
 - **不执行任意 shell**：固定工具白名单 + `shell=False` + 路径白名单。
@@ -28,7 +28,7 @@
 | Python 3.10+ | 开发机用 3.12.10 |
 | Robei EDA | 自带 `iverilog` / `vvp` / `yosys`；也可用独立安装的 Icarus |
 | （可选）Verilator | `--lint-only` 那一路，缺了会自动跳过 |
-| （可选）Windows 交互桌面 | 只有 10 个 `robei_gui_*` 工具需要 |
+| （可选）Windows 交互桌面 | 只有 11 个 `robei_gui_*` 工具需要 |
 
 ### 2. 安装
 
@@ -48,7 +48,7 @@ python C:\dev\robei-mcp\tools\setup.py --apply
 
 依赖只有两个：`mcp==2.3.0`、`matplotlib`（画波形 PNG 用）。
 
-想用 10 个 `robei_gui_*` 工具，再装可选依赖（仅 Windows 需要）：
+想用 11 个 `robei_gui_*` 工具，再装可选依赖（仅 Windows 需要）：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e ".[gui]"     # 源码目录
@@ -157,7 +157,7 @@ strict_path_scan = true
 
 **引脚约束（3）** — `create_robei_const`（拒绝同一引脚被两个端口/两位重复占用）、`read_robei_const`、`export_robei_xdc`（默认标准 Tcl 写法 `[get_ports {a[0]}]`，`quote_bus=false` 回到 Robei legacy 写法）
 
-**GUI（10，需 Windows 桌面）** — `robei_gui_status`（`probe=true` 顺带查 UIA 桥是否还活着）、`launch`、`open_project`、`open_model`、`compile`、`output`、`save_project`、`synthesis`、`compile_all`、`close`
+**GUI（11，需 Windows 桌面）** — `robei_gui_status`（`probe=true` 顺带查 UIA 桥是否还活着）、`launch`、`open_project`、`open_model`、`compile`、`output`、`save_project`、`synthesis`、`compile_all`、`screenshot`、`close`
 
 ## GUI 部分的前提
 
@@ -220,7 +220,7 @@ python C:\dev\robei-mcp\tools\gui\register_task.py --remove   # 删除
 
 | 文件 | 内容 |
 |---|---|
-| [docs/tool-reference.md](docs/tool-reference.md) | 38 个工具的完整参数、返回值、真实示例 |
+| [docs/tool-reference.md](docs/tool-reference.md) | 39 个工具的完整参数、返回值、真实示例 |
 | [docs/gui-tools.md](docs/gui-tools.md) | GUI 工具、Session-1 桥、坐标/菜单/画布的历史坑 |
 | [docs/L1-uia-bridge.md](docs/L1-uia-bridge.md) | Robei 内建 UIA 桥的层级与控件 id |
 | [docs/verification-log.md](docs/verification-log.md) | 每个阶段「实际跑通了什么」的证据日志 |

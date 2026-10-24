@@ -39,7 +39,14 @@ OPS = {
     "compile_all": lambda a: robei_ui.compile_all(float(a.get("compile_timeout", 45)), a.get("models")),
     "save_project": lambda a: robei_ui.save_project(),
     "synthesis": lambda a: robei_ui.synthesis(float(a.get("timeout_s", 300))),
+    "screenshot": lambda a: _screenshot(a.get("label", "shot")),
 }
+
+
+def _screenshot(label: str) -> dict:
+    from . import driver
+
+    return driver.shot(label)
 
 
 def run() -> dict:

@@ -2,6 +2,46 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.0.3 — 2026-10-24
+
+**层次化导出不再丢位宽；路径错误码、工程列表、约束字段与 GUI 截图补齐。**
+工具面 39 个（文件级 28 + GUI 11）。
+
+### 层次化导出（P0）
+
+- **内部 wire 保留位宽**：画布上的 `<Wire Datasize="4">` 以前导出成 `wire mid;`，
+  iverilog 报端口位宽不匹配、仿真得到 0。现在按 Datasize 生成 `wire [3:0] mid;`
+  （Datasize 为 1/空时不加范围），同一条线取最宽的声明。
+- **实例参数覆盖**：嵌套 `<Module Parameters>` 非空、且与子模型 `Parameters` 的默认值不同时，
+  生成 `child #(.W(4)) u1(...)`；等于默认值则不输出。
+- **取证边界**：安装目录 + 仓库共 67 个 `.model` 里**没有**带实例参数覆盖的真实样本
+  （`<Module Parameters>` 全是空串），所以参数覆盖的“写入方”仍未经 Robei 实机确认。
+  读取沿用模型根节点同一种 `NAME = value;` 语法；解析为空就完全不输出，
+  不会猜测或写坏用户文件。`<Wire Datasize>` 字段本身在这些文件里是确认存在的。
+
+### 路径与接口
+
+- 新增错误码 **`path_escape`**（`errors.py`），所有 `resolve_*` 越界都抛它，
+  hint 明确写“路径必须在 workspace 内”。`invalid_argument` 不再兜底路径问题。
+- 配置里的 model roots 在 `_default_model_roots` / `_pick_roots` 去重，
+  错误信息里的 allowed roots 不再重复列出 workspace。
+- `list_projects` 默认跳过 `workspace/_qa_runs` 与 `workspace/qa_*`，新增 `include_qa=true`。
+- 单独传 `"workspace"`（无斜杠，`must_exist=False`）解析为 workspace 根，不再套成
+  `workspace\workspace`。
+- `module m; endmodule` / `module m(); endmodule`：`parse_module_ports` 现在返回 `[]`
+  （合法零端口模块），与 `parse_module` 一致；模块不存在仍然报错。
+
+### 约束与 GUI
+
+- `.const` 引脚上的 `Drive` / `Pull` / `Voltage` 映射进 XDC：
+  `Drive` → `set_property DRIVE <值>`，`Pull`（up/down 及常见变体）→ `PULLUP/PULLDOWN TRUE`；
+  `Voltage` 只返回 `voltage_hints`，不猜 IOSTANDARD。空字段不产生行。
+  `read_robei_const` 新增 `pin_options`。
+- 新增 **`robei_gui_screenshot`**：抓取交互桌面到 `workspace/gui_shots/<label>-<时间戳>.png`，
+  走同一条 Session-1 桥。
+- `create_robei_canvas_model` 的实例支持 `parameters` 字符串（写入嵌套 `<Module Parameters>`），
+  wire 支持 `datasize`。
+
 ## 1.0.2 — 2026-10-24
 
 **一轮完整的 QA 回归：38 个工具逐个打，修正 18 处行为。** 工具面不变（仍是 38 个），

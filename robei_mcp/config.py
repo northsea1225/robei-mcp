@@ -91,10 +91,27 @@ def _find_robei_home() -> Path | None:
 def _default_model_roots(workspace: Path) -> tuple[Path, ...]:
     raw = os.environ.get("ROBEI_MODEL_ROOTS")
     if raw:
-        return tuple(Path(p).expanduser() for p in raw.split(os.pathsep) if p.strip())
+        return _dedupe_paths(Path(p).expanduser() for p in raw.split(os.pathsep) if p.strip())
     if IS_WINDOWS:
-        return (Path(r"C:\ProgramData\Robei"), workspace)
-    return (workspace,)
+        return _dedupe_paths((Path(r"C:\ProgramData\Robei"), workspace))
+    return _dedupe_paths((workspace,))
+
+
+def _dedupe_paths(paths) -> tuple[Path, ...]:
+    """Keep the first spelling of each root so error messages list it once."""
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in paths:
+        candidate = Path(path).expanduser()
+        try:
+            key = os.path.normcase(str(candidate.resolve()))
+        except OSError:
+            key = os.path.normcase(str(candidate))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return tuple(unique)
 
 
 def _default_workspace() -> Path:
@@ -264,7 +281,7 @@ def _pick_discovered(
 def _pick_roots(env_name: str, data: dict, section: str, key: str, default: tuple[Path, ...], base: Path) -> tuple[tuple[Path, ...], str]:
     raw = os.environ.get(env_name)
     if raw:
-        return tuple(Path(p).expanduser() for p in raw.split(os.pathsep) if p.strip()), "env"
+        return _dedupe_paths(Path(p).expanduser() for p in raw.split(os.pathsep) if p.strip()), "env"
     value = (data.get(section) or {}).get(key) if isinstance(data.get(section), dict) else None
     if isinstance(value, list) and value:
         roots = []
@@ -275,8 +292,8 @@ def _pick_roots(env_name: str, data: dict, section: str, key: str, default: tupl
                     candidate = base / candidate
                 roots.append(candidate)
         if roots:
-            return tuple(roots), "toml"
-    return default, "default"
+            return _dedupe_paths(roots), "toml"
+    return _dedupe_paths(default), "default"
 
 
 def load_settings() -> Settings:

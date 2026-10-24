@@ -12,7 +12,7 @@ MCP 直接驱动 Robei 本体。底层走 Robei 自编入的 **UIA provider**（
    .\.venv\Scripts\python.exe -m pip install -e ".[gui]"
    ```
 
-   三个包缺任何一个，`gui.available()` 就是 false，10 个 `robei_gui_*` 工具**不会出现在
+   三个包缺任何一个，`gui.available()` 就是 false，11 个 `robei_gui_*` 工具**不会出现在
    `tools/list`** 里（不是调用时才报错）；`tools\setup.py --apply` 也会在 Windows 上补装。
    `robei_doctor` 的 `gui_deps` 一项会逐个报缺什么。
 
@@ -46,6 +46,7 @@ python tools\gui\register_task.py --remove   # 不再需要时删除
 | `robei_gui_open_model(name, timeout_s=90)` | 展开 Files 树（Qt 忽略 UIA 展开模式，改用 `点击 + →`）后双击模型 | `models` `tree` `active` |
 | `robei_gui_compile(timeout_s=90)` | Build→Compile，解析 `Output` 增量 | `generated` `errors` `warnings` `missing_modules` `check_warnings` |
 | `robei_gui_output(lines=80)` | Output 面板末 N 行 | `text` `lines_total` |
+| `robei_gui_screenshot(label="shot")` | 抓整个桌面到 `workspace/gui_shots/<label>-<时间戳>.png` | `path` `size_bytes` `width` `height` `mean_rgb` |
 | `robei_gui_close()` | `taskkill /F /IM Robei.exe` | `stdout` |
 
 路径校验：`robei_gui_open_project` 复用 `security.resolve_project_path`，

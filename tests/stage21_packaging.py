@@ -72,8 +72,8 @@ async def main() -> int:
     on = await tool_names({})
     gui_on = [n for n in on if n.startswith("robei_gui_")]
     if pkg_dir.parent.name == "robei_mcp" and os.name == "nt":
-        check("default advertises 10 gui tools", len(gui_on) == 10, gui_on)
-        check("default total 38", len(on) == 38, len(on))
+        check("default advertises 11 gui tools", len(gui_on) == 11, gui_on)
+        check("default total 39", len(on) == 39, len(on))
     else:
         print("skip  default GUI count (not Windows)")
 

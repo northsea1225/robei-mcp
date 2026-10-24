@@ -35,6 +35,7 @@ from .verilog import parse_module_ports, classify_control
 
 TOP_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 FILE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_QA_DIR_RE = re.compile(r"^(?:_qa_runs|qa_.*)$", re.IGNORECASE)
 _RENDER_LOCK = threading.Lock()
 
 
@@ -1055,17 +1056,23 @@ def _folder_listing(folder: Path, limit: int = 500) -> dict[str, Any]:
     return info
 
 
-def list_projects(limit: int = 200) -> dict[str, Any]:
+def list_projects(limit: int = 200, include_qa: bool = False) -> dict[str, Any]:
     """Enumerate every Robei project inside the workspace (read-only).
 
     Answers the first question an agent usually has: which project am I working
     on, what models/tests does it have, and is there a build output already.
+    QA scratch trees (``workspace/_qa_runs`` and ``workspace/qa_*``) are skipped
+    unless ``include_qa=True``, so test residue does not drown the real projects.
     """
     root = SETTINGS.workspace
     projects: list[dict[str, Any]] = []
     problems: list[dict[str, str]] = []
     for proj in sorted(root.rglob("*.proj")):
         if not is_within(proj, root):
+            continue
+        if not include_qa and any(
+            _QA_DIR_RE.match(part) for part in proj.relative_to(root).parts[:-1]
+        ):
             continue
         entry: dict[str, Any] = {
             "name": proj.stem,
@@ -1690,6 +1697,9 @@ def create_robei_canvas_model(
                 "class": model_stem,
                 "x": int(item.get("x", 200 + index * 320)),
                 "y": int(item.get("y", 120)),
+                # Robei keeps per-instance overrides in the nested Module's
+                # Parameters attribute; carry a caller-supplied string through.
+                "parameters": str(item.get("parameters") or ""),
                 "ports": [
                     {
                         "name": p["name"],
@@ -1734,7 +1744,8 @@ def create_robei_canvas_model(
     for item in placed:
         lines.append(
             f' <Module Name="{_attr(item["instance"])}" Type="model" Width="160" '
-            f'Class="{_attr(item["class"])}" Comment="" X="{item["x"]}" Parameters="" Y="{item["y"]}" '
+            f'Class="{_attr(item["class"])}" Comment="" X="{item["x"]}" '
+            f'Parameters="{_attr(item["parameters"])}" Y="{item["y"]}" '
             f'Parent="{_attr(name)}" Height="160" Color="#d3d3d3" Include="" '
             f'File="Current/{_attr(item["model"])}.model" Code="">'
         )

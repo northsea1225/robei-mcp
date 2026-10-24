@@ -12,6 +12,42 @@
 
 ## 交付状态
 
+### 1.0.3：层次化导出与接口补齐（2026-10-24）
+
+**P0 实机证据**（Windows，`workspace/build/evidence_1_0_3` 的临时工程，跑完即删）：
+
+```text
+BEFORE  wire mid;        → iverilog: Port 1 (a) of buf4 expects 4 bits, got 1
+                         → Y=0001, MISMATCH expected 1011
+AFTER   wire [3:0] mid;  → Y=1011, MATCH（无编译告警）
+```
+
+即：画布 `<Wire Datasize="4">` 丢失后整条 4 位链路退化成 1 位。修复后内部 wire 按
+Datasize 生成范围，实例参数非空且与子模型默认值不同时生成 `#(.W(4))`。
+
+**取证边界**：`C:\ProgramData\Robei`（24 个 ToolBox 模型）、仓库 examples/robei_samples
+与 Robei 安装目录共 **67 个 `.model`**，其中嵌套 `<Module Parameters>` 非空的样本 **0 个**。
+因此“Robei 把实例参数覆盖写成什么格式”没有实机样本可依；实现按模型根节点同一种
+`NAME = value;` 语法解析，解析为空就完全不输出（不会猜测写坏文件）。
+`<Wire Datasize>` 字段本身在样本里存在（全部为 `1`）。
+
+**这一版新增/修改的回归**（`tests/test_regressions.py` 42 项，含 9 项新增）：
+
+- `test_canvas_bus_chain_keeps_width_and_simulates`（4 位链路真的跑 iverilog，断言 `Y=1011`）
+- `test_canvas_mixes_single_bit_and_bus_wires`（1 位与总线混合）
+- `test_instance_parameter_overrides_are_emitted`（覆盖 `#(.W(4))`，等于默认值时不输出）
+- `test_path_escape_has_its_own_code`
+- `test_bare_workspace_resolves_to_the_root`
+- `test_model_roots_are_deduplicated`
+- `test_modules_without_ports_parse_consistently`
+- `test_list_projects_skips_qa_trees`
+- `test_const_drive_pull_and_voltage_reach_xdc`
+
+**Windows 回归**：`pytest -q tests` 47 passed；`portable_core` 16/16；stage3/4 OK；
+stage7 12/12；stage9、stage10 退出码 0；stage11 13/13；stage12 18/18；stage13 18/18；
+stage14 9/9；stage17 28/28；stage19 26/26（含 GUI Compile + Synthesis）；stage21 13/13。
+工具数 39（GUI 11），`ROBEI_MCP_GUI=0` 时 28。
+
 ### 1.0.2：QA 回归修复（2026-10-24）
 
 上一轮 QA 在 Windows 实机上把 38 个工具逐个打过一遍，留下 16 组问题。这一版全部修掉，

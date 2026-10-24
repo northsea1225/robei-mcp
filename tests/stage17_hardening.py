@@ -83,7 +83,7 @@ async def main() -> int:
 
             escape = payload(await session.call_tool(
                 "read_robei_model", {"path": r"C:\Windows\win.ini"}))
-            check("path escape -> code=invalid_argument", escape.get("code") == "invalid_argument", escape)
+            check("path escape -> code=path_escape", escape.get("code") == "path_escape", escape)
 
             shutil.rmtree(WS / "stage17_hardening", ignore_errors=True)
             proj = payload(await session.call_tool("create_robei_project", {"name": "stage17_hardening", "models": []}))["proj"]

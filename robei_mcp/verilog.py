@@ -133,9 +133,15 @@ def parse_module_ports(source: str, top: str) -> list[dict[str, Any]]:
 
     ports: list[dict[str, Any]] = []
     paren = _port_paren(header)
+    if paren == -1:
+        # ``module m;`` has no port list at all: a valid module with zero ports.
+        return []
     if paren != -1:
         end = _match_paren(header, paren)
         inner = header[paren + 1 : end if end != -1 else len(header)]
+        if not inner.strip():
+            # ``module m();`` — same answer, and both parsers must agree.
+            return []
         direction: str | None = None
         datatype = "wire"
         width = ""

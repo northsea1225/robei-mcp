@@ -150,6 +150,7 @@ async def main():
                 "robei_doctor",
                 "list_projects",
                 "robei_gui_compile_all",
+                "robei_gui_screenshot",
             ]
             for name in required:
                 assert name in names, f"missing tool: {name}"

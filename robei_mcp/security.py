@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from .config import SETTINGS
+from .errors import PathEscape
 
 
 def is_within(path: Path, root: Path) -> bool:
@@ -26,6 +27,9 @@ def _strip_base_prefix(value: Path, base: Path) -> Path | None:
     way.  The remainder is still resolved and escape-checked by the caller.
     """
     raw = str(value)
+    if raw.strip().lower() == base.name.lower():
+        # A bare "workspace" means the workspace itself, not workspace/workspace.
+        return Path(".")
     match = re.match(rf"^(?i:{re.escape(base.name)})[\\/]+(.+)$", raw)
     if not match:
         return None
@@ -50,6 +54,19 @@ def _base_readings(value: str | Path, base: Path) -> list[tuple[Path, Path | Non
     return [(base / stripped, base / candidate)]
 
 
+def _unique_roots(roots: tuple[Path, ...] | list[Path]) -> tuple[Path, ...]:
+    """Drop duplicates (e.g. workspace also listed as a model root)."""
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for root in roots:
+        key = os.path.normcase(str(Path(root).resolve()))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(Path(root))
+    return tuple(unique)
+
+
 def _ambiguous(value: str | Path, preferred: Path, plain: Path | None) -> None:
     if plain is None:
         return
@@ -70,7 +87,7 @@ def resolve_workspace_path(value: str | Path, *, must_exist: bool = True) -> Pat
     for preferred, plain in _base_readings(value, SETTINGS.workspace):
         resolved = preferred.resolve()
         if not is_within(resolved, SETTINGS.workspace):
-            raise ValueError(f"path escapes workspace: {resolved}")
+            raise PathEscape(f"path escapes workspace: {resolved}")
         _ambiguous(value, resolved, plain)
         if not must_exist:
             return resolved
@@ -107,7 +124,7 @@ def resolve_vcd_path(value: str | Path) -> Path:
 
 def resolve_model_path(value: str | Path) -> Path:
     candidate = Path(value)
-    roots = (SETTINGS.workspace, *SETTINGS.model_roots)
+    roots = _unique_roots((SETTINGS.workspace, *SETTINGS.model_roots))
     if candidate.is_absolute():
         candidates: list[tuple[Path, Path | None]] = [(candidate, None)]
     else:
@@ -124,7 +141,7 @@ def resolve_model_path(value: str | Path) -> Path:
             if resolved.is_file():
                 # The file exists but is outside every allowed root: that is a
                 # policy rejection, not a missing file; clients must tell them apart.
-                raise ValueError(
+                raise PathEscape(
                     "model path escapes allowed roots: " + str(resolved) + "; allowed: "
                     + "; ".join(str(r) for r in roots)
                 )
@@ -144,7 +161,9 @@ def resolve_model_path(value: str | Path) -> Path:
 def resolve_project_path(value: str | Path) -> Path:
     """Resolve a Robei .proj path. Read-only: the project is never written back."""
     candidate = Path(value)
-    roots = (SETTINGS.workspace, *SETTINGS.model_roots, SETTINGS.robei_home / "project")
+    roots = _unique_roots(
+        (SETTINGS.workspace, *SETTINGS.model_roots, SETTINGS.robei_home / "project")
+    )
     readings: list[tuple[Path, Path | None]] = (
         [(candidate, None)] if candidate.is_absolute()
         else [pair for base in roots for pair in _base_readings(candidate, base)]
@@ -156,7 +175,7 @@ def resolve_project_path(value: str | Path) -> Path:
         except OSError:
             continue
         if not any(is_within(item, root) for root in roots):
-            raise ValueError(f"project path escapes allowed roots: {item}")
+            raise PathEscape(f"project path escapes allowed roots: {item}")
         _ambiguous(value, item, plain)
         if item.suffix.lower() != ".proj":
             raise ValueError("project file must have .proj extension")

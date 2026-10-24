@@ -152,6 +152,10 @@ def _run_direct(op: str, args: dict[str, Any]) -> dict[str, Any]:
         payload = module.synthesis(float(args.get("timeout_s", 300)))
     elif op == "close":
         payload = module.close()
+    elif op == "screenshot":
+        from .gui_agent import driver
+
+        payload = driver.shot(str(args.get("label") or "shot"))
     else:
         return {"ok": False, "error": f"unknown op: {op}"}
     payload["transport"] = "direct"
@@ -326,5 +330,10 @@ def save_project() -> dict[str, Any]:
 def synthesis(timeout_s: int = 300) -> dict[str, Any]:
     """Run Build > Synthesis on the open constrain model and wait for it to finish."""
     return call("synthesis", {"timeout_s": timeout_s}, timeout_s=timeout_s + 60)
+
+
+def screenshot(label: str = "shot", timeout_s: int = 60) -> dict[str, Any]:
+    """Grab the whole interactive desktop and save it under workspace/gui_shots."""
+    return call("screenshot", {"label": label}, timeout_s=timeout_s)
 
 
