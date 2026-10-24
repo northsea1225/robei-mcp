@@ -12,6 +12,106 @@
 
 ## 交付状态
 
+### 1.2.0：FPGA 后端到 .bit（2026-10-24）
+
+工具面 **48 个（文件级 37 + GUI 11）**，`ROBEI_MCP_GUI=0` 时 37 个。
+
+**M0 取证：Robei 自己执行的命令行**（用 Win32 进程快照轮询抓 argv，不是从文档推断）
+
+```text
+Synthesis  yosys -p "read_verilog <build>/light.v; synth_xilinx -flatten -arch xc7
+                   -abc9 -nodsp; write_json -noscopeinfo <build>/<const>.json"
+Route      Roplace.exe --chipdb C:/ProgramData/Robei/xilinx/chipdb/<part>-1.bin
+                       --xdc <build>/<const>.xdc --json <build>/<const>.json
+                       --write <build>/<const>_routed.json --fasm <build>/<const>.fasm
+Package    fasm2frames.exe --db-root C:/ProgramData/Robei/xilinx/<family>/ --part <part>
+                           <build>/<const>.fasm <build>/<const>.frame
+           xc7frames2bit.exe --part_file <db>/<family>/<part>/part.yaml
+                             --part_name <part> --frm_file <frame> --output_file <bit>
+```
+
+- 变体 1（项目没先 `Save`+`Compile`）：同一条 Synthesis 命令里**没有** `read_verilog`，
+  等于综合空设计；先保存再编译才会读到 `build/light.v`。
+- 变体 2（`.const` 的 `Family`/`Device` 为空）：`--chipdb .../chipdb/-1.bin`、
+  `--db-root C:/ProgramData/Robei/xilinx/`、`--part -1`，随后 Route 报
+  `Unable to read chipdb .../-1.bin`、Package 报 `mapping\devices.yaml does not exist`。
+- 中间产物顺序：`<const>.json` → `_routed.json` + `.fasm` → `.frame` → `.bit`；
+  Compile 另外产出 `build/<model>.v`、`build/filelist.vf`、`build/<const>.xdc`。
+
+**器件库映射**（`C:\ProgramData\Robei\xilinx`）
+
+| part | chipdb | part.yaml | buildable |
+|---|---|---|---|
+| xc7a100tcsg324-1 | 缺 | artix7/ | false |
+| xc7a100tfgg484-1 | ✓ | artix7/ | true |
+| xc7a200tfbg484-1 | ✓ | artix7/ | true |
+| xc7a50tfgg484-1 | ✓ | artix7/ | true |
+| xc7z020clg400-1 | ✓ | zynq7/ | true |
+| xc7z020clg484-1 | ✓ | zynq7/ | true |
+
+`Robei.exe` 的器件字符串只有这 5 个（`artix7` / `zynq7` + 5 个 device），csg324 不在其中。
+
+**端到端产物**（`examples/fpga_demo` → 复制进 `workspace/fpga_demo` 后跑
+`build_bitstream(part="xc7a50tfgg484-1")`）：
+
+```text
+synth 1.64s / route 0.84s / package.frames 1.62s / package.bit 0.06s，四段 rc=0
+bit      workspace/fpga_demo/build/light_constrain.bit
+size     2,192,167 bytes
+sha256   41da154cc4ccd66f5eb4edb3d32e7ba2c0bf66d7e7ea37649cf591887950e14c
+fasm     5,978 bytes
+frame    5,585,802 bytes
+资源     LUT 4 / FF 0 / CARRY 0 / BRAM 0 / DSP 0 / IO 8
+```
+
+**`.bit` 不是逐字节可复现的**：同一工程连跑多次，`json` / `fasm` / `frame` 三次都**逐字节相同**，
+只有 `.bit` 的 sha256 每次不同（`41da154c…e14c`、`a619d48a…3459`、`e8b0c536…eb74`、
+`fc95eaf3…910e`、`1c680234…d722`），大小恒为 2,192,167 B。逐字节比对只差 **3 个字节**，
+位置固定在偏移 145–148，内容就是 bitstream 头里嵌入的"生成时刻"字符串
+（`09:42:56` vs `09:43:00`）。所以：
+对比两份 `.bit` 应该比 `fasm` / `frame`，或者忽略这 3 字节；只比 sha256 会得到假阴性。
+
+`E:\Robei\bin` 与 `D:\robei-lab\robei\bin` 里的 yosys / yosys-abc / Roplace /
+fasm2frames / xc7frames2bit **md5 完全一致**；同一份 json 喂两边的 Roplace，输出 `.fasm`
+逐字节一致（`09abcb0f2a94820b4f9da8ba7a1e1173`，6,230 B）。反过来，同一份输入两次 yosys
+会写出**字节数不同**的 json（9,382,162 vs 9,594,583），但拓扑相同、fasm 相同，所以不能拿
+json 大小当差异判据。
+
+**引脚**：`const_demo` 的 csg324 球号在 fgg484 上不存在（Roplace 报
+`device does not have a pin named 'M14'`）。用逐引脚排除找到可用组合并写进示例：
+`swt = A1, A14, A15, A16`、`led = A20, A19, A13, A18`。
+
+**超时截断实测**：`build_bitstream(..., timeout_s=900)` 返回
+
+```json
+"timeout": {"requested_s": 900, "effective_s": 120, "max_timeout_s": 120, "clamped": true}
+```
+
+并在 `warnings` 里带 `timeout_s was clamped to max_timeout_s=120`。
+
+**测试**
+
+| 项 | 结果 |
+|---|---|
+| `pytest -q tests` | 137 passed |
+| `tests/portable_core.py` | 16 / 16 |
+| stage2 / stage3 / stage4 / stage5 | 通过 / 通过 / 通过 / 10 / 10 |
+| stage7 / stage8 / stage9 / stage10 | 12/12 / 10/10 / 通过 / 通过 |
+| stage11 / stage12 / stage13 / stage14 | 13/13 / 18/18 / 18/18 / 9/9 |
+| stage16 / stage17 / stage18 / stage19 | 12/12 / 28/28 / 29/29 / 26/26 |
+| stage20 / stage21 | 14/14 / 18/18 |
+
+stage3 / stage4 / stage5 里"工具清单必须完全一致"的断言按增量更新：stage3/4 只**追加**
+4 个新工具名；stage5 的 GUI 工具数从 10 改成 11——这是 1.0.3 加 `robei_gui_screenshot`
+时就漏改的旧断言（`da37ea3` 上 `GUI_TOOLS` 已经是 11 项，stage5 仍要求 10，属既有失败）。
+
+**未测试：GUI 侧 .bit 对比。** IDE 打开工程会把 `.const` 根节点的 `Family` / `Device`
+清空（写进去的值在 `File > Save` 后变成 `Device="" Family=""`），Route 因此报
+`light_constrain has no Family configured.` / `has no Device configured.` 并去找
+`chipdb/-1.bin`；`HKCU`/`HKLM\Software\Robei` 不存在，工程目录里也没有任何 cfg/ini/json
+侧车文件，器件选择只活在 IDE 进程内存里。工具链二进制与 IDE 同 md5、同 json 出的 fasm
+逐字节一致，所以这条差异不属于工具链，本版按已知限制结案。
+
 ### 1.1.0：元件库与画布增量编辑（2026-10-24）
 
 工具面 **44 个（文件级 33 + GUI 11）**，`ROBEI_MCP_GUI=0` 时 33 个。

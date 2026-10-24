@@ -3,7 +3,7 @@
 > An MCP server that turns Robei EDA into AI-callable tools: Verilog lint, simulation,
 > waveform analysis, project XML, and optional GUI automation. Docs are in Chinese.
 
-**状态：稳定版**（44 个工具）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
+**状态：稳定版**（48 个工具）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
 
 > **升级注意（1.0.2 起）**：`simulate` 默认开启**严格路径扫描**。像
 > `$readmemh(PATH, mem)` 这种无法静态判定路径的写法，以前能跑，现在会直接返回
@@ -14,12 +14,15 @@
 以及（可选）驱动 Robei 本体 GUI。基于 MCP（Model Context Protocol）stdio 传输，
 可在 Codex / Claude Code 里直接用自然语言完成「写代码 → 检查 → 仿真 → 看波形」。
 
-- **44 个工具**，其中 33 个不需要 Robei、不需要桌面：只要有 `iverilog`/`vvp`/`yosys` 就能跑。
+- **48 个工具**，其中 37 个不需要 Robei、不需要桌面：只要有 `iverilog`/`vvp`/`yosys` 就能跑。
 - **不碰安装目录**：`E:\Robei` 全程只读，所有产物写在 `workspace/`。
 - **可回滚**：每次运行独立目录，默认不覆盖已有文件，改模型前先备份。
 - **不执行任意 shell**：固定工具白名单 + `shell=False` + 路径白名单。
 - **元件库直接用**：`list_library_models` 扫 Robei 自带 24 个 ToolBox 模型并逐个跑
   `iverilog -g2012`；`import_library_model` 一键复制进工程、登记 `.proj`、再 lint 一次。
+- **FPGA 直出 .bit**：`synthesize_project` 跑 yosys `synth_xilinx` 给资源用量，
+  `build_bitstream` 接着走 Roplace → fasm2frames → xc7frames2bit，全程不打开 IDE；
+  器件有没有 chipdb、引脚绑没绑全都会在动手前告诉你。
 - **画布可增量改**：`edit_robei_canvas` 用 `add_instance` / `connect` / `rename_wire` 这组
   操作改画布，整批校验通过才落盘；`set_robei_code` / `set_robei_parameter` 改行为与参数。
 
@@ -134,9 +137,11 @@ read_waveform(<上一步的 vcd_path>, signals=["counter4_tb.dut.count"], time=4
 | `ROBEI_HOME` | Robei 安装根目录 |
 | `IVERILOG_EXE` / `VVP_EXE` / `YOSYS_EXE` | 单独指定工具链 |
 | `VERILATOR_EXE` / `VERILATOR_ROOT_DIR` | Verilator 那一路 |
-| `ROBEI_MCP_GUI` | `0` 强制关闭 GUI 面（工具从 `tools/list` 消失，只剩 33 个） |
+| `ROBEI_MCP_GUI` | `0` 强制关闭 GUI 面（工具从 `tools/list` 消失，只剩 37 个） |
 | `ROBEI_MCP_STRICT_PATHS` | 默认 `1`：源码扫描遇到无法静态判定的路径（`$readmemh(PATH)`）直接拒绝；设 `0` 退回只记录 `unresolved` |
-| `ROBEI_DEFAULT_TIMEOUT_S` / `ROBEI_MAX_TIMEOUT_S` | 子进程超时，默认 30 / 120 秒 |
+| `ROBEI_DEFAULT_TIMEOUT_S` / `ROBEI_MAX_TIMEOUT_S` | 子进程超时，默认 30 / 120 秒；大器件跑 Roplace 时把上限调大 |
+| `ROBEI_FPGA_DB` | 器件库根目录，默认 `C:\ProgramData\Robei\xilinx`（里面要有 `chipdb/` 与 `<family>/<part>/part.yaml`） |
+| `ROBEI_FPGA_BIN` | `Roplace.exe` / `fasm2frames.exe` / `xc7frames2bit.exe` 所在目录，默认 `%ROBEI_HOME%\bin` |
 
 `robei.toml` 里对应的一节：
 
@@ -151,7 +156,7 @@ strict_path_scan = true
 
 **诊断（2）** — `runtime_status`（路径/版本/配置来源）、`robei_doctor`（全栈自检，`deep=true` 会真跑一个 tb）
 
-**检查与仿真（3）** — `lint_verilog`（iverilog `-Wall` + Verilator + Yosys 三路）、`simulate`（编译+跑 tb）、`simulate_project`（无头跑 Robei 的 `test/*.test`）
+**检查与仿真（4）** — `lint_verilog`（iverilog `-Wall` + Verilator + Yosys 三路，Verilator ≥5.0 自动带 `--timing`）、`simulate`（编译+跑 tb）、`simulate_project`（无头跑 Robei 的 `test/*.test`）、`run_all_tests`（一次跑完工程里的 test 并汇总）
 
 **波形（6）** — `read_waveform`（列信号/按时刻取值）、`find_events`（`count == 4'b1111` 首次出现）、`compare_waveforms`（两份 VCD 逐信号比对，任何结构性差异都算不通过）、`waveform_stats`（跳变数/翻转率/时钟周期估计）、`expect_waveform`（断言取值）、`render_waveform`（画 PNG）
 
@@ -160,6 +165,10 @@ strict_path_scan = true
 **辅助（3）** — `generate_testbench`（时钟/复位/VCD 骨架）、`check_connectivity`（ERC）、`truth_table`（组合逻辑穷举真值表，`max_inputs` 按**输入总位数**计）
 
 **引脚约束（3）** — `create_robei_const`（拒绝同一引脚被两个端口/两位重复占用）、`read_robei_const`、`export_robei_xdc`（默认标准 Tcl 写法 `[get_ports {a[0]}]`，`quote_bus=false` 回到 Robei legacy 写法）
+
+可跑的示例工程见 `examples/fpga_demo/`（4 位 `light` + fgg484 引脚 `.const`，`build_bitstream` 开箱即用）。
+
+**FPGA（3）** — `list_fpga_devices`（器件表：有没有 chipdb、有没有 part.yaml）、`synthesize_project`（yosys `synth_xilinx` + LUT/FF/BRAM/DSP/IO 用量）、`build_bitstream`（Roplace → fasm2frames → xc7frames2bit，直出 `.bit`）
 
 **GUI（11，需 Windows 桌面）** — `robei_gui_status`（`probe=true` 顺带查 UIA 桥是否还活着）、`launch`、`open_project`、`open_model`、`compile`、`output`、`save_project`、`synthesis`、`compile_all`、`screenshot`、`close`
 
@@ -206,8 +215,11 @@ python C:\dev\robei-mcp\tools\gui\register_task.py --remove   # 删除
 - GUI 只做到「打开、编译、读 Output、综合、保存」；**在已有画布上拖拽/改连线做不到**
   （右键菜单、ToolBox 拖拽、坐标点击三条路都验证失败），但可以用 `create_robei_canvas_model`
   直接生成画布级 XML。
-- `Build→Route` / `Build→Package` 在这台机器上走不到底（器件库缺对应引脚、prjxray 目录为空），
-  FPGA 后端只到「生成约束 + 综合出网表」。
+- FPGA 后端可以**不开 IDE 直接出 `.bit`**（`synthesize_project` → `build_bitstream`），但
+  **GUI 侧的 Route/Package 无法复现**：IDE 打开工程会把 `.const` 根节点的 `Family` / `Device`
+  清空，Route 只报 `has no Family/Device configured` 后去找 `chipdb/-1.bin`。同一份 json 用
+  同一套二进制跑出的 `.fasm` 与 IDE 侧逐字节一致（md5 相同），所以差异只在器件配置的来源，
+  不在工具链。
 - Verilator 5.036 对"声明了但既不用也不驱动"的 net 不报 `UNUSEDSIGNAL`，这一项由 Yosys
   `opt_clean` 前后网表 diff 兜底；Icarus 12.0 的 `-Wall` 不报未使用信号。
 - Yosys 只做可综合性粗检，不做时序/面积签核；ERC 是教学级静态检查（不分析组合环）。
@@ -224,7 +236,7 @@ python C:\dev\robei-mcp\tools\gui\register_task.py --remove   # 删除
 
 | 文件 | 内容 |
 |---|---|
-| [docs/tool-reference.md](docs/tool-reference.md) | 44 个工具的完整参数、返回值、真实示例 |
+| [docs/tool-reference.md](docs/tool-reference.md) | 48 个工具的完整参数、返回值、真实示例 |
 | [docs/gui-tools.md](docs/gui-tools.md) | GUI 工具、Session-1 桥、坐标/菜单/画布的历史坑 |
 | [docs/L1-uia-bridge.md](docs/L1-uia-bridge.md) | Robei 内建 UIA 桥的层级与控件 id |
 | [docs/verification-log.md](docs/verification-log.md) | 每个阶段「实际跑通了什么」的证据日志 |

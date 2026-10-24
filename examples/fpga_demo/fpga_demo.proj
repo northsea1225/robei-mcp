@@ -1,0 +1,10 @@
+<fpga_demo name="fpga_demo" parent="0" type="proj">
+ <model name="model" parent="fpga_demo" type="folder">
+  <light.model name="light.model" parent="model" type="model"/>
+ </model>
+ <test name="test" parent="fpga_demo" type="folder"/>
+ <const name="const" parent="fpga_demo" type="folder">
+  <light_constrain.const name="light_constrain.const" parent="const" type="const"/>
+ </const>
+ <verilog name="verilog" parent="fpga_demo" type="folder"/>
+</fpga_demo>

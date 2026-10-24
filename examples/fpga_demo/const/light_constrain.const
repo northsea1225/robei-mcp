@@ -1,0 +1,23 @@
+<!DOCTYPE Robei>
+<Module Height="547" Type="const" Vendor="AMD" Device="xc7a50tfgg484" Family="artix7" Width="1185" Class="module" Comment="" Code="&#xa;&#xa;&#xa;" X="95.8814" Parent="0" Name="light_constrain" Include="" Color="#d3d3d3" Y="69.1928" File="Current/light_constrain.const" Parameters="">
+ <Module Height="304" Type="model" Width="374" Class="light" Comment="" Code="assign led = ~swt;" X="356.657" Parent="light_constrain" Name="light_constrain_inst" Include="" Color="#d3d3d3" Y="107.967" File="Current/light.model" Parameters="">
+  <Port Height="20" Side="left" Inout="input" Width="20" X="-0.017000" Function="" Parent="light_constrain_inst" Name="swt" Color="#0000ff" Y="0.150000" Datatype="wire" Datasize="4" Drive="" Pull="" Voltage=""/>
+  <Port Height="20" Side="right" Inout="output" Width="20" X="0.983000" Function="" Parent="light_constrain_inst" Name="led" Color="#b8860b" Y="0.330000" Datatype="wire" Datasize="4" Drive="" Pull="" Voltage=""/>
+ </Module>
+  <Port Height="20" Side="left" Inout="input" Width="20" X="-0.017000" Function="LVCMOS33" Parent="light_constrain" Name="A1" Color="#0000ff" Y="0.148000" Datatype="wire" Datasize="1" Drive="" Pull="" Voltage=""/>
+  <Port Height="20" Side="left" Inout="input" Width="20" X="-0.017000" Function="LVCMOS33" Parent="light_constrain" Name="A14" Color="#0000ff" Y="0.314000" Datatype="wire" Datasize="1" Drive="" Pull="" Voltage=""/>
+  <Port Height="20" Side="left" Inout="input" Width="20" X="-0.017000" Function="LVCMOS33" Parent="light_constrain" Name="A15" Color="#0000ff" Y="0.480000" Datatype="wire" Datasize="1" Drive="" Pull="" Voltage=""/>
+  <Port Height="20" Side="left" Inout="input" Width="20" X="-0.017000" Function="LVCMOS33" Parent="light_constrain" Name="A16" Color="#0000ff" Y="0.646000" Datatype="wire" Datasize="1" Drive="" Pull="" Voltage=""/>
+  <Port Height="20" Side="right" Inout="output" Width="20" X="0.983000" Function="LVCMOS33" Parent="light_constrain" Name="A20" Color="#b8860b" Y="0.812000" Datatype="wire" Datasize="1" Drive="" Pull="" Voltage=""/>
+  <Port Height="20" Side="right" Inout="output" Width="20" X="0.983000" Function="LVCMOS33" Parent="light_constrain" Name="A19" Color="#b8860b" Y="0.978000" Datatype="wire" Datasize="1" Drive="" Pull="" Voltage=""/>
+  <Port Height="20" Side="right" Inout="output" Width="20" X="0.983000" Function="LVCMOS33" Parent="light_constrain" Name="A13" Color="#b8860b" Y="1.144000" Datatype="wire" Datasize="1" Drive="" Pull="" Voltage=""/>
+  <Port Height="20" Side="right" Inout="output" Width="20" X="0.983000" Function="LVCMOS33" Parent="light_constrain" Name="A18" Color="#b8860b" Y="1.310000" Datatype="wire" Datasize="1" Drive="" Pull="" Voltage=""/>
+ <Wire Parent="light_constrain" To="light_constrain#light_constrain_inst&gt;swt" Name="0" From="light_constrain&gt;A1" Datatype="wire" Datasize="4"/>
+ <Wire Parent="light_constrain" To="light_constrain#light_constrain_inst&gt;swt" Name="1" From="light_constrain&gt;A14" Datatype="wire" Datasize="4"/>
+ <Wire Parent="light_constrain" To="light_constrain#light_constrain_inst&gt;swt" Name="2" From="light_constrain&gt;A15" Datatype="wire" Datasize="4"/>
+ <Wire Parent="light_constrain" To="light_constrain#light_constrain_inst&gt;swt" Name="3" From="light_constrain&gt;A16" Datatype="wire" Datasize="4"/>
+ <Wire Parent="light_constrain" To="light_constrain&gt;A20" Name="0" From="light_constrain#light_constrain_inst&gt;led" Datatype="wire" Datasize="4"/>
+ <Wire Parent="light_constrain" To="light_constrain&gt;A19" Name="1" From="light_constrain#light_constrain_inst&gt;led" Datatype="wire" Datasize="4"/>
+ <Wire Parent="light_constrain" To="light_constrain&gt;A13" Name="2" From="light_constrain#light_constrain_inst&gt;led" Datatype="wire" Datasize="4"/>
+ <Wire Parent="light_constrain" To="light_constrain&gt;A18" Name="3" From="light_constrain#light_constrain_inst&gt;led" Datatype="wire" Datasize="4"/>
+</Module>

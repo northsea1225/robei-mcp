@@ -2,6 +2,72 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.2.0 — 2026-10-24
+
+**FPGA 后端打通到 .bit。** 工具面 48 个（文件级 37 + GUI 11）；`ROBEI_MCP_GUI=0` 时 37 个。
+
+### M0 取证：Robei 自己跑的三段命令
+
+用进程命令行轮询抓到的真实 argv（Robei 5.0，Build > Synthesis / Route / Package）：
+
+```text
+Synthesis  yosys -p "read_verilog <build>/<top>.v; synth_xilinx -flatten -arch xc7
+                   -abc9 -nodsp; write_json -noscopeinfo <build>/<const>.json"
+
+Route      Roplace --chipdb <db>/chipdb/<part>.bin --xdc <build>/<const>.xdc
+                   --json <build>/<const>.json --write <build>/<const>_routed.json
+                   --fasm <build>/<const>.fasm
+
+Package    fasm2frames --db-root <db>/<family>/ --part <part>
+                       <build>/<const>.fasm <build>/<const>.frame
+           xc7frames2bit --part_file <db>/<family>/<part>/part.yaml
+                          --part_name <part> --frm_file <frame>
+                          --output_file <build>/<const>.bit
+```
+
+- `<db>` 是 `C:\ProgramData\Robei\xilinx`；中间产物顺序是 `.json` → `_routed.json` +
+  `.fasm` → `.frame` → `.bit`。
+- 器件库是 5 个 `chipdb/<part>.bin` 对 6 个 `<family>/<part>/part.yaml`：
+  `xc7a100tcsg324-1` 只有 part.yaml、没有 chipdb（Robei 的器件列表里也没有它），
+  所以它固定是 `device_unsupported`。
+- Route/Package 认的是 `.const` 根节点的 `Family` / `Device`：两者为空时 Roplace 会去找
+  `chipdb/-1.bin` 并失败（这也是原来 GUI 上 Package 一直失败的原因）。
+- 附带一条实测：`E:\Robei\bin` 与 `D:\robei-lab\robei\bin` 里的 yosys / Roplace /
+  fasm2frames / xc7frames2bit 是同一份二进制（md5 一致），用同一个 json 跑出的 `.fasm`
+  也逐字节一致，所以工具链换成哪一份都不影响结果。
+
+### M1 器件与综合
+
+- 新增 `list_fpga_devices(part?)`：返回每个 part 的 `chipdb`、`part.yaml`、`family`、
+  `db_root`，以及 `buildable`（chipdb 与 part.yaml 都在）和不可用原因。
+- 新增 `synthesize_project(proj_path, top?, part?, timeout_s=300)`：按上面那条
+  yosys 脚本综合，写 `build/<const>.json`，再用 `tee -o ... stat` 解析出
+  LUT / FF / CARRY / BRAM36 / BRAM18 / DSP / IO 并写一份 `workspace/build/fpga-*/summary.json`。
+  统计走文件而不是 stdout，是因为工具层会裁剪超长输出，直接把 cell 表切掉了。
+
+### M2 生成 bitstream
+
+- 新增 `build_bitstream(proj_path, part, const_name?, steps=['synth','route','package'], timeout_s=600)`：
+  按 `synth` → `route` → `package` 顺序执行，每一步返回 `stage` / `returncode` /
+  `duration_s` / `log_tail` / 产物路径；第一个失败就停在那一步，返回
+  `code=fpga_step_failed` 和该 `stage`（`package` 细分成 `package.frames` 与 `package.bit`）。
+- 没有 chipdb → `device_unsupported`；端口位没绑引脚 → `unconstrained_io` 并列出缺的
+  `port` / `missing_bits`；三件套二进制缺失 → `fpga_step_failed`。
+- Roplace 的 Fmax 只作为参考（`fmax_reference`）：设计里没有时钟时它只打印
+  `Warning: No clocks found in design`，此时该字段为 null。**本工具不做时序签核。**
+
+### M3 小项
+
+- 新增 `run_all_tests(proj_path, timeout_s=60, render=false)`：跑工程里全部 `test/*.test`，
+  汇总 `total` / `passed` / `failed`、每个用例的 rc、耗时、VCD 路径和失败尾部；
+  一个用例失败不影响其它用例。
+- `edit_robei_canvas` 新增 `add_port` / `remove_port`：删端口会把接在它上面的 wire 一起删掉
+  （`wires_dropped` 记录条数），返回里多了 `ports`。
+- `lint_verilog` 的 Verilator 一路在 ≥ 5.0 时自动加 `--timing`，`#5 clk = ~clk` 这类时钟模型
+  现在 lint 通过；若版本说支持但实际被拒，会回退并不带 flag 重跑，同时在
+  `verilator.timing_warning` 里写明原因。
+- 修正 CHANGELOG 里 `tests/test_1_1.py` 的用例数：25 → 27（实际是 27 个）。
+
 ## 1.1.0 — 2026-10-24
 
 **元件库可以直接用了，画布也能增量改。** 工具面 44 个（文件级 33 + GUI 11）；
@@ -47,7 +113,7 @@
   compile/output/save_project/synthesis/close/compile_all/screenshot/health），并覆盖
   `transport()=="unsupported"` 时返回 "GUI tools require Windows" 的分支。
 - `errors.py` 的映射表逐条测（15 条），并断言 `code_for` 能产出的每个 code 都在 `HINTS` 里。
-- `tests/test_1_1.py`（25 项）覆盖 M1/M2 的行为，含从零搭 4 位链路后真跑 iverilog/vvp
+- `tests/test_1_1.py`（27 项）覆盖 M1/M2 的行为，含从零搭 4 位链路后真跑 iverilog/vvp
   断言 `Y==A`、失败批次不落盘、`dry_run` 不写文件。
 
 ### 里程碑实测（Windows，`workspace/verify_1_1_a`，跑完即删）

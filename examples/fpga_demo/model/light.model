@@ -1,0 +1,5 @@
+<!DOCTYPE Robei>
+<Module Category="Current" Class="module" Code="assign led = ~swt;" Color="#d3d3d3" Comment="" Height="1080" Name="light" Parameters="" Parent="0" Type="model" Width="1600" X="0" Y="0">
+ <Port Color="#faebd7" Connect="" Datasize="4" Datatype="wire" Description="" Height="30" Inout="input" Name="swt" Parent="light" Side="left" Width="30" X="-0.01875" Y="0.163889"/>
+ <Port Color="#f0ffff" Connect="" Datasize="4" Datatype="wire" Description="" Height="30" Inout="output" Name="led" Parent="light" Side="right" Width="30" X="0.98125" Y="0.308889"/>
+</Module>

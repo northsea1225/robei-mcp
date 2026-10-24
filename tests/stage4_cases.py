@@ -156,6 +156,10 @@ async def main():
                 "edit_robei_canvas",
                 "set_robei_code",
                 "set_robei_parameter",
+                "list_fpga_devices",
+                "synthesize_project",
+                "build_bitstream",
+                "run_all_tests",
             ]
             for name in required:
                 assert name in names, f"missing tool: {name}"

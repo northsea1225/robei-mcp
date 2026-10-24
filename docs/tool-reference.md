@@ -1,6 +1,6 @@
 # 工具参考
 
-39 个工具的完整参数、返回值和真实调用示例。工具名、参数名、返回字段保持英文。
+48 个工具的完整参数、返回值和真实调用示例。工具名、参数名、返回字段保持英文。
 
 > 这份文件是从早期 README 拆出来的，示例里的时间戳/路径是当时的真实输出，不要当成当前默认值。
 
@@ -321,6 +321,8 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 |---|---|---|
 | `add_instance` | `name`, `model`, 可选 `parameters` / `x` / `y` | 实例名必须唯一，被引用模型要在同一工程的 `model/` 下 |
 | `remove_instance` | `name` | 连带删掉接在该实例上的 wire |
+| `add_port` | `name`, `direction`, `width`, 可选 `side` / `datatype` | 顶层端口；`direction` 是 input/output/inout，`side` 默认左进右出 |
+| `remove_port` | `name` | 连带删掉接在这个端口上的 wire，`wires_dropped` 是条数 |
 | `connect` | `from`, `to`, 可选 `net` / `datasize` | 端点写 `u1.a` 或顶层端口 `a`；两端位宽必须一致 |
 | `disconnect` | `net` / `from` / `to` 至少一个 | 匹配不到任何线就报错 |
 | `rename_wire` | `net`（或 `from`）+ `new_name` | 新名字不能和已有 net 撞 |
@@ -328,7 +330,7 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 - 位宽按 Robei 的语义算：`Datasize="4"` 是 4 位、`"3:0"` 是 4 位；`"LEN-1:0"` 这种
   解析不出来的表达式要求两端字面量一致。不一致返回 `code=width_mismatch`，消息里带两边位宽
 - 端点不存在 / 实例重名 / 未知 op → `invalid_argument`
-- 返回 `diff`（增删的实例与 wire）、`instances`、`wires`、`netlist`、`verilog_preview`
+- 返回 `diff`（增删的实例与 wire）、`ports`、`instances`、`wires`、`netlist`、`verilog_preview`
 - 写盘前留 `.bak-<时间戳>`；`dry_run=true` 只返回预览
 - 旧式 `<Instance Name="u1" Module="and2"/>` 也能读：`instances[].module` 就是那个字段，
   没有 `<Port>` 子节点时端口从子模型补齐
@@ -441,6 +443,106 @@ Robei 自己写的版本 `IOSTANDARD` 为空，Route 会因此报参数个数错
 `down`/`pulldown`/`pull-down`，映射成 `PULLUP TRUE` / `PULLDOWN TRUE`，其他值记进
 `pull_warnings` 并跳过；`Voltage` **不会**被猜成 IOSTANDARD，只放进
 `voltage_hints: [{port, voltage}]` 供调用方判断。空字段不产生任何行。
+
+### `list_fpga_devices`
+
+```json
+{"part": "xc7a50tfgg484-1"}
+```
+
+读 Robei 的器件库（默认 `C:\ProgramData\Robei\xilinx`，可用 `ROBEI_FPGA_DB` 覆盖），
+把 `chipdb/*.bin` 与 `<family>/<part>/part.yaml` 配对：
+
+| 字段 | 说明 |
+|---|---|
+| `part` | 完整型号，含速度等级，如 `xc7a50tfgg484-1` |
+| `family` | `artix7` / `zynq7`（就是 part.yaml 所在的目录名） |
+| `chipdb` / `part_yaml` | 两个文件的绝对路径，缺一个就是 `null` |
+| `buildable` | 两个都在才为 `true`，否则 `reason` 写明缺哪个 |
+| `tools` | `ropllace` / `fasm2frames` / `xc7frames2bit` 的路径与是否存在 |
+
+本机实测：5 个 chipdb 对 6 个 part.yaml，`xc7a100tcsg324-1` 只有 part.yaml，
+所以它是 `buildable: false`（Robei 自己的器件下拉里也没有它）。`part` 不存在时返回
+`invalid_argument`。
+
+### `synthesize_project`
+
+```json
+{"proj_path": "fpga_demo/fpga_demo.proj", "part": "xc7a50tfgg484-1", "timeout_s": 300}
+```
+
+按 Robei `Build > Synthesis` 的同一条命令综合：
+
+```text
+yosys -p "read_verilog <build>/<top>.v; synth_xilinx -flatten -arch xc7 -abc9 -nodsp;
+          write_json -noscopeinfo <build>/<const>.json"
+```
+
+- 喂给 yosys 的只有"顶层 + 它真正实例化的子模型"（工程里刚建出来的空占位模型不算），
+  顶层取自 `.const` 里那个实例的 `Class`，也可以用 `top` 显式指定。
+- 之后单独跑一次 `tee -o <build>/<const>_stat.txt stat`，从文件里解析 cell 表：
+  `utilization = {LUT, FF, CARRY, BRAM36, BRAM18, DSP, IO}`。`LUT` 含 `INV`
+  （7 系列里反相器同样占一个 LUT 位），`IO` 是顶层端口的总位数。
+- 产物：`<build>/<const>.json`、`<build>/<const>_stat.txt`，外加一份
+  `workspace/build/fpga-*/summary.json`（返回里的 `summary_path`）。
+- `part` 可选；给了就校验型号存在，不存在返回 `device_unsupported`。综合本身不依赖 chipdb。
+- `timeout = {requested_s, effective_s, max_timeout_s, clamped}`：子进程超时会被
+  `ROBEI_MAX_TIMEOUT_S`（默认 120 s）截断，`clamped=true` 时 `warnings` 里会明说；
+  大器件请先把上限调大。
+
+### `build_bitstream`
+
+```json
+{"proj_path": "fpga_demo/fpga_demo.proj", "part": "xc7a50tfgg484-1",
+ "steps": ["synth", "route", "package"], "timeout_s": 600}
+```
+
+三段命令与 Robei 完全一致（`<db>` = `C:\ProgramData\Robei\xilinx`）：
+
+```text
+Roplace --chipdb <db>/chipdb/<part>.bin --xdc <build>/<const>.xdc
+        --json <build>/<const>.json --write <build>/<const>_routed.json
+        --fasm <build>/<const>.fasm
+fasm2frames --db-root <db>/<family>/ --part <part> <fasm> <frame>
+xc7frames2bit --part_file <db>/<family>/<part>/part.yaml --part_name <part>
+              --frm_file <frame> --output_file <bit>
+```
+
+- 每段返回 `{stage, command, returncode, duration_s, timeout, log_tail, outputs}`；
+  `package` 拆成 `package.frames` 与 `package.bit` 两个 stage。
+- 第一个失败就停下：`code=fpga_step_failed`，`stage` 指出是哪一段，
+  `record.log_tail` 是那一段的日志尾部。
+- 器件没有 chipdb（或没有 part.yaml）→ `device_unsupported`，`error` 里带原因。
+- `.const` 没把某个端口位绑到引脚 → `unconstrained_io`，
+  `missing: [{port, direction, missing_bits}]`，此时不会启动 Roplace。
+- 三件套二进制找不到 → `fpga_step_failed`，`hint` 提示用 `ROBEI_FPGA_BIN` 指目录。
+- `steps` 可以只要前几段（例如 `["synth"]`），此时 `ok=false`、`artifacts.bit=null`，
+  其余产物照常返回。
+- 已知限制：IDE 打开工程会把 `.const` 根节点的 `Family` / `Device` 清空，所以 GUI 侧的
+  Route/Package 无法复现（本工具的 `.fasm` 与 IDE 侧同 json 时逐字节一致，差异不在工具链）。
+- `fmax_reference` 是 Roplace 自己打印的 `Max frequency for clock ...`，**仅供参考**；
+  组合逻辑设计没有时钟，Roplace 只打印 `Warning: No clocks found in design`，该字段为 `null`。
+  `timing_note` 会写明本工具不做时序签核。
+
+### `run_all_tests`
+
+```json
+{"proj_path": "part2_exp12/part2_exp12.proj", "timeout_s": 60}
+```
+
+跑 `test/*.test` 里的每一个用例（内部就是 `simulate_project`），返回：
+
+```json
+{"ok": false, "total": 2, "passed": 1, "failed": 1,
+ "tests": [{"test": "tb_ok", "ok": true, "returncode": 0, "duration_ms": 812,
+            "vcd_paths": ["workspace/build/headless-.../tb_ok.vcd"], "error_tail": []},
+           {"test": "tb_broken", "ok": false, "returncode": 1, "duration_ms": 96,
+            "vcd_paths": [], "error_tail": ["... syntax error ..."]}],
+ "vcd_paths": ["..."]}
+```
+
+一个用例失败不影响其它用例；`error_tail` 会把 `compile` / `simulation` 两段的 stderr 一起收进来。
+工程里没有任何 `.test` 时 `total=0`、`ok=false`。
 
 ### `robei_gui_save_project`
 
@@ -597,6 +699,9 @@ Session-1 桥（direct 或 schtasks）；用来在排查编译/布局问题时"�
 | `width_mismatch` | `edit_robei_canvas` 的 `connect` 两端位宽不同 |
 | `not_behavioral` | 对结构级模型（有实例或 wire）调用 `set_robei_code` |
 | `unknown_parameter` | `set_robei_parameter` 的名字不在 `parameter_list` 里 |
+| `device_unsupported` | `build_bitstream` 的器件没有 chipdb / part.yaml（`list_fpga_devices` 看得到哪些可用） |
+| `unconstrained_io` | `.const` 里还有端口位没绑引脚，`missing` 列出 port 与 missing_bits |
+| `fpga_step_failed` | synth / route / package 某一段失败，`stage` 与 `record.log_tail` 指出位置 |
 
 **进度**：`simulate` / `simulate_project` / `lint_verilog` 在阶段边界上报
 `notifications/progress`（`total` 是阶段数，不是时间估计）。客户端不订阅就静默无副作用。
