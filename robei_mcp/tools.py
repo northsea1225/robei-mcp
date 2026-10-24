@@ -38,6 +38,7 @@ from .vcd import find_events as vcd_find_events
 from .vcd import match_signals, parse_vcd, query_vcd, render_waveform_png, timescale_fs
 from .verilog import generate_testbench as build_testbench
 from .verilog import parse_module_ports, classify_control
+from .verilog import width_info, width_of
 
 TOP_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 FILE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -1954,3 +1955,280 @@ def create_robei_model(
         "ports": parsed.get("ports"),
         "code": parsed.get("code"),
     }
+
+
+# ---------------------------------------------------------------------------
+# 1.1.0 — component library (read-only scan of the installed Robei ToolBox)
+# ---------------------------------------------------------------------------
+
+LIBRARY_ENV = "ROBEI_MCP_LIBRARY"
+
+# Skips ``<!DOCTYPE ...>`` / ``<?xml ...?>`` and stops at the root element's
+# start tag. Attribute values may contain ``>``, so quoting is respected.
+_ROOT_TAG_RE = re.compile(
+    r"<\s*(?![!?])[A-Za-z_][\w.:-]*(?:[^>\"']|\"[^\"]*\"|'[^']*')*>",
+    re.DOTALL,
+)
+
+
+def _norm_path(path: Path) -> str:
+    try:
+        return os.path.normcase(str(Path(path).resolve()))
+    except OSError:  # pragma: no cover - only for unreadable roots
+        return os.path.normcase(str(path))
+
+
+def library_roots() -> tuple[Path, ...]:
+    """Where the installed Robei model libraries live.
+
+    Defaults to every configured model root except the workspace itself: on
+    Windows that is ``C:\\ProgramData\\Robei`` (the 24 ToolBox models). Override
+    with ``ROBEI_MCP_LIBRARY`` (``;``-separated on Windows, ``:`` elsewhere).
+    """
+    raw = os.environ.get(LIBRARY_ENV, "").strip()
+    if raw:
+        return tuple(Path(part).expanduser() for part in raw.split(os.pathsep) if part.strip())
+    workspace = _norm_path(SETTINGS.workspace)
+    return tuple(root for root in SETTINGS.model_roots if _norm_path(root) != workspace)
+
+
+def _library_files() -> list[Path]:
+    seen: set[str] = set()
+    files: list[Path] = []
+    for root in library_roots():
+        if not root.is_dir():
+            continue
+        for path in sorted(root.glob("*.model")):
+            key = _norm_path(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            files.append(path)
+    return files
+
+
+def _find_library_file(name: str) -> Path | None:
+    """Match by file stem first, then by the module name declared inside."""
+    wanted = (name or "").strip()
+    if not wanted:
+        raise ValueError("library model name must not be empty")
+    if wanted.lower().endswith(".model"):
+        wanted = wanted[:-6]
+    lowered = wanted.lower()
+    by_module: Path | None = None
+    for path in _library_files():
+        if path.stem.lower() == lowered:
+            return path
+        if by_module is None:
+            try:
+                if parse_robei_model(path)["name"].lower() == lowered:
+                    by_module = path
+            except Exception:  # noqa: BLE001 - one broken file must not hide the rest
+                continue
+    return by_module
+
+
+def library_lint(model: dict[str, Any], timeout_s: int = 20) -> dict[str, Any]:
+    """Compile one library model with the bundled ``iverilog -g2012``.
+
+    The library roots are passed as ``-y`` so a model that instantiates its
+    neighbours still resolves; today's ToolBox has no such model, but the flag
+    costs nothing and keeps the result honest if that changes.
+    """
+    text, warnings = model_to_verilog_with_warnings(model)
+    run_dir = _new_run_dir("library")
+    source = run_dir / f"{model['name'] or 'model'}.v"
+    source.write_text(text, encoding="utf-8", newline="\n")
+    cmd: list[str | Path] = [SETTINGS.iverilog, "-g2012", "-o", run_dir / "lint.out"]
+    for root in library_roots():
+        if root.is_dir():
+            cmd += ["-y", root]
+    cmd.append(source)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "returncode": None, "error": "timeout", "warnings": warnings}
+    except OSError as exc:
+        return {"ok": False, "returncode": None, "error": f"{type(exc).__name__}: {exc}", "warnings": warnings}
+    stderr = (proc.stderr or "").strip()
+    return {
+        "ok": proc.returncode == 0,
+        "returncode": proc.returncode,
+        "tool": "iverilog -g2012",
+        "first_error": next((line.strip() for line in stderr.splitlines() if "error" in line.lower()), ""),
+        "stderr": stderr[:1000],
+        "warnings": warnings,
+    }
+
+
+def list_library_models(
+    filter: str | None = None,
+    include_lint: bool = True,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Read-only inventory of the installed ToolBox models.
+
+    ``lint`` is a real ``iverilog -g2012`` compile of the exported module, not a
+    guess. The library is never written to.
+    """
+    needle = (filter or "").strip().lower()
+    limit = max(1, min(int(limit), 500))
+    entries: list[dict[str, Any]] = []
+    for path in _library_files():
+        try:
+            model = parse_robei_model(path)
+        except Exception as exc:  # noqa: BLE001 - report, never abort the scan
+            entry = {
+                "name": path.stem,
+                "module_name": "",
+                "path": str(path),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            if needle and needle not in path.stem.lower():
+                continue
+            entries.append(entry)
+            continue
+        haystack = " ".join(
+            [path.stem, model["name"], model["class"], model["category"], model["type"]]
+        ).lower()
+        if needle and needle not in haystack:
+            continue
+        entry = {
+            "name": path.stem,
+            "module_name": model["name"],
+            "name_matches_module": path.stem.lower() == model["name"].lower(),
+            "type": model["type"] or model["root_tag"],
+            "class": model["class"],
+            "category": model["category"],
+            "path": str(path),
+            "ports": [
+                {
+                    "name": port["name"],
+                    "direction": port["inout"] or "input",
+                    "width": width_of(port["datasize"]),
+                    "datasize": port["datasize"],
+                }
+                for port in model["ports"]
+            ],
+            "parameters": model["parameter_list"],
+            "instances": len(model["instances"]),
+            "size_bytes": model["size_bytes"],
+        }
+        if include_lint:
+            entry["lint"] = library_lint(model)
+        entries.append(entry)
+        if len(entries) >= limit:
+            break
+    return {
+        "ok": True,
+        "roots": [str(root) for root in library_roots()],
+        "model_count": len(entries),
+        "filter": filter or "",
+        "include_lint": bool(include_lint),
+        "models": entries,
+    }
+
+
+def _rewrite_root_attr(text: str, attribute: str, value: str) -> str:
+    """Replace (or add) one attribute on the root element, leaving the rest byte-identical."""
+    match = _ROOT_TAG_RE.search(text)
+    if match is None:
+        raise ValueError("model has no root element")
+    tag = match.group(0)
+    escaped = _attr(value)
+    pattern = re.compile(rf'(\s{re.escape(attribute)}\s*=\s*)"[^"]*"')
+    if pattern.search(tag):
+        new_tag = pattern.sub(lambda found: found.group(1) + f'"{escaped}"', tag, count=1)
+    else:
+        closing = "/>" if tag.endswith("/>") else ">"
+        new_tag = tag[: -len(closing)] + f' {attribute}="{escaped}"' + closing
+    return text[: match.start()] + new_tag + text[match.end():]
+
+
+def import_library_model(
+    name: str,
+    project: str,
+    as_name: str | None = None,
+    overwrite: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Copy a ToolBox model into ``<project>/model``, register it, then lint it.
+
+    ``constant.model`` declares ``module register`` — a copied file whose name
+    disagrees with its module name breaks every canvas that instantiates it, so
+    that case is refused unless the caller picks ``as_name`` (the copy is then
+    renamed *and* its root ``Name`` attribute is rewritten to match).
+    """
+    proj = resolve_project_path(project)
+    if not is_within(proj, SETTINGS.workspace):
+        raise ValueError("refusing to modify a project outside the workspace")
+    source = _find_library_file(name)
+    if source is None:
+        raise FileNotFoundError(
+            f"library model {name!r} not found under {[str(root) for root in library_roots()]}; "
+            "call list_library_models to see the available names"
+        )
+    model = parse_robei_model(source)
+    module_name = model["name"] or source.stem
+
+    target_stem = (as_name or "").strip()
+    if target_stem.lower().endswith(".model"):
+        target_stem = target_stem[:-6]
+    if target_stem and not MODEL_NAME_RE.match(target_stem):
+        raise ValueError(f"invalid as_name: {as_name!r}")
+    if not target_stem:
+        if module_name.lower() != source.stem.lower():
+            raise ValueError(
+                f"library file {source.stem}.model declares module {module_name!r}; "
+                f"pass as_name={module_name!r} so the copied file and its module name agree"
+            )
+        target_stem = source.stem
+
+    model_dir = proj.parent / "model"
+    if not model_dir.is_dir():
+        raise FileNotFoundError(f"project has no model folder: {model_dir}")
+    target = model_dir / f"{target_stem}.model"
+    if target.exists() and not overwrite:
+        raise FileExistsError(f"model already exists: {target} (pass overwrite=true to replace it)")
+
+    text = source.read_text(encoding="utf-8")
+    renamed_module = None
+    if target_stem != module_name:
+        text = _rewrite_root_attr(text, "Name", target_stem)
+        renamed_module = {"from": module_name, "to": target_stem}
+
+    result: dict[str, Any] = {
+        "ok": True,
+        "dry_run": bool(dry_run),
+        "name": source.stem,
+        "module_name": target_stem if renamed_module else module_name,
+        "source": str(source),
+        "target": str(target),
+        "relative_path": _rel(target),
+        "project": str(proj),
+        "overwrite": bool(overwrite),
+        "renamed_module": renamed_module,
+    }
+    if dry_run:
+        result.update({"registration": "pending", "lint": None, "backup": None, "proj_backup": None})
+        return result
+
+    backup = _backup_file(target)
+    target.write_text(text, encoding="utf-8", newline="\n")
+    proj_backup = _backup_file(proj)
+    registration = _register_model_in_project(proj, target_stem)
+    imported = parse_robei_model(target)
+    result.update(
+        {
+            "dry_run": False,
+            "backup": str(backup) if backup else None,
+            "proj_backup": str(proj_backup) if proj_backup else None,
+            "registration": registration,
+            "registered_in_project": registration in ("created", "exists"),
+            "sha256": _sha256(target),
+            "ports": imported["ports"],
+            "parameters": imported["parameter_list"],
+            "lint": library_lint(imported),
+        }
+    )
+    return result

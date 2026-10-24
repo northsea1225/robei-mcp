@@ -251,6 +251,42 @@ def read_robei_project(proj_path: str) -> dict[str, Any]:
         return _error(exc)
 
 
+@mcp.tool(annotations=READ)
+def list_library_models(
+    filter: str | None = None,
+    include_lint: bool = True,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Read-only inventory of the installed Robei ToolBox models (name, module name, ports,
+    parameters, and a real iverilog -g2012 lint per model)."""
+    try:
+        return tools.list_library_models(filter=filter, include_lint=include_lint, limit=limit)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=WRITE)
+def import_library_model(
+    name: str,
+    project: str,
+    as_name: str | None = None,
+    overwrite: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Copy a ToolBox model into <project>/model, register it in the .proj (backed up first),
+    then lint it with iverilog. Pass as_name when the file name and module name differ."""
+    try:
+        return tools.import_library_model(
+            name=name,
+            project=project,
+            as_name=as_name,
+            overwrite=overwrite,
+            dry_run=dry_run,
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
 @mcp.tool(annotations=WRITE)
 def create_robei_project(name: str, models: list[str] | None = None) -> dict[str, Any]:
     """Create a Robei project skeleton (folders, .proj, blank models) under the workspace."""
