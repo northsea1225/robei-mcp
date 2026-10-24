@@ -13,7 +13,7 @@ Usage examples:
     python -m robei_mcp.gui_agent.driver keys "^n"
     python -m robei_mcp.gui_agent.driver type "hello"
     python -m robei_mcp.gui_agent.driver start "E:\\Robei\\bin\\Robei.exe"
-    python -m robei_mcp.gui_agent.driver kill Robei.exe
+    python -m robei_mcp.gui_agent.driver kill <pid|Robei.exe>   (owned pid only)
     python -m robei_mcp.gui_agent.driver wait 2000
 
 ``probe*`` commands import a same-named module from ``tools/gui`` (dev only).
@@ -393,9 +393,37 @@ def main(argv: list[str]) -> int:
             win32gui.ShowWindow(handles[0], 6)  # SW_MINIMIZE
             payload = {"ok": True, "hwnd": handles[0]}
     elif cmd == "kill":
-        name = argv[2]
-        proc = subprocess.run(["taskkill", "/F", "/IM", name], capture_output=True, text=True)
-        payload = {"ok": proc.returncode == 0, "stdout": proc.stdout.strip(), "stderr": proc.stderr.strip()}
+        # Only the IDE this bridge launched may be killed.  ``taskkill /F /IM
+        # Robei.exe`` would also take out a hand-started (or someone else's)
+        # instance, so a cleanup request by image name is refused instead.
+        from .ui import owned_pid
+
+        requested = argv[2].strip()
+        pid = owned_pid()
+        if pid is None:
+            payload = {
+                "ok": False,
+                "error": (
+                    "no Robei instance recorded by this bridge; refusing to kill by image "
+                    f"name ({requested!r}) - start the IDE with robei_gui_launch so the "
+                    "bridge owns the pid"
+                ),
+            }
+        elif requested.isdigit() and int(requested) != pid:
+            payload = {
+                "ok": False,
+                "error": f"pid {requested} is not the instance this bridge started (owned pid {pid})",
+            }
+        else:
+            proc = subprocess.run(
+                ["taskkill", "/F", "/PID", str(pid)], capture_output=True, text=True
+            )
+            payload = {
+                "ok": proc.returncode == 0,
+                "pid": pid,
+                "stdout": proc.stdout.strip(),
+                "stderr": proc.stderr.strip(),
+            }
     elif cmd == "menus":
         from pywinauto import mouse
 

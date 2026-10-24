@@ -12,6 +12,10 @@ MAX_TREE_NODES = 5000
 
 _PARAM_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_$]*)\s*=\s*(.+?)\s*$", re.DOTALL)
 
+# A connection that is just a name; anything else (``a[0]``, ``{a,b}``, a
+# constant) is an expression and must never become a wire declaration.
+_PLAIN_NET_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
+
 
 def _attr_ci(element: ET.Element, name: str) -> str | None:
     target = name.lower()
@@ -457,7 +461,7 @@ def model_to_verilog_with_warnings(
             {
                 net
                 for net in connections.values()
-                if net and net not in port_names and not re.search(rf"\bwire\b[^;]*\b{re.escape(net)}\b", body)
+                if net and _PLAIN_NET_RE.match(net) and net not in port_names and not re.search(rf"\bwire\b[^;]*\b{re.escape(net)}\b", body)
             }
         )
         # A <Wire> carries its own Datasize/Datatype.  Losing it turned every

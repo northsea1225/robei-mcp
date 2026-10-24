@@ -34,12 +34,26 @@ def _wire_list(module: dict[str, Any]) -> tuple[list[dict[str, str]], list[str]]
     """Turn instance port connections into Robei ``<Wire>`` entries."""
     top_ports = {port["name"] for port in module["ports"]}
     endpoints: dict[str, list[str]] = {}
+    selectors: list[dict[str, str]] = []
     skipped: list[str] = []
     for instance in module["instances"]:
         for connection in instance["connections"]:
             expr = connection["expr"].strip()
             ref = f"{instance['instance']}.{connection['port']}"
             if not is_plain_net(expr):
+                match = tools.BIT_SELECT_RE.match(expr)
+                if match and match.group("name") in top_ports:
+                    # Robei carries a bit-select on the *instance* port
+                    # (Connect="a[0]") and deletes any <Wire> that mentions one.
+                    selectors.append(
+                        {
+                            "net": "",
+                            "from": expr,
+                            "to": ref,
+                            "datasize": str(tools._selector_width(match.group("sel"))),
+                        }
+                    )
+                    continue
                 skipped.append(f"{ref} <- {expr}")
                 continue
             bucket = endpoints.setdefault(expr, [])
@@ -56,7 +70,7 @@ def _wire_list(module: dict[str, Any]) -> tuple[list[dict[str, str]], list[str]]
         width = net_width(module, net) or 1
         for other in others:
             wires.append({"net": net, "from": base, "to": other, "datasize": str(width)})
-    return wires, skipped
+    return wires + selectors, skipped
 
 
 def import_verilog_canvas(

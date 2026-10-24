@@ -56,6 +56,12 @@ def _same_image(left: str, right: str) -> bool:
         text = value
         if text.startswith("\\\\?\\"):
             text = text[4:]
+        # realpath resolves junctions and symlinks, so an IDE reached through
+        # one still matches the image this bridge launched.
+        try:
+            text = os.path.realpath(text)
+        except (OSError, ValueError):
+            pass
         return os.path.normcase(os.path.normpath(text))
 
     return bool(left) and bool(right) and normalise(left) == normalise(right)
