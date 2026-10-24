@@ -84,6 +84,11 @@ async def main():
                 "list_projects",
                 "robei_gui_compile_all",
                 "robei_gui_screenshot",
+                "list_library_models",
+                "import_library_model",
+                "edit_robei_canvas",
+                "set_robei_code",
+                "set_robei_parameter",
             ]
             for name in required:
                 assert name in names, f"missing tool: {name}"

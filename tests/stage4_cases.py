@@ -151,6 +151,11 @@ async def main():
                 "list_projects",
                 "robei_gui_compile_all",
                 "robei_gui_screenshot",
+                "list_library_models",
+                "import_library_model",
+                "edit_robei_canvas",
+                "set_robei_code",
+                "set_robei_parameter",
             ]
             for name in required:
                 assert name in names, f"missing tool: {name}"
@@ -215,7 +220,15 @@ async def main():
                 for child in model["other_children"]
             ]
             print("MODEL_UNKNOWN_CHILDREN=" + json.dumps(instance_nodes))
-            assert "Instance" in instance_nodes
+            # 1.1.0: <Instance Name="u1" Module="x"/> is a placed instance, not an
+            # "unknown" child, and its Module attribute is read out.
+            assert "Instance" not in instance_nodes
+            legacy = next(
+                model for model in project["models"] if model["instances"]
+            )
+            legacy_modules = [instance["module"] for instance in legacy["instances"]]
+            print("LEGACY_INSTANCE_MODULES=" + json.dumps(legacy_modules))
+            assert legacy_modules == ["and_child", "and_child"]
 
             counter_project = await call(session, "read_robei_project", {
                 "proj_path": "robei_counter4_project/counter4_project.proj",

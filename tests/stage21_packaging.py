@@ -5,7 +5,7 @@ Nothing here touches the desktop, so it runs on any host:
   1. the driver lives in ``robei_mcp/gui_agent`` (a wheel can ship it)
   2. control files live under ``workspace``, never inside the package
   3. ``ROBEI_MCP_GUI=0`` removes every ``robei_gui_*`` tool from ``tools/list``
-  4. the default (Windows + driver present) still advertises 10 of them
+  4. the default (Windows + driver present) still advertises 11 of them
 """
 from __future__ import annotations
 
@@ -66,14 +66,22 @@ async def main() -> int:
     off = await tool_names({"ROBEI_MCP_GUI": "0"})
     gui_off = [n for n in off if n.startswith("robei_gui_")]
     check("GUI=0 hides every robei_gui_* tool", not gui_off, gui_off)
-    check("GUI=0 keeps 28 tools", len(off) == 28, len(off))
+    check("GUI=0 keeps 33 tools", len(off) == 33, len(off))
     check("GUI=0 keeps the engine", "simulate_project" in off and "read_waveform" in off)
+    for name in (
+        "list_library_models",
+        "import_library_model",
+        "edit_robei_canvas",
+        "set_robei_code",
+        "set_robei_parameter",
+    ):
+        check(f"GUI=0 exposes {name}", name in off)
 
     on = await tool_names({})
     gui_on = [n for n in on if n.startswith("robei_gui_")]
     if pkg_dir.parent.name == "robei_mcp" and os.name == "nt":
         check("default advertises 11 gui tools", len(gui_on) == 11, gui_on)
-        check("default total 39", len(on) == 39, len(on))
+        check("default total 44", len(on) == 44, len(on))
     else:
         print("skip  default GUI count (not Windows)")
 
