@@ -12,6 +12,64 @@
 
 ## 交付状态
 
+### 1.0.4：Parameters 注释解析热修（2026-10-24）
+
+**根因**：`parse_parameter_text_checked` 先按 `;` 切分、再剥 `//` 注释。`START = 0; //a` 的
+注释把下一行的 `DUTY = 50` 一起卷进注释，只剩第一个参数。这段逻辑从 stage4 就在，
+1.0.3 的实例参数覆盖复用它之后才在导出路径上暴露——Robei 自带的 24 个 ToolBox 模型里有
+10 个是多参数，且全部带 `//` 注释。
+
+**导出对比**（`C:\ProgramData\Robei\clock.model`，真实 ToolBox 模型，只读复制后导出）：
+
+```text
+BEFORE  parameter START = 0
+        → iverilog: Unable to bind wire/reg/memory `DUTY' in `clock'
+AFTER   parameter START = 0,  // initial_state
+        parameter DUTY = 50  // high_voltage/period
+        → iverilog ok / yosys ok / yosys_check ok
+          （Verilator 仍报 NEEDTIMINGOPT：模型正文有 `#(100-DUTY)`，与参数解析无关）
+```
+
+修复时暴露的第二个缺陷：注释变成真注释后，原来的 `",\n".join(...)` 把分隔逗号写在
+`// comment` 之后，被注释吃掉导致 iverilog 语法错误；现在逗号写在注释之前。
+
+**24 个 ToolBox 模型：导出 + `iverilog -g2012` 编译**
+
+| 模型 | 1.0.3 | 1.0.4 | 模型 | 1.0.3 | 1.0.4 |
+|---|---|---|---|---|---|
+| addsub | OK | OK | mod_n_counter | OK | OK |
+| andgate | OK | OK | mux | OK | OK |
+| bin2gray | OK | OK | notgate | OK | OK |
+| clock | FAIL `DUTY` 未绑定 | OK | orgate | OK | OK |
+| compare | OK | OK | por | OK | OK |
+| constant | FAIL `DEFAULT` 未绑定 | OK | rightshift | FAIL `SHIFT_BITS` 未绑定 | OK |
+| counter | FAIL `MAXIMUM` 未绑定 | OK | ring_counter | FAIL `N` 未绑定 | OK |
+| dff | OK | OK | selectbits | FAIL `POSITION` 未绑定 | OK |
+| dffce | OK | OK | shift_register | OK | OK |
+| dual_port_ram | FAIL `DATA_WIDTH` 未绑定 | OK | single_port_ram | FAIL `DATA_WIDTH` 未绑定 | OK |
+| jk_trigger | OK（无 Parameters） | OK | xorgate | OK | OK |
+| leftshift | FAIL `SHIFT_BITS` 未绑定 | OK | merge | FAIL `LENB` 未绑定 | OK |
+
+合计 **14/24 → 24/24**；10 个失败全部由注释截断引起，没有一条与注释无关的遗留失败
+（`counter`/`addsub`/`mux` 的 `LEN = 0` 会生成 `[-1:0]`，`iverilog -g2012` 接受，无需改库模型）。
+源模型的 mtime 仍是 2025-04，未被写入。
+
+**这一版新增的回归**（`tests/test_regressions.py` 50 项，含 7 项新增）：
+
+- `test_parameter_text_keeps_every_line_with_trailing_comment`（B1 原始复现用例）
+- `test_parameter_comment_may_contain_semicolon`
+- `test_parameter_text_without_comments_is_unchanged`
+- `test_bad_root_parameters_warn_and_emit_no_parameter`（根级坏 chunk → `parameter_bad` + warnings）
+- `test_instance_parameters_with_comments_still_emit_override`（`"W = 4; // four"` → `#(.W(4))`）
+- `test_root_parameters_with_comments_keep_the_comma`（注释不吃分隔逗号）
+- `test_toolbox_models_export_and_compile`（24 个 ToolBox 模型逐个导出 + 编译，缺目录/iverilog 时跳过）
+
+**Windows 回归**：`pytest -q tests` **55 passed**（5 portable + 50 regressions）；
+`portable_core` **16 passed / 0 failed / 0 skipped**；stage3、stage4 OK；stage7 12/12；
+stage9、stage10 退出码 0；stage11 13/13；stage12 18/18；stage13 18/18；stage14 9/9；
+stage17 28/28；stage19 26/26（含 GUI Compile + Synthesis）；stage21 13/13。
+工具数不变：39（GUI 11），`ROBEI_MCP_GUI=0` 时 28。
+
 ### 1.0.3：层次化导出与接口补齐（2026-10-24）
 
 **P0 实机证据**（Windows，`workspace/build/evidence_1_0_3` 的临时工程，跑完即删）：
