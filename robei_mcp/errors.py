@@ -22,6 +22,19 @@ class UnknownParameter(ValueError):
     """set_robei_parameter named a parameter the model does not declare."""
 
 
+class DeviceUnsupported(ValueError):
+    """The requested FPGA part has no place-and-route model in the installed database."""
+
+
+class FpgaStepFailed(RuntimeError):
+    """One FPGA stage (synth/route/package) failed; ``stage`` names it."""
+
+    def __init__(self, message: str, stage: str | None = None, record: dict | None = None) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.record = record or {}
+
+
 HINTS = {
     "unsafe_xml": "the XML declares a DTD or entities; Robei files never do",
     "path_escape": (
@@ -37,6 +50,14 @@ HINTS = {
         "model use edit_robei_canvas or create_robei_model"
     ),
     "unknown_parameter": "read_robei_model lists the declared names in parameter_list[].name",
+    "device_unsupported": (
+        "this part has no chipdb (or no part.yaml); list_fpga_devices() shows which parts are buildable "
+        "on the installed Robei database"
+    ),
+    "fpga_step_failed": (
+        "the failing stage is named in `stage` and its log tail in `record.log_tail`; "
+        "fix that stage before retrying (synth -> route -> package)"
+    ),
     "not_found": "the path must exist and, for models/projects, sit under an allowed root",
     "already_exists": "pass overwrite=true (the previous file is kept as .bak-<timestamp>)",
     "permission_denied": "the server may only write inside the configured workspace",
@@ -50,6 +71,10 @@ HINTS = {
 
 
 def code_for(exc: BaseException) -> str:
+    if isinstance(exc, FpgaStepFailed):
+        return getattr(exc, "code_override", None) or "fpga_step_failed"
+    if isinstance(exc, DeviceUnsupported):
+        return "device_unsupported"
     if isinstance(exc, UnsafeXml):
         return "unsafe_xml"
     if isinstance(exc, PathEscape):
@@ -88,5 +113,11 @@ def payload(exc: BaseException, **extra: Any) -> dict[str, Any]:
     stage = getattr(exc, "stage", None)
     if stage:
         data["stage"] = stage
+    missing = getattr(exc, "missing", None)
+    if missing:
+        data["missing"] = missing
+    record = getattr(exc, "record", None)
+    if record:
+        data["record"] = record
     data.update(extra)
     return data

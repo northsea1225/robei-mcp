@@ -10,7 +10,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 
 from . import __version__
-from . import constraints, doctor, errors, gui, p1, runstate, tools
+from . import constraints, doctor, errors, fpga, gui, p1, runstate, tools
 
 mcp = MCPServer(
     name="robei-mcp",
@@ -617,6 +617,37 @@ def waveform_stats(vcd_path: str, max_signals: int = 64) -> dict[str, Any]:
     """Toggle counts, level coverage, X/Z flags and a clock period/frequency estimate."""
     try:
         return p1.waveform_stats(vcd_path=vcd_path, max_signals=max_signals)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=READ)
+def list_fpga_devices(part: str | None = None) -> dict[str, Any]:
+    """List FPGA parts with their chipdb/part.yaml pair and whether a .bit can be built."""
+    try:
+        return fpga.list_fpga_devices(part=part)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=ANALYZE)
+async def synthesize_project(
+    proj_path: str,
+    top: str | None = None,
+    part: str | None = None,
+    timeout_s: int = 300,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Run yosys synth_xilinx on a Robei project (same -p script as Build > Synthesis).
+
+    Writes build/<const>.json next to the project and returns LUT/FF/BRAM/DSP/IO counts
+    from a follow-up ``stat`` pass. ``part`` is optional and only recorded and validated.
+    """
+    try:
+        return await _invoke(
+            fpga.synthesize_project, ctx, "synthesize_project",
+            proj_path=proj_path, top=top, part=part, timeout_s=timeout_s,
+        )
     except Exception as exc:
         return _error(exc)
 
