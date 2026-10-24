@@ -12,6 +12,72 @@
 
 ## 交付状态
 
+### 1.1.0：元件库与画布增量编辑（2026-10-24）
+
+工具面 **44 个（文件级 33 + GUI 11）**，`ROBEI_MCP_GUI=0` 时 33 个。
+
+**交付前完整性检查**（`git diff --name-only master..HEAD` 的 15 个文件）：
+
+```text
+CHANGELOG.md 23253B  README.md 13361B  docs/tool-reference.md 29137B
+pyproject.toml 850B  robei_mcp/__init__.py 22B  errors.py 3365B
+model.py 20583B  server_app.py 25333B  tools.py 106772B  verilog.py 16853B
+tests/stage21_packaging.py 3424B  tests/stage3_cases.py 8419B
+tests/stage4_cases.py 14974B  tests/test_1_1.py 22380B
+tests/test_tool_coverage.py 15145B
+→ 无 NUL 字节、全部 UTF-8 可解码、结尾单换行、无多余空行；
+  python -m compileall -q robei_mcp tests 通过
+```
+
+（这条检查是因为本版上传通道出过两次静默损坏：一次把 `tools.py` 尾部写进几行垃圾，
+一次把 `CHANGELOG.md` 写成 1.35 MB 全 NUL。现在上传固定走
+「写 `D:/Temp` → 校验 sha256 → copy 到目标 → 再校验」。）
+
+**M1 元件库**：`list_library_models` 扫 `C:\ProgramData\Robei` 的 24 个 ToolBox 模型，
+逐个导出后 `iverilog -g2012` 编译，**24/24 通过**；`name_matches_module=false` 的两个是
+`constant.model`（模块名 `register`）与 `mod_n_counter.model`（`ring_counter`）。
+`import_library_model` 导入 `andgate` 后：登记 `.proj`（有备份）、副本 lint 通过；
+不带 `as_name` 导入 `constant` 被拒并提示 `as_name='register'`，带上后文件与根节点
+`Name` 一起改名。
+
+**M2 画布编辑**：`edit_robei_canvas` 从零搭 4 位链路（`chain`，u1/u2 都是 `buf4`）：
+
+```text
+ops: add u1 / add u2 / connect a→u1.a(a_n) / connect u1.y→u2.a(mid,4) / connect u2.y→y(y_n)
+预览: wire [3:0] mid;   buf4 u1(   buf4 u2(
+仿真: A=1011 Y=1011 MATCH   A=0110 Y=0110 MATCH
+```
+
+原子性：`add_instance` 成功 + `connect` 打到不存在端口时，整批不落盘（文件字节不变）。
+位宽：4 位端口接 1 位子模块端口返回 `code=width_mismatch`，消息带 `4 bit` / `1 bit`。
+`set_robei_code` 对结构级模型返回 `not_behavioral`；`set_robei_parameter` 把 `LEN` 从 2 改到 8 后
+`width_info` 给出 `LEN-1:0 → 8-1:0, width=8, resolved=true`，其它参数注释保留，
+未知名字返回 `unknown_parameter`。
+
+**Robei 自己 Compile**（工程 `workspace/verify_1_1_a`，跑完即删）：导入的 `andgate` 与
+编辑过的 `chain` 各 Compile 一次，日志都是 `Check complete with 0 warnings.` +
+`Compile done.`；Robei 生成的 `build/chain.v` 与我们导出一致：
+
+```verilog
+wire [3:0] mid;
+buf4 u1(.a(a), .y(mid));
+buf4 u2(.a(mid), .y(y));
+```
+
+截图（3200×2000，留在 `workspace/gui_shots/`，该目录 gitignore）：
+`1-1-a-andgate-20261024-155633.png` 1,032,217 字节、
+`1-1-a-chain-20261024-155642.png` 1,046,331 字节。
+
+**wire_meta 修复**：同一条 net 先声明 `Datasize="1"` 再声明 `Datasize="4"` 时，
+旧代码用 `width_of`（把 `"4"` 读成 1 位）比较，先到的那条赢，导出成 `wire mid;`。
+改用 `verilog.robei_width()` 后导出 `wire [3:0] mid;`；该测试在旧 `model.py` 上失败、
+在新 `model.py` 上通过。
+
+**Windows 回归**：`pytest -q tests` **114 passed**（`test_portable` 5 + `test_regressions` 50 +
+`test_1_1` 27 + `test_tool_coverage` 32）；`portable_core` 16/16；stage3、stage4 OK；
+stage7 12/12；stage9、stage10 退出码 0；stage11 13/13；stage12 18/18；stage13 18/18；
+stage14 9/9；stage17 28/28；stage19 26/26；stage21 18/18（33 文件级 / 44 总计 / GUI 11）。
+
 ### 1.0.4：Parameters 注释解析热修（2026-10-24）
 
 **根因**：`parse_parameter_text_checked` 先按 `;` 切分、再剥 `//` 注释。`START = 0; //a` 的
