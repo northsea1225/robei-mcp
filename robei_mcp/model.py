@@ -137,6 +137,7 @@ def parse_robei_model(path: Path) -> dict[str, Any]:
 
     parameters = _attr_ci(root, "Parameters") or ""
     code = _attr_ci(root, "Code") or ""
+    parameter_list, parameter_bad = parse_parameter_text_checked(parameters)
     return {
         "ok": True,
         "path": str(path),
@@ -152,7 +153,8 @@ def parse_robei_model(path: Path) -> dict[str, Any]:
         "comment": _attr_ci(root, "Comment") or "",
         "parameters": parameters,
         "parameter_lines": parameters.splitlines(),
-        "parameter_list": parse_parameter_text(parameters),
+        "parameter_list": parameter_list,
+        "parameter_bad": parameter_bad,
         "ports": ports,
         "instances": instances,
         "wires": wires,
@@ -216,31 +218,86 @@ def parse_parameter_text_checked(text: str) -> tuple[list[dict[str, str]], list[
     """Like :func:`parse_parameter_text`, but report chunks that did not parse."""
     result: list[dict[str, str]] = []
     bad: list[str] = []
-    for chunk in text.split(";"):
-        raw = chunk.strip()
+    # Comments must go first: Robei writes ``NAME = value; //comment``, so
+    # splitting on ``;`` before stripping the comment swallowed every parameter
+    # after the first one (the comment of line 1 ran into line 2's text).
+    carried: list[str] = []
+    buffer: list[str] = []
+    closed_here: list[int] = []
+    quote = ""
+    escaped = False
+
+    def close_statement() -> None:
+        raw = "".join(buffer).strip()
+        buffer.clear()
         if not raw:
-            continue
-        comment = ""
-        if "//" in chunk:
-            chunk, comment = chunk.split("//", 1)
-        match = _PARAM_RE.match(chunk)
-        if not match:
-            bad.append(raw)
-            continue
-        value = match.group(2).strip()
-        if not value:
+            return
+        match = _PARAM_RE.match(raw)
+        value = match.group(2).strip() if match else ""
+        if not match or not value:
             # ``W = ;`` matches the regex only because the gap can be a space;
             # an empty default is still not a usable override.
+            carried.clear()
             bad.append(raw)
-            continue
-        result.append(
-            {
-                "name": match.group(1),
-                "default": value,
-                "comment": comment.strip(),
-            }
-        )
+            return
+        comment = " ".join(carried).strip()
+        carried.clear()
+        result.append({"name": match.group(1), "default": value, "comment": comment})
+        closed_here.append(len(result) - 1)
+
+    for line in text.splitlines():
+        code, line_comment = _strip_line_comment(line)
+        closed_here.clear()
+        for char in code:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif quote:
+                if char == quote:
+                    quote = ""
+            elif char in {"'", '"'}:
+                quote = char
+            elif char == ";":
+                close_statement()
+                continue
+            buffer.append(char)
+        if line_comment:
+            if closed_here:
+                # The comment trails the parameters of this line; the last one
+                # owns it, which is what a one-parameter-per-line file implies.
+                target = result[closed_here[-1]]
+                target["comment"] = f"{target['comment']} {line_comment}".strip()
+            else:
+                carried.append(line_comment)
+    close_statement()
     return result, bad
+
+
+def _strip_line_comment(line: str) -> tuple[str, str]:
+    """Split one ``Parameters`` line into code and its trailing ``//`` comment.
+
+    A ``//`` inside a quoted string is part of the value, not a comment, so the
+    scan tracks quotes and backslash escapes.
+    """
+    quote = ""
+    escaped = False
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = ""
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == "/" and line.startswith("//", index):
+            return line[:index], line[index + 2 :].strip()
+        index += 1
+    return line, ""
 
 
 def _range_suffix(datasize: str) -> str:
@@ -281,14 +338,19 @@ def model_to_verilog_with_warnings(
 ) -> tuple[str, list[str]]:
     """Like :func:`model_to_verilog`, but also return export warnings.
 
-    Warnings cover instance ``Parameters`` strings that cannot be parsed into
-    ``NAME = value`` pairs: those are skipped instead of being emitted as
-    ``#(...)`` so a broken canvas never produces invalid Verilog silently.
+    Warnings cover root and instance ``Parameters`` strings that cannot be
+    parsed into ``NAME = value`` pairs: those are skipped instead of being
+    emitted as a parameter / ``#(...)`` so a broken canvas never produces
+    invalid Verilog silently.
     """
     parameter_overrides = {k.upper(): v for k, v in (parameter_overrides or {}).items()}
     module_name = model["name"]
     params = model.get("parameter_list") or []
     warnings: list[str] = []
+    for chunk in model.get("parameter_bad") or []:
+        warnings.append(
+            f"root Parameters: cannot parse chunk {chunk!r}; no parameter declared for it"
+        )
 
     lines: list[str] = [
         f"// Generated by robei-mcp from {Path(model['path']).name}; source is not modified.",
@@ -298,12 +360,16 @@ def model_to_verilog_with_warnings(
     if params:
         lines.append(f"module {module_name} #(")
         rendered = []
-        for param in params:
+        for index, param in enumerate(params):
             name = param["name"]
             value = parameter_overrides.get(name.upper(), param["default"])
+            # The separating comma must come before ``// comment``: appending
+            # it afterwards puts the comma inside the comment and iverilog then
+            # sees an unterminated parameter list.
+            comma = "," if index < len(params) - 1 else ""
             suffix = f"  // {param['comment']}" if param["comment"] else ""
-            rendered.append(f"    parameter {name} = {value}{suffix}")
-        lines.append(",\n".join(rendered))
+            rendered.append(f"    parameter {name} = {value}{comma}{suffix}")
+        lines.append("\n".join(rendered))
         lines.append(") (")
     else:
         lines.append(f"module {module_name} (")

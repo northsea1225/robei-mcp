@@ -849,3 +849,196 @@ def test_const_drive_pull_and_voltage_reach_xdc(work: Path) -> None:
         assert exported["voltage_hints"] == [{"port": "a", "voltage": "3.3"}]
     finally:
         shutil.rmtree(SETTINGS.workspace / name, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# 1.0.4 — Parameters with // comments (B1)
+# ---------------------------------------------------------------------------
+
+
+def test_parameter_text_keeps_every_line_with_trailing_comment() -> None:
+    from robei_mcp.model import parse_parameter_text_checked
+
+    text = "START = 0; //a\nDUTY = 50; //b\n"
+    parsed, bad = parse_parameter_text_checked(text)
+    assert bad == []
+    assert [(p["name"], p["default"], p["comment"]) for p in parsed] == [
+        ("START", "0", "a"),
+        ("DUTY", "50", "b"),
+    ]
+
+
+def test_parameter_comment_may_contain_semicolon() -> None:
+    from robei_mcp.model import parse_parameter_text_checked
+
+    parsed, bad = parse_parameter_text_checked("A = 1; // one ; two\nB = 2;\n")
+    assert bad == []
+    assert [(p["name"], p["default"]) for p in parsed] == [("A", "1"), ("B", "2")]
+    assert parsed[0]["comment"] == "one ; two"
+
+
+def test_parameter_text_without_comments_is_unchanged() -> None:
+    from robei_mcp.model import parse_parameter_text_checked
+
+    parsed, bad = parse_parameter_text_checked("LEN = 4;\nMAX = 16;\n\nSPAN = 2;\n")
+    assert bad == []
+    assert [(p["name"], p["default"], p["comment"]) for p in parsed] == [
+        ("LEN", "4", ""),
+        ("MAX", "16", ""),
+        ("SPAN", "2", ""),
+    ]
+
+
+def test_bad_root_parameters_warn_and_emit_no_parameter(work: Path) -> None:
+    from robei_mcp.model import model_to_verilog_with_warnings
+
+    name = f"regress_rootparam_{uuid.uuid4().hex[:8]}"
+    project = tools.create_robei_project(name, models=[])
+    try:
+        proj = Path(project["proj"])
+        model_dir = proj.parent / "model"
+        (model_dir / "broken.model").write_text(
+            _param_model_xml(
+                "broken",
+                "W = ;",
+                [("a", "input", "1")],
+                "assign a = a;",
+            ),
+            encoding="utf-8",
+        )
+        model = parse_robei_model(model_dir / "broken.model")
+        assert model["parameter_bad"] == ["W ="]
+        text, warnings = model_to_verilog_with_warnings(model)
+        assert "module broken (" in text
+        assert "#(" not in text
+        assert any("root Parameters" in item and "cannot parse chunk" in item for item in warnings)
+
+        # A parseable chunk next to a broken one is still declared.
+        # Robei writes attribute newlines as ``&#xa;``; a raw newline inside an
+        # XML attribute would be normalised to a space by the parser.
+        (model_dir / "mixed.model").write_text(
+            _param_model_xml(
+                "mixed",
+                "W = ;&#xa;GOOD = 2; // keeps",
+                [("a", "input", "1")],
+                "assign a = a;",
+            ),
+            encoding="utf-8",
+        )
+        mixed = parse_robei_model(model_dir / "mixed.model")
+        assert mixed["parameter_bad"] == ["W ="]
+        mixed_text, mixed_warnings = model_to_verilog_with_warnings(mixed)
+        assert "parameter GOOD = 2" in mixed_text
+        assert any("root Parameters" in item for item in mixed_warnings)
+
+        # The project-level sync reports root Parameters problems too.
+        tools._register_model_in_project(proj, "broken")
+        synced = tools.sync_robei_verilog(str(proj), overwrite=True)
+        assert synced["ok"] is True
+        assert any("root Parameters" in item for item in synced["warnings"])
+    finally:
+        shutil.rmtree(SETTINGS.workspace / name, ignore_errors=True)
+
+
+def test_instance_parameters_with_comments_still_emit_override(work: Path) -> None:
+    name = f"regress_commentparam_{uuid.uuid4().hex[:8]}"
+    project = tools.create_robei_project(name, models=[])
+    try:
+        proj = Path(project["proj"])
+        model_dir = proj.parent / "model"
+        (model_dir / "pw.model").write_text(
+            _param_model_xml(
+                "pw",
+                "W = 1; // width",
+                [("a", "input", "W-1:0"), ("y", "output", "W-1:0")],
+                "assign y = a;",
+            ),
+            encoding="utf-8",
+        )
+        tools._register_model_in_project(proj, "pw")
+        canvas = tools.create_robei_canvas_model(
+            proj_path=str(proj), name="top_comment",
+            ports=[{"name": "a", "direction": "input", "width": 4},
+                   {"name": "y", "direction": "output", "width": 4}],
+            instances=[{"name": "u1", "model": "pw", "parameters": "W = 4; // four\n"}],
+            wires=[{"from": "a", "to": "u1.a", "net": "a_n", "datasize": 4},
+                   {"from": "u1.y", "to": "y", "net": "y_n", "datasize": 4}],
+        )
+        text = model_to_verilog(parse_robei_model(Path(canvas["path"])))
+        assert "pw #(.W(4)) u1(" in text
+    finally:
+        shutil.rmtree(SETTINGS.workspace / name, ignore_errors=True)
+
+
+def test_root_parameters_with_comments_keep_the_comma(work: Path) -> None:
+    from robei_mcp.model import model_to_verilog_with_warnings
+
+    name = f"regress_paramcomma_{uuid.uuid4().hex[:8]}"
+    project = tools.create_robei_project(name, models=[])
+    try:
+        proj = Path(project["proj"])
+        model_dir = proj.parent / "model"
+        (model_dir / "pair.model").write_text(
+            _param_model_xml(
+                "pair",
+                "START = 0; //initial_state&#xa;DUTY = 50; //high_voltage/period&#xa;",
+                [("clk", "output", "1")],
+                "initial begin clk = START; end",
+            ),
+            encoding="utf-8",
+        )
+        model = parse_robei_model(model_dir / "pair.model")
+        assert [p["name"] for p in model["parameter_list"]] == ["START", "DUTY"]
+        text, warnings = model_to_verilog_with_warnings(model)
+        assert warnings == []
+        # A comment must never swallow the comma that separates parameters.
+        assert "parameter START = 0,  // initial_state" in text
+        assert "parameter DUTY = 50  // high_voltage/period" in text
+    finally:
+        shutil.rmtree(SETTINGS.workspace / name, ignore_errors=True)
+
+
+def _toolbox_dir() -> Path:
+    import os
+
+    return Path(os.environ.get("ROBEI_MCP_TOOLBOX", r"C:/ProgramData/Robei"))
+
+
+@pytest.mark.skipif(
+    not _toolbox_dir().is_dir() or not Path(SETTINGS.iverilog).exists(),
+    reason="Robei ToolBox models or iverilog not available",
+)
+def test_toolbox_models_export_and_compile(work: Path) -> None:
+    """Every installed ToolBox model must survive export + iverilog -g2012.
+
+    The 1.0.4 fix matters here: 10 of the 24 shipped models declare more than
+    one parameter and all of them carry ``//`` comments, so the old parser lost
+    every parameter after the first line and iverilog failed to bind the name.
+    The ToolBox itself is only read, never written.
+    """
+    import subprocess
+    from robei_mcp.model import model_to_verilog_with_warnings
+
+    source_dir = _toolbox_dir()
+    models = sorted(source_dir.glob("*.model"))
+    assert models, f"no .model files under {source_dir}"
+
+    copied = work / "toolbox"
+    copied.mkdir(parents=True, exist_ok=True)
+    failures: list[str] = []
+    for model_file in models:
+        target = copied / model_file.name
+        shutil.copy2(model_file, target)
+        model = parse_robei_model(target)
+        text, _warnings = model_to_verilog_with_warnings(model)
+        verilog = copied / f"{model_file.stem}.v"
+        verilog.write_text(text, encoding="utf-8", newline="\n")
+        proc = subprocess.run(
+            [str(SETTINGS.iverilog), "-g2012", "-o", str(work / "toolbox.out"), str(verilog)],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            detail = " ".join((proc.stderr or "").split())[:400]
+            failures.append(f"{model_file.name}: {detail}")
+    assert not failures, "ToolBox models failed to compile:\n" + "\n".join(failures)

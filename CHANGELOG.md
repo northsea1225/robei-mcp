@@ -2,6 +2,34 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.0.4 — 2026-10-24
+
+**`Parameters` 里的 `//` 注释不再吃掉它后面的参数。** 老解析器先按 `;` 切分再剥注释，于是
+`START = 0; //a` 的注释把下一行的 `DUTY = 50` 一起卷进注释，只留下第一个参数。Robei 自带的
+24 个 ToolBox 模型里有 10 个是多参数，全部因此导出失败（iverilog 报 `Unable to bind ... DUTY`）。
+工具面不变（39 个 = 文件级 28 + GUI 11）。
+
+### 参数解析（B1）
+
+- **先剥注释，再按 `;` 切分**：逐行处理，`//` 到行尾算注释（字符串里的 `//` 不算），
+  注释挂回它所在行的参数（同一行多个参数时归最后一个）；注释里带 `;` 也不再切断参数。
+- **`;` 只在字符串外才算分隔符**：`P = "a//b";` 这类值不再被误切。
+- **根级 `Parameters` 解析失败也报 warning**：`parse_robei_model` 新增 `parameter_bad`，
+  `model_to_verilog_with_warnings` 把它变成 `root Parameters: cannot parse chunk …`，
+  `export_robei_verilog` / `sync_robei_verilog` 的 `warnings` 里都能看到（以前只有实例参数会报）。
+  坏掉的 chunk 不生成 `parameter`，能解析的照常生成。
+- **注释不再吞掉参数之间的逗号**：带注释的根级参数输出
+  `parameter START = 0,  // initial_state`；以前逗号落在注释后面，iverilog 直接语法错误。
+- 实例参数覆盖走同一个函数，`"W = 4; // four"` 仍然生成 `#(.W(4))`。
+
+### 测试
+
+- 新增单测：多参数带行尾注释、注释里含 `;`、整块无注释、根级坏参数报 warning、
+  实例参数带注释仍出 `#(`、带注释的两参数逗号位置。
+- 新增实机回归 `test_toolbox_models_export_and_compile`：把 `C:\ProgramData\Robei` 下的
+  24 个 ToolBox 模型（只读）复制到临时 workspace，逐个导出并用 `iverilog -g2012` 编译。
+  修复前 14/24 通过（10 个失败全是 B1），修复后 24/24 通过。
+
 ## 1.0.3 — 2026-10-24
 
 **层次化导出不再丢位宽；路径错误码、工程列表、约束字段与 GUI 截图补齐。**

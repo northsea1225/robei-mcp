@@ -197,8 +197,11 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 
 - 只读输入，只写工作区；目标已存在则 `FileExistsError`
 - `parameter_overrides` 用于修正 `mux.model` 的 `LEN = 0`（直接导出会得到非法的 `[-1:0]`）
-- `warnings`：实例 `Parameters` 解析失败、或写了子模型未声明的参数时逐条列出；
-  这些情况下导出**不会**生成 `#(...)`（`sync_robei_verilog` 也会汇总同样的 `warnings`）
+- `warnings`：根级或实例 `Parameters` 解析失败、或实例写了子模型未声明的参数时逐条列出；
+  解析失败的 chunk 不会变成 `parameter` / `#(...)`，能解析的照常输出
+  （`sync_robei_verilog` 也会汇总同样的 `warnings`）
+- `Parameters` 里的 `//` 注释按行剥离（字符串里的 `//` 不算），注释挂回它所在行的参数；
+  导出时注释写在参数行的逗号之后，不会吞掉参数之间的分隔符
 - 返回 `model_sha256_before/after`，证明 `.model` 未被改动
 
 ### `sync_robei_verilog`
@@ -256,7 +259,8 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
   `Current/<模型>.model`；实例端口从被引用模型自动读取，不需要手填
 - 每个实例可以带 `parameters` 字符串（如 `"W = 4;"`），原样写进嵌套 `<Module Parameters>`。
   **experimental**：还没有 Robei GUI 保存的样本，格式按根节点的 `NAME = value;` 推断；
-  解析不出来时导出不会生成 `#(...)`，并在 `warnings` 里说明
+  解析不出来时导出不会生成 `#(...)`，并在 `warnings` 里说明；行尾 `//` 注释与根级
+  `Parameters` 走同一套解析（`"W = 4; // four"` 仍然生成 `#(.W(4))`）
 - 每条 `wire` 可以带 `datasize`；导出 Verilog 时按它生成 `wire [N-1:0]`，丢失会变成 1 位
 - 校验：实例名 / 模型名合法、被引用模型存在于同工程 `model/`、连线端点存在
 - 只写 workspace 内的工程；目标已存在要 `overwrite=true`（并留 `.bak-<时间戳>`）
