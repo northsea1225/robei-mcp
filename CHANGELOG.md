@@ -2,7 +2,7 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
-## 1.3.0 — Unreleased（草稿）
+## 1.3.0 — 2026-10-25
 
 **GUI 不再依赖鼠标、工程可以嵌套、产物落在工程里。** 工具面仍是 49 个（文件级 38 + GUI 11），
 `ROBEI_MCP_GUI=0` 时 38 个——本版只加参数，不加工具。
