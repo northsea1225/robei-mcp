@@ -12,6 +12,69 @@
 
 ## 交付状态
 
+### 1.3.0：GUI 去鼠标化、嵌套工程、工程内产物（2026-10-25，草稿）
+
+工具面 **49 个（文件级 38 + GUI 11）**，`ROBEI_MCP_GUI=0` 时 38 个（本版只加参数，不加工具）。
+
+**M0：UIA 能力探针**（Session-1 上的真实 Robei 5.0 Student，Qt6 / `Qt680QWindowIcon`）
+
+| 目标 | 暴露的模式 | 实测 |
+|---|---|---|
+| `QMenuBar` 的 MenuItem | invoke / value / expand_collapse | `Invoke()` 返回成功但菜单不弹；`ExpandCollapse.Expand()` 才会打开菜单并出现 popup 句柄 |
+| popup 里的 MenuItem | invoke | `Invoke()` 可用且 0.00 s 返回；Build 菜单 = Refresh/Compile/Run/Wave/Synthesis/Route/Package/Download/Burn |
+| 原生打开对话框 | — | Invoke `Open` 后 Qt 的 UIA provider 阻塞：同进程后续调用和新起的 `status` 作业都 90 s 超时，只能杀进程 + 重启 Robei（两次复现） |
+| Files 树 TreeItem | invoke / selection_item / expand_collapse | 三种都改不动展开状态（state 前后都是 0） |
+| 命令行 | — | `Robei.exe "<proj>"` 打开工程；`Robei.exe "<model>"` 打开独立模型；已有实例时再启动会新开窗口（不切换原窗口） |
+
+**M3：真实调用证据**
+
+```text
+外来实例  foreign_open  -> code=gui_foreign_instance (pid 57212)
+          foreign_close -> closed=false，窗口仍在（桥只 kill 自己记录的 pid）
+桩掉鼠标/键盘（_click / _double_click / send_keys 一调用就抛异常）：
+          open_project  -> ok=true restarted=true pid=64740
+                           argv=[Robei.exe, ...\exp6_counter.proj]
+          compile       -> ok=true marker="Compile done" menu.via="uia"
+真实编译输出：Check complete with 0 warnings / Generating ...\dec_counter.v / Compile done
+未保存探测：编辑 Code（ValuePattern，save=False）后 title="Robei  Student"、tabs=["dec_counter"]
+          -> 没有 '*' 标记，无法据此拦截
+pid 记录校验：owned_pid() 比对进程名 + 记录里的 exe 路径；非 Robei（notepad / 别的目录同名 exe /
+          已退出的 pid）一律丢弃记录并让 close() 返回 closed=false（4 条 pytest 覆盖）
+```
+
+**产物位置（P1-5）**：`simulate_project` 的 `tb_source` 落在
+`exp6_counter/build/headless-…/tb_counter.v`，PNG 落在
+`exp6_counter/build/waveforms/tb_counter-….png`。探针同时确认：Robei 的 Compile 会删除
+`<工程>/build` 下的**顶层文件**（`marker_probe.txt` 消失），但**保留子目录**
+（`probe_dir/inner.txt` 仍在）——所以目录形态的运行目录是安全的。
+
+**inline PNG（真实 MCP 调用）**
+
+```text
+simulate_project(render=true, inline=true) -> content = [text, image]
+   text.plot.path      = exp6_counter/build/waveforms/tb_counter-….png
+   text.plot.inline    = {ok: true, mime_type: image/png, size_bytes: 142573}
+   image               = image/png, 55560 base64 chars
+render_waveform(inline=false) -> content = [text]，structured_content = dict
+render_waveform(inline=true)  -> content = [text, image]
+```
+
+**回归（本轮）**
+
+| 项 | 结果 |
+|---|---|
+| pytest | 178 passed |
+| portable_core | 16/16 |
+| stage2–21 | 全过：5 → 10/10、7 → 12/12、8 → 10/10、11 → 13/13、12 → 18/18、13 → 18/18、14 → 9/9、16 → 12/12、17 → 28/28、18 → 29/29、19 → 26/26、20 → 14/14、21 → 18/18；stage2/3/4/9/10 只打印 rc=0 |
+| `tools/list` | 49（文件级 38 + GUI 11）；`ROBEI_MCP_GUI=0` → 38 |
+
+**未测试 / 注意**
+
+- 锁屏状态下的真实行为：不主动制造锁屏，"不碰鼠标"是用打桩证明的。
+- `robei_gui_open_model` 的 `gui_needs_active_desktop` 只走了代码路径，没有真实锁屏复现。
+- 没有上板；`check_wheel.py`、`setup.py --apply`、`verify_1_0_2.py` 未跑。
+- 1.3 仍然不做：画布总线位选、实例参数（缺 Robei GUI 保存样本）、Download/上板。
+
 ### 1.2.2：失败的 FPGA 段、运行日志读取（2026-10-24）
 
 工具面 **49 个（文件级 38 + GUI 11）**，`ROBEI_MCP_GUI=0` 时 38 个。

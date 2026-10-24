@@ -65,6 +65,9 @@ python C:\dev\robei-mcp\tools\setup.py --apply
 `[gui]` 会带上 `pywinauto`、`Pillow`、`pywin32`。**没装这三个包时 GUI 工具不会出现在
 `tools/list` 里**，而不是调用时才报错；`tools\setup.py --apply` 也会在 Windows 上补装它们。
 
+一句话：基础 wheel 只有 **38 个文件级工具**；装上 `[gui]`（且只在 Windows 上）才会多出
+11 个 `robei_gui_*`，合计 **49 个**。
+
 ### 3. 自检
 
 ```powershell

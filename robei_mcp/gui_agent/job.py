@@ -12,7 +12,9 @@ from .paths import JOB_FILE
 
 OPS = {
     "status": lambda a: robei_ui.status(int(a.get("output_lines", 20))),
-    "open_project": lambda a: robei_ui.open_project(a["path"]),
+    "open_project": lambda a: robei_ui.open_project(
+        a["path"], discard_unsaved=bool(a.get("discard_unsaved", False))
+    ),
     "compile": lambda a: robei_ui.compile_model(float(a.get("timeout_s", 25))),
     "output": lambda a: robei_ui.output(int(a.get("lines", 80))),
     "refresh": lambda a: robei_ui.refresh(),

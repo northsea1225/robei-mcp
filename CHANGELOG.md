@@ -2,6 +2,74 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.3.0 — Unreleased（草稿）
+
+**GUI 不再依赖鼠标、工程可以嵌套、产物落在工程里。** 工具面仍是 49 个（文件级 38 + GUI 11），
+`ROBEI_MCP_GUI=0` 时 38 个——本版只加参数，不加工具。
+
+### M0 取证：为什么放弃「文件对话框」这条路
+
+Session-1 探针在真实 Robei 上逐个试 UIA 模式（Qt6，窗口类 `Qt680QWindowIcon`）：
+
+| 目标 | 暴露的模式 | 实测 |
+|---|---|---|
+| 菜单栏项 | invoke / value / expand_collapse | `Invoke()` 无效果；`ExpandCollapse.Expand()` 才能打开菜单 |
+| 菜单项（popup） | invoke | `Invoke()` 可用，且立即返回 |
+| 原生打开对话框 | — | Invoke `Open` 后 Qt 的 UIA provider 全局阻塞（同进程、新进程都 90 s 超时）→ 只能重启 IDE |
+| Files 树 TreeItem | invoke / selection_item / expand_collapse | 三种都不改展开状态（前后都是 0），必须点一下 + RIGHT |
+| 命令行 | — | `Robei.exe "<proj>"` 直接打开工程（无对话框）；`Robei.exe "<model>"` 独立打开模型；已有实例时新开一个窗口 |
+
+### P0-1 `open_project` 改成 argv 重启，菜单改走 UIA
+
+- `robei_gui_open_project`：关掉**自己启动的** Robei → `Robei.exe "<proj>"` → 按 pid attach →
+  校验 Files 树根 == `.proj` 的 stem，返回 `restarted=true` / `pid` / `argv`。全程不碰鼠标、
+  键盘和文件对话框（锁屏也能开工程；实测一次重启 1–3 s）。
+- `main_window()` 改成按 pid 绑定；只有拿不到 pid 的只读调用（`status`）才用旧的
+  "最大且带菜单栏的窗口"启发式。
+- 只能关自己的实例：pid 记在 `workspace/gui_agent/robei_pid.json`，`robei_gui_close` 由
+  `taskkill /IM Robei.exe` 改成 `taskkill /PID <记录>`。动手前先核对这个 pid 的**进程名**和
+  **记录里的 exe 路径**都还是 `Robei.exe`：pid 已退出、被回收给别的程序、或者是一次手工启动的
+  IDE，都当作"没有自己启动的实例"（`closed:false`）并删掉过期记录。有外来实例时返回
+  `code=gui_foreign_instance`，不会 kill。
+- **未保存状态探测不到**（编辑后窗口标题和模型标签都不带 `*`），所以文档写明
+  "打开工程会丢画布上未保存的修改"；`discard_unsaved` 参数保留，等真能探测到时再生效。
+- `robei_gui_open_model` 仍走树 + 双击（Qt 树对 UIA 无反应）；桌面不可用时返回
+  `code=gui_needs_active_desktop`，不再抛 `RuntimeError`。打开成功的判定改成轮询活动标签
+  （编译后 Robei 切页更慢，固定 sleep 会假失败）。
+- `compile` / `save_project` / `synthesis` 用 `ExpandCollapse.Expand()` + 条目 `Invoke`，
+  返回新增 `menu = {"via": "uia" | "mouse", "uia_error"}`；鼠标路径保留为 fallback，
+  `_mouse` 的 active-desktop 重试逻辑没动。
+
+### P0-2 嵌套工程名
+
+`create_robei_project("lab2/exp1")` → 目录 `workspace/lab2/exp1/`，`.proj` 文件名、XML 根标签
+和 `name` 属性只用最后一段 `exp1`。每段都要求 `[A-Za-z_][A-Za-z0-9_]*`；`..`、绝对路径、
+反斜杠、`a//b`、`a/b/` 全部 `invalid_argument`；解析完再做一次 workspace 越界检查。
+
+### P1
+
+- **产物落工程目录**：`simulate_project` 的 tb/deps/`sim-*` 运行目录/VCD 都落在
+  `<工程>/build/`；`render_waveform` 默认写 `<工程>/build/waveforms/`（`out_dir` 可覆盖，
+  越界照拒），不在工程里时才回退到 `workspace/build/waveforms/`。
+  实测 Robei 的 Compile 会删掉 `<工程>/build` 下的**顶层文件**，但**保留子目录**——所以
+  `build/<run dir>/`、`build/waveforms/` 这种目录形态是安全的，别再往 build 根目录散写文件。
+- **inline PNG**：`render_waveform` / `simulate_project(render=true)` / `robei_gui_screenshot`
+  新增 `inline=false`；为 true 时额外返回 `ImageContent`（`mimeType=image/png`，5 MiB 上限，
+  超限返回 `inline.code=image_too_large` 且照常给 `path`）。默认行为与 1.2.2 一致
+  （文本 JSON + `structured_content` 都在）。
+- **`skeleton`**：`create_robei_project(..., skeleton=false)` 或 `models=[]` 不建空白模型，
+  `.proj` 里 `<model .../>` 自闭合、不留空行。
+- **`read_run_log` 收紧**：只认 `workspace/logs/**`、`workspace/build/<真实戳记 run dir>/**`、
+  `<工程>/build/**`（该工程目录里必须有 `*.proj`）；其余 `path_escape_log`。
+  一个只是碰巧叫 `build` 的目录不再放行。
+- README 快速开始补一句：基础 wheel 38 个文件级工具，装 `[gui]` 且在 Windows 才多出 11 个。
+
+### 测试
+
+`pytest` 178 passed、`portable_core` 16/16、stage2–21 全过；
+`open_project` 与 `compile` 在"鼠标/键盘一调用就抛异常"的桩下通过。详见
+`docs/verification-log.md` 的 1.3 段。
+
 ## 1.2.2 — 2026-10-24
 
 **把「用 MCP 做数电实验」这条路上踩到的坑补掉。** 工具面 49 个（文件级 38 + GUI 11）；

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import bisect
 import copy
 import hashlib
@@ -228,11 +229,69 @@ def _require_file(path: Path, label: str) -> None:
         raise FileNotFoundError(f"{label} not found: {path}")
 
 
-def _new_run_dir(kind: str) -> Path:
+def _new_run_dir(kind: str, base: Path | None = None) -> Path:
+    """One directory per run: ``<base or workspace/build>/<kind>-<stamp>-<8 hex>``.
+
+    ``base`` lets a project keep its own build products (``<project>/build``);
+    it is still escape-checked against the workspace.
+    """
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_dir = SETTINGS.workspace / "build" / f"{kind}-{stamp}-{uuid.uuid4().hex[:8]}"
+    root = (SETTINGS.workspace / "build") if base is None else Path(base)
+    root = root.resolve()
+    if not is_within(root, SETTINGS.workspace):
+        raise ValueError(f"run directory must stay inside the workspace: {root}")
+    run_dir = root / f"{kind}-{stamp}-{uuid.uuid4().hex[:8]}"
     run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
+
+
+INLINE_IMAGE_LIMIT = 5 * 1024 * 1024
+
+
+def inline_image_payload(path: Path | str, limit: int | None = None) -> dict[str, Any]:
+    """Base64 payload for one PNG, or an ``image_too_large`` report.
+
+    The caller keeps the file path either way; ``limit`` defaults to
+    ``INLINE_IMAGE_LIMIT`` (5 MiB) and is read at call time so tests can shrink it.
+    """
+    target = Path(path)
+    cap = INLINE_IMAGE_LIMIT if limit is None else int(limit)
+    size = target.stat().st_size
+    if size > cap:
+        return {
+            "ok": False,
+            "code": "image_too_large",
+            "path": str(target),
+            "size_bytes": size,
+            "limit_bytes": cap,
+            "hint": f"inline images are capped at {cap} bytes; use the returned path instead",
+        }
+    return {
+        "ok": True,
+        "mime_type": "image/png",
+        "path": str(target),
+        "size_bytes": size,
+        "data_b64": base64.b64encode(target.read_bytes()).decode("ascii"),
+    }
+
+
+RUN_DIR_RE = re.compile(
+    r"^(?:fpga|lint|sim|library|truth-.+|headless-.+)-\d{8}-\d{6}-[0-9a-f]{8}$"
+)
+
+
+def _project_for(path: Path) -> Path | None:
+    """Nearest ancestor inside the workspace that holds a ``*.proj`` file."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return None
+    for parent in resolved.parents:
+        if not is_within(parent, SETTINGS.workspace):
+            break
+        if any(parent.glob("*.proj")):
+            return parent
+    return None
 
 
 def _rel(path: Path) -> str:
@@ -638,6 +697,7 @@ def simulate(
     top: str,
     timeout_s: int = 30,
     progress=None,
+    base: Path | None = None,
 ) -> dict[str, Any]:
     sources = resolve_source_files(files)
     top = _valid_top(top)
@@ -662,7 +722,7 @@ def simulate(
             "simulation": None,
             "vcd_paths": [],
         }
-    run_dir = _new_run_dir("sim")
+    run_dir = _new_run_dir("sim", base=base)
     sim_vvp = run_dir / "sim.vvp"
 
     _notify(progress, 0, 2, "iverilog: compiling")
@@ -727,6 +787,7 @@ def simulate_project(
     timeout_s: int = 30,
     render: bool = False,
     progress=None,
+    inline: bool = False,
 ) -> dict[str, Any]:
     """Run a Robei ``test/*.test`` model with the bundled iverilog — no IDE needed.
 
@@ -751,7 +812,9 @@ def simulate_project(
     test_model = parse_robei_model(test_path)
     # One directory per run: two concurrent simulations of the same test used to
     # rewrite the same tb_source/deps files while the other process was reading.
-    out_dir = _new_run_dir(f"headless-{project_dir.name}-{stem}")
+    out_dir = _new_run_dir(
+        f"headless-{project_dir.name}-{stem}", base=project_dir / "build"
+    )
     tb_src = out_dir / f"{stem}.v"
     timescale = test_model.get("timescale") or "1ns/1ns"
     body = test_model["code"]
@@ -780,7 +843,12 @@ def simulate_project(
         deps.append(target)
 
     _notify(progress, 2, 3, "compiling + running")
-    result = simulate(files=[str(tb_src), *[str(d) for d in deps]], top=stem, timeout_s=timeout_s)
+    result = simulate(
+        files=[str(tb_src), *[str(d) for d in deps]],
+        top=stem,
+        timeout_s=timeout_s,
+        base=project_dir / "build",
+    )
     result["headless"] = {
         "project": str(proj),
         "test": stem,
@@ -794,12 +862,16 @@ def simulate_project(
         try:
             listing = read_waveform(vcds[0])
             names = [s["name"] for s in listing.get("signals", [])][:16]
-            png = render_waveform(vcds[0], names, title=f"{stem} (headless iverilog)")
+            png = render_waveform(
+                vcds[0], names, title=f"{stem} (headless iverilog)", inline=inline
+            )
             result["plot"] = {
                 "ok": png.get("ok"),
                 "path": png.get("path"),
                 "relative_path": png.get("relative_path"),
             }
+            if png.get("inline") is not None:
+                result["plot"]["inline"] = png["inline"]
         except Exception as exc:
             result["plot"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     return result
@@ -1127,21 +1199,31 @@ def render_waveform(
     signals: list[str],
     out_name: str | None = None,
     title: str | None = None,
+    out_dir: str | None = None,
+    inline: bool = False,
 ) -> dict[str, Any]:
+    """Render a waveform PNG.
+
+    ``out_dir`` wins when given; otherwise a VCD that lives inside a project
+    writes to ``<project>/build/waveforms`` and everything else falls back to
+    ``workspace/build/waveforms`` (the pre-1.3 location).
+    """
     path = resolve_vcd_path(vcd_path)
     data = parse_vcd(path)
+    project = _project_for(path)
+    if out_dir:
+        base = resolve_workspace_path(out_dir, must_exist=False)
+    elif project is not None:
+        base = project / "build" / "waveforms"
+    else:
+        base = SETTINGS.workspace / "build" / "waveforms"
     if out_name:
         if not FILE_RE.match(out_name) or not out_name.lower().endswith(".png"):
             raise ValueError("out_name must be a simple .png file name")
-        out_path = SETTINGS.workspace / "build" / "waveforms" / out_name
+        out_path = base / out_name
     else:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        out_path = (
-            SETTINGS.workspace
-            / "build"
-            / "waveforms"
-            / f"{path.stem}-{stamp}-{uuid.uuid4().hex[:8]}.png"
-        )
+        out_path = base / f"{path.stem}-{stamp}-{uuid.uuid4().hex[:8]}.png"
     out_path = out_path.resolve()
     if not str(out_path).startswith(str(SETTINGS.workspace.resolve()) + os.sep):
         raise ValueError(f"output path escapes workspace: {out_path}")
@@ -1154,10 +1236,36 @@ def render_waveform(
     result["ok"] = True
     result["relative_path"] = _rel(out_path)
     result["vcd"] = _rel(path)
+    result["out_dir"] = _rel(out_path.parent)
+    result["project"] = _rel(project) if project is not None else None
+    if inline:
+        result["inline"] = inline_image_payload(out_path)
     return result
 
 
-LOG_ROOTS = ("logs", "build")
+def _log_path_allowed(candidate: Path) -> bool:
+    """Three roots only: ``logs/**``, ``build/<run dir>/**``, ``<project>/build/**``.
+
+    A directory that merely happens to be called ``build`` is not enough - the
+    project rule needs a ``*.proj`` sitting in the parent directory.
+    """
+    workspace = SETTINGS.workspace.resolve()
+    try:
+        parts = candidate.resolve().relative_to(workspace).parts
+    except (ValueError, OSError):
+        return False
+    if not parts:
+        return False
+    if parts[0].lower() == "logs":
+        return True
+    if parts[0].lower() == "build":
+        return len(parts) > 1 and bool(RUN_DIR_RE.match(parts[1]))
+    for index in range(len(parts) - 1, 0, -1):
+        if parts[index].lower() != "build":
+            continue
+        project_dir = workspace.joinpath(*parts[:index])
+        return any(project_dir.glob("*.proj"))
+    return False
 
 
 def read_run_log(path: str, tail: int = 200, max_bytes: int = 500_000) -> dict[str, Any]:
@@ -1167,15 +1275,10 @@ def read_run_log(path: str, tail: int = 200, max_bytes: int = 500_000) -> dict[s
     ``fpga_step_failed`` / ``internal`` payload points at a file this tool can open.
     """
     candidate = resolve_workspace_path(path, must_exist=True)
-    in_log_dir = any(
-        parent.name in LOG_ROOTS
-        for parent in candidate.parents
-        if is_within(parent, SETTINGS.workspace)
-    )
-    if not in_log_dir:
+    if not _log_path_allowed(candidate):
         raise LogPathEscape(
-            f"{candidate} is not inside a {'/ or '.join(LOG_ROOTS)}/ directory under "
-            f"{SETTINGS.workspace}"
+            f"{candidate} is not inside workspace/logs, workspace/build/<run dir> or "
+            "a project's build/ directory"
         )
     if not candidate.is_file():
         raise FileNotFoundError(f"log not found: {candidate}")
@@ -2593,32 +2696,77 @@ def create_robei_test(
     }
 
 
-def create_robei_project(name: str, models: list[str] | None = None) -> dict[str, Any]:
-    """Create a Robei project skeleton (folders + .proj + blank models) in the workspace."""
-    if not MODEL_NAME_RE.match(name):
-        raise ValueError(f"invalid project name: {name!r}")
-    models = [name] if models is None else list(models)
+def _split_project_name(name: str) -> tuple[str, Path]:
+    """``lab2/exp1`` -> ``("exp1", Path("lab2/exp1"))``; every segment is a model name."""
+    raw = (name or "").strip()
+    if not raw:
+        raise ValueError("project name must not be empty")
+    if "\\" in raw:
+        raise ValueError(
+            f"use forward slashes in a nested project name: {name!r} (e.g. lab2/exp1)"
+        )
+    if raw.startswith("/") or re.match(r"^[A-Za-z]:", raw):
+        raise ValueError(f"project name must be relative to the workspace: {name!r}")
+    parts = raw.split("/")
+    for part in parts:
+        if not part:
+            raise ValueError(f"empty segment in project name: {name!r}")
+        if part in (".", ".."):
+            raise ValueError(f"project name must not contain {part!r}: {name!r}")
+        if not MODEL_NAME_RE.match(part):
+            raise ValueError(
+                f"invalid project name segment {part!r} in {name!r}: each segment must "
+                "match [A-Za-z_][A-Za-z0-9_]*"
+            )
+    return parts[-1], Path(*parts)
+
+
+def create_robei_project(
+    name: str,
+    models: list[str] | None = None,
+    skeleton: bool = True,
+) -> dict[str, Any]:
+    """Create a Robei project skeleton (folders + .proj + blank models) in the workspace.
+
+    ``name`` may be nested (``lab2/exp1``): the directory becomes
+    ``workspace/lab2/exp1`` while the ``.proj`` file, its XML root tag and its
+    ``name`` attribute use the last segment only (Robei keys the tree off that).
+
+    ``models=None`` keeps the old behaviour (one blank model named like the
+    project) only while ``skeleton`` is true; ``models=[]`` or
+    ``skeleton=False`` creates no blank model at all.
+    """
+    leaf, rel = _split_project_name(name)
+    models = ([leaf] if skeleton else []) if models is None else list(models)
     for model in models:
         if not MODEL_NAME_RE.match(model):
             raise ValueError(f"invalid model name: {model!r}")
-    root = SETTINGS.workspace / name
+    root = SETTINGS.workspace / rel
+    if not is_within(root, SETTINGS.workspace):
+        raise ValueError(f"project path escapes the workspace: {root}")
     if root.exists():
         raise FileExistsError(f"project path already exists: {root}")
     for sub in ("model", "test", "const", "verilog"):
         (root / sub).mkdir(parents=True, exist_ok=True)
 
-    entries = "\n".join(
-        f'  <{m}.model name="{m}.model" parent="model" type="model"/>' for m in models
-    )
+    if models:
+        entries = "\n".join(
+            f'  <{m}.model name="{m}.model" parent="model" type="model"/>' for m in models
+        )
+        model_folder = (
+            f' <model name="model" parent="{leaf}" type="folder">\n{entries}\n </model>\n'
+        )
+    else:
+        model_folder = f' <model name="model" parent="{leaf}" type="folder"/>\n'
     proj_text = (
-        f'<{name} name="{name}" parent="0" type="proj">\n'
-        f' <model name="model" parent="{name}" type="folder">\n{entries}\n </model>\n'
-        f' <test name="test" parent="{name}" type="folder"/>\n'
-        f' <const name="const" parent="{name}" type="folder"/>\n'
-        f' <verilog name="verilog" parent="{name}" type="folder"/>\n'
-        f"</{name}>\n"
+        f'<{leaf} name="{leaf}" parent="0" type="proj">\n'
+        f"{model_folder}"
+        f' <test name="test" parent="{leaf}" type="folder"/>\n'
+        f' <const name="const" parent="{leaf}" type="folder"/>\n'
+        f' <verilog name="verilog" parent="{leaf}" type="folder"/>\n'
+        f"</{leaf}>\n"
     )
-    proj_path = root / f"{name}.proj"
+    proj_path = root / f"{leaf}.proj"
     proj_path.write_text(proj_text, encoding="utf-8", newline="\n")
     ET.fromstring(proj_text)
 
@@ -2629,11 +2777,13 @@ def create_robei_project(name: str, models: list[str] | None = None) -> dict[str
         created.append(str(model_path))
     return {
         "ok": True,
-        "project": name,
+        "project": leaf,
+        "project_path": "/".join(rel.parts),
         "root": str(root),
         "proj": str(proj_path),
         "models": created,
         "relative_root": _rel(root),
+        "skeleton": bool(models),
     }
 
 

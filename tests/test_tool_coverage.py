@@ -6,6 +6,7 @@ no Robei GUI and no desktop. GUI wrappers are exercised with a mocked
 """
 from __future__ import annotations
 
+import json
 import shutil
 import uuid
 from pathlib import Path
@@ -324,7 +325,9 @@ def test_gui_wrappers_send_the_expected_ops(monkeypatch: pytest.MonkeyPatch, pro
     assert seen[-1][1]["exe"].endswith(".exe")
 
     assert gui.open_project(str(project), timeout_s=30)["ok"] is True
-    assert seen[-1] == ("open_project", {"path": str(project)})
+    assert seen[-1] == ("open_project", {"path": str(project), "discard_unsaved": False})
+    assert gui.open_project(str(project), discard_unsaved=True)["ok"] is True
+    assert seen[-1][1]["discard_unsaved"] is True
 
     gui.open_model("top", timeout_s=20)
     assert seen[-1] == ("open_model", {"name": "top"})
@@ -417,3 +420,63 @@ def test_error_payload_extra_fields_are_preserved() -> None:
     assert payload["model"] == "chain"
     assert payload["endpoint"] == "u1.y"
     assert payload["code"] == "width_mismatch"
+
+# ---------------------------------------------------------------------------
+# owned_pid: only an instance this bridge launched may be closed (1.3 review)
+# ---------------------------------------------------------------------------
+ROBEI_IMAGE = r"D:\robei-lab\robei\bin\Robei.exe"
+
+
+def _pid_record(tmp_path: Path, pid: int = 4242, exe: str = ROBEI_IMAGE) -> Path:
+    record = tmp_path / "robei_pid.json"
+    record.write_text(json.dumps({"pid": pid, "exe": exe}), encoding="utf-8")
+    return record
+
+
+def test_owned_pid_rejects_a_process_that_is_not_robei(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from robei_mcp.gui_agent import ui
+
+    record = _pid_record(tmp_path)
+    monkeypatch.setattr(ui, "PID_FILE", record)
+    monkeypatch.setattr(ui, "_exe_path", lambda pid: r"C:\Windows\System32\notepad.exe")
+    assert ui.owned_pid() is None
+    assert not record.exists(), "the stale record must be dropped"
+    result = ui.close()
+    assert result["ok"] is True
+    assert result["closed"] is False
+
+
+def test_owned_pid_rejects_a_recycled_pid_from_another_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from robei_mcp.gui_agent import ui
+
+    record = _pid_record(tmp_path)
+    monkeypatch.setattr(ui, "PID_FILE", record)
+    monkeypatch.setattr(ui, "_exe_path", lambda pid: r"C:\Temp\robei\bin\Robei.exe")
+    assert ui.owned_pid() is None
+    assert not record.exists()
+
+
+def test_owned_pid_accepts_the_instance_it_launched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from robei_mcp.gui_agent import ui
+
+    record = _pid_record(tmp_path)
+    monkeypatch.setattr(ui, "PID_FILE", record)
+    monkeypatch.setattr(ui, "_exe_path", lambda pid: ROBEI_IMAGE)
+    assert ui.owned_pid() == 4242
+    assert record.exists()
+
+
+def test_owned_pid_rejects_a_dead_pid(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from robei_mcp.gui_agent import ui
+
+    record = _pid_record(tmp_path, pid=999999)
+    monkeypatch.setattr(ui, "PID_FILE", record)
+    monkeypatch.setattr(ui, "_exe_path", lambda pid: "")
+    assert ui.owned_pid() is None
+    assert not record.exists()

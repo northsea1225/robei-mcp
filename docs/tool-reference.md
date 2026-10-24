@@ -87,12 +87,14 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
 **无 GUI、无桌面**地把一个 Robei 实验跑起来：读 `test/<name>.test` 的 `Code`，
 包成 `` `timescale … module <name>(); … endmodule ``（并补 `$dumpfile` 和 `$dumpvars(0, <name>)`），
 把 `model/*.model` 全部导出到本次独立的
-`build/headless-<工程>-<test>-<时间戳>-<uuid8>/deps/`，再交给 `iverilog` + `vvp` 跑
-（同一工程连跑两次不会互相覆盖）。
+`<工程>/build/headless-<工程>-<test>-<时间戳>-<uuid8>/deps/`，再交给 `iverilog` + `vvp` 跑
+（同一工程连跑两次不会互相覆盖）。1.3 起 testbench、依赖、`sim-*` 运行目录和 VCD 全部落在
+**工程目录**的 `build/` 下，不再堆到 `workspace/build/`。
 
 - 输出结构与 `simulate` 相同（`compile` / `simulation` / `display_output` / `vcd_paths`），
   另外多个 `headless` 段记录生成物路径
-- `render=true` 顺带把 VCD 画成 PNG
+- `render=true` 顺带把 VCD 画成 PNG（写到 `<工程>/build/waveforms/`）
+- `render=true, inline=true` 额外返回 `ImageContent`（见 `render_waveform` 的上限）
 - 适用场景：桌面锁屏、SSH 里没开 Session 1、或者 UIA 桥已经塌了
 
 ### `read_waveform`
@@ -258,6 +260,27 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
   同名参数对齐）。两个都不给、或者名字写错，返回的 hint 会点出正确参数名
   （`path_escape` 之类的通用文案不再兜底），例如
   `pass the project as project="myproj/myproj.proj" or proj_path="myproj/myproj.proj"`
+
+### `create_robei_project`
+
+```json
+{"name": "lab2/exp1", "models": ["inv"]}
+{"name": "lab2/exp1", "skeleton": false}
+{"name": "exp1", "models": []}
+```
+
+建骨架：`model/`、`test/`、`const/`、`verilog/` 四个文件夹 + `<leaf>.proj`。
+
+- `name` 可以带目录（`lab2/exp1`）：目录落在 `workspace/lab2/exp1/`，而 `.proj` 文件名、
+  XML 根标签和 `name` 属性只用最后一段 `exp1`（Robei 的工程树按这个名字走）。
+  每段都必须匹配 `[A-Za-z_][A-Za-z0-9_]*`；`..`、绝对路径、反斜杠、空段
+  （`a//b`、`a/b/`）一律 `invalid_argument`。
+- `models=None` 且 `skeleton=true`（默认）时照旧建一个与项目同名的空白模型；
+  `skeleton=false` 或 `models=[]` 时一个空白模型都不建，`.proj` 里
+  `<model name="model" parent="<leaf>" type="folder"/>` 是自闭合节点、不留空行。
+- 返回 `project`（最后一段）、`project_path`（`lab2/exp1`）、`root`、`proj`、`models`、
+  `relative_root`、`skeleton`。
+- 路径解析完还会再做一次 workspace 越界检查。
 
 ### `create_robei_test`
 
@@ -562,9 +585,13 @@ xc7frames2bit --part_file <db>/<family>/<part>/part.yaml --part_name <part>
 只读工具：打开 `fpga_step_failed` / `internal` 返回里那个 `log_path`，或者任何落在
 workspace 下 `logs/`、`build/` 目录里的文件（工程自带的 `<proj>/build/` 也算）。
 
-- 只认 workspace 内、且**某一级父目录名是 `logs` 或 `build`** 的文件；其它路径返回
-  `code=path_escape_log`，hint 会说明规则。目录穿越（`../`、绝对路径）照旧被
-  `strict_path_scan` 挡掉，返回 `code=path_escape`。
+- 1.3 起只认三个根（其余一律 `code=path_escape_log`）：
+  1. `workspace/logs/**`
+  2. `workspace/build/<run dir>/**`，`<run dir>` 必须匹配真实戳记
+     `(fpga|lint|sim|library|truth-*|headless-*)-\d{8}-\d{6}-[0-9a-f]{8}`
+  3. `<工程目录>/build/**`，且该工程目录里确实有 `*.proj`
+  一个只是**碰巧叫 build** 的目录（没有 `.proj`）不再放行。目录穿越（`../`、绝对路径）
+  照旧被 `strict_path_scan` 挡掉，返回 `code=path_escape`。
 - `max_bytes` 默认 500,000（下限 4,096、上限 5,000,000）：超长文件只保留末尾这一段，
   返回 `truncated=true`、`bytes_read` 与 `size_bytes`，`note` 写明丢掉了多少字节。
 - `tail` 默认 200 行：`lines` 是最后 `tail` 行，`line_count` 是实际保留的行数。
@@ -592,14 +619,67 @@ workspace 下 `logs/`、`build/` 目录里的文件（工程自带的 `<proj>/bu
 一个用例失败不影响其它用例；`error_tail` 会把 `compile` / `simulation` 两段的 stderr 一起收进来。
 工程里没有任何 `.test` 时 `total=0`、`ok=false`。
 
+### `robei_gui_open_project`
+
+```json
+{"proj_path": "exp6_counter/exp6_counter.proj"}
+{"proj_path": "exp6_counter/exp6_counter.proj", "discard_unsaved": true}
+```
+
+1.3 起**不再走 File → Open**：Qt 的原生打开对话框一弹出，Robei 的 UIA provider 就不再应答
+（实测整个桥 90 s 超时，只能重启 IDE）。现在改成 argv 重启：
+
+```text
+robei_gui_close（只关这个桥自己启动的 pid）
+Robei.exe "<.proj 的绝对路径>"
+按 pid attach → 校验 Files 树根 == .proj 的 stem
+```
+
+- 返回 `restarted=true`、`pid`、`argv`、`project`、`tree`、`models`、`unsaved_at_close`、`warnings`
+- **会丢掉画布上未保存的修改**：实测 Robei 的窗口标题和模型标签在编辑后都不带 `*`，
+  没有可靠的未保存标记；只有真探测到时才会要求 `discard_unsaved=true`
+- 有**不是这个桥启动的** Robei 在跑时返回 `code=gui_foreign_instance`，hint 让你自己关；
+  桥只会 `taskkill` 自己记录过的 pid（记录在 `workspace/gui_agent/robei_pid.json`），而且动手前
+  会核对这个 pid 的进程名与记录里的 exe 路径确实还是 `Robei.exe`——pid 被回收、换成了别的程序、
+  或是一次手工启动的 IDE，都当作"没有自己启动的实例"（`closed:false`）并删掉过期记录
+- 全程不需要鼠标、键盘或活动桌面（锁屏也能开工程）；一次重启约 1–3 s
+
+### `robei_gui_open_model`
+
+```json
+{"name": "dec_counter"}
+```
+
+展开 Files 树并双击模型（**唯一还需要鼠标的 GUI 操作**：Qt 的 `TreeItem` 对 UIA 的
+`Invoke` / `ExpandCollapse` / `Select` 全部无反应，实测展开状态一直是 0）。
+
+- 桌面不可用（锁屏 / RDP 断开）时返回 `code=gui_needs_active_desktop`，
+  不再抛 `RuntimeError: There is no active desktop required for moving mouse cursor!`
+- 打开失败的判定仍然是"活动标签 == 模型名"，避免上一个工程留下的旧标签冒充成功
+
+### `robei_gui_compile`
+
+```json
+{"timeout_s": 60}
+```
+
+Build → Compile。1.3 起用 `ExpandCollapse.Expand()` 打开 Build 菜单、对 `Compile` 条目
+`Invoke`（不碰鼠标），`Invoke` 立即返回，完成与否看 Output 里的 `Compile done` /
+`Check complete`。返回里 `menu.via` 说明这次是 `uia` 还是回退到 `mouse`，
+`generated` 列出 `Generating ...` 的文件。
+
 ### `robei_gui_save_project`
 
 ```json
 {}
 ```
 
-点 File → Save。Build → Synthesis 之前必须做一次，否则 Robei 只回
-`Error: please save your current project first.`。
+保存工程。Build → Synthesis 之前必须做一次，否则 Robei 只回
+`Error: please save your current project first.`
+
+1.3 起菜单操作走 UIA：`ExpandCollapse.Expand()` 打开 File 菜单，再对 popup 里的
+`Save` 调 `Invoke`（不碰鼠标）。返回里的 `menu = {"via": "uia" | "mouse", "uia_error"}`
+说明这次实际走的是哪条路；`Invoke` 立即返回，所以仍然用 Output 的变化判断成功。
 
 ### `robei_gui_compile_all` 的新字段
 
@@ -616,6 +696,7 @@ workspace 下 `logs/`、`build/` 目录里的文件（工程自带的 `<proj>/bu
 抓取整个交互桌面并保存为 `workspace/gui_shots/<label>-<时间戳>.png`，返回 `path`、
 `size_bytes`、`width`/`height`、`mean_rgb` 和亮度范围。和其它 GUI 工具一样走
 Session-1 桥（direct 或 schtasks）；用来在排查编译/布局问题时"看一眼屏幕"。
+`inline=true` 时同样附带 `ImageContent`（5 MiB 上限，超限给 `image_too_large` 报告）。
 
 ### `robei_gui_synthesis`
 
@@ -623,8 +704,9 @@ Session-1 桥（direct 或 schtasks）；用来在排查编译/布局问题时"�
 {"timeout_s": 240}
 ```
 
-点 Build → Synthesis 并等到 `Synthesis complete`（内部是 yosys 的 Xilinx 流程）。
-返回 `completed`、`errors`、`board_warnings`、`output_tail`、`delta`。
+Build → Synthesis 并等到 `Synthesis complete`（内部是 yosys 的 Xilinx 流程）。
+菜单同样走 UIA（`menu.via` 标明 `uia` 还是回退到 `mouse`）。
+返回 `completed`、`errors`、`board_warnings`、`menu`、`output_tail`、`delta`。
 
 - `board_warnings` 单独列出 `has no Device/Family configured`，不算失败
 - 前提：当前打开的是 `.const`（`Type="const"`），工程里有 `build/` 目录
@@ -718,10 +800,19 @@ Session-1 桥（direct 或 schtasks）；用来在排查编译/布局问题时"�
  "out_name": "counter4.png"}
 ```
 
-用 venv 内的 matplotlib（Agg 后端）逐信号阶梯图，写入
-`workspace/build/waveforms/`，返回路径和字节数。默认文件名带时间戳 + `uuid8`，
-并发调用不会互相覆盖（调用方显式给的 `out_name` 仍然遵守"已存在则拒绝"）；
+用 venv 内的 matplotlib（Agg 后端）逐信号阶梯图，返回路径和字节数。默认文件名带时间戳 +
+`uuid8`，并发调用不会互相覆盖（调用方显式给的 `out_name` 仍然遵守"已存在则拒绝"）；
 `x`/`z` 记为 NaN，最后一个值会一直画到 `max_time`（保持段不会缺一截）。
+
+**输出位置（1.3）**：VCD 在某个工程里（同级有 `*.proj`）就写到
+`<工程>/build/waveforms/`；`out_dir` 显式指定时以它为准（相对 workspace 解析，越界照样拒）；
+两者都没有才回退到 `workspace/build/waveforms/`（1.2 及以前的位置）。返回里的 `out_dir` /
+`project` 会说清落点。
+
+**`inline`**：`{"inline": true}` 时在文本 JSON 之外再返回一个 `ImageContent`
+（`mimeType=image/png`，`data` 是 base64）。上限 **5 MiB**，超限不报错：payload 里
+`inline = {"ok": false, "code": "image_too_large", "size_bytes", "limit_bytes"}`，`path` 照常返回。
+默认 `false`，行为和 1.2 完全一致（文本 JSON + `structured_content`）。
 
 ## 错误码、进度与取消
 
@@ -750,6 +841,10 @@ Session-1 桥（direct 或 schtasks）；用来在排查编译/布局问题时"�
 | `device_unsupported` | `build_bitstream` 的器件没有 chipdb / part.yaml（`list_fpga_devices` 看得到哪些可用） |
 | `unconstrained_io` | `.const` 里还有端口位没绑引脚，`missing` 列出 port 与 missing_bits |
 | `fpga_step_failed` | synth / route / package 某一段失败，`stage` 与 `record.log_tail` 指出位置 |
+| `path_escape_log` | `read_run_log` 只开 `workspace/logs`、`workspace/build/<run dir>` 或某个工程的 `build/` |
+| `gui_foreign_instance` | 有不是这个桥启动的 Robei 在跑；先自己关掉，桥只 kill 自己记录的 pid |
+| `gui_needs_active_desktop` | 桌面锁屏/断开，鼠标类 GUI 操作做不了（`open_project` / `compile` 不受影响） |
+| `gui_unsaved_changes` | 探测到画布有未保存修改；传 `discard_unsaved=true` 才会重启（当前版本探测不到） |
 
 **进度**：`simulate` / `simulate_project` / `lint_verilog` 在阶段边界上报
 `notifications/progress`（`total` 是阶段数，不是时间估计）。客户端不订阅就静默无副作用。

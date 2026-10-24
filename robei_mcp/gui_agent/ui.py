@@ -5,10 +5,15 @@ returns a plain dict; no file in the Robei installation is written by us.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
 from pathlib import Path
+
+from ..config import SETTINGS
+from ..errors import GuiForeignInstance, GuiNeedsActiveDesktop, GuiUnsavedChanges
+from .paths import PID_FILE
 
 PROCESS = "Robei.exe"
 MENU_BAR_ID = "QApplication.Romain.QMenuBar"
@@ -24,7 +29,8 @@ FILENAME_COMBO_ID = "1148"
 # --------------------------------------------------------------------------
 # window plumbing
 # --------------------------------------------------------------------------
-def _exe_name(pid: int) -> str:
+def _exe_path(pid: int) -> str:
+    """Full image path of a live pid, or "" when it is gone/unreadable."""
     import ctypes
 
     kernel32 = ctypes.windll.kernel32
@@ -35,10 +41,24 @@ def _exe_name(pid: int) -> str:
         size = ctypes.c_ulong(1024)
         buf = ctypes.create_unicode_buffer(1024)
         if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
-            return os.path.basename(buf.value)
+            return buf.value
         return ""
     finally:
         kernel32.CloseHandle(handle)
+
+
+def _exe_name(pid: int) -> str:
+    return os.path.basename(_exe_path(pid))
+
+
+def _same_image(left: str, right: str) -> bool:
+    def normalise(value: str) -> str:
+        text = value
+        if text.startswith("\\\\?\\"):
+            text = text[4:]
+        return os.path.normcase(os.path.normpath(text))
+
+    return bool(left) and bool(right) and normalise(left) == normalise(right)
 
 
 def windows() -> list[dict]:
@@ -67,6 +87,52 @@ def windows() -> list[dict]:
 
     win32gui.EnumWindows(cb, None)
     return rows
+
+
+def _read_pid_record() -> dict:
+    try:
+        return json.loads(PID_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_pid_record(pid: int, exe: str) -> None:
+    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PID_FILE.write_text(
+        json.dumps({"pid": int(pid), "exe": str(exe), "started": time.time()}, indent=1),
+        encoding="utf-8",
+    )
+
+
+def _drop_pid_record() -> None:
+    try:
+        PID_FILE.unlink()
+    except OSError:
+        pass
+
+
+def owned_pid() -> int | None:
+    """Pid of the Robei instance this bridge launched, or None.
+
+    The record only counts while that pid still names ``Robei.exe`` *and*, when the
+    record carries the launch path, still points at that same image.  A dead or
+    recycled pid, a hand-started IDE, or any other program drops the stale record
+    so ``close()`` can never kill something the bridge did not start.
+    """
+    record = _read_pid_record()
+    try:
+        pid = int(record.get("pid"))
+    except (TypeError, ValueError):
+        return None
+    image = _exe_path(pid)
+    if os.path.basename(image).lower() != PROCESS.lower():
+        _drop_pid_record()
+        return None
+    expected = str(record.get("exe") or "")
+    if expected and image and not _same_image(image, expected):
+        _drop_pid_record()
+        return None
+    return pid
 
 
 def _rect(obj) -> list[int]:
@@ -114,6 +180,12 @@ def _mouse(action: str, coords, retries: int = 1):
                 _foreground()
                 time.sleep(0.8)
                 continue
+            if "active desktop" in str(exc).lower():
+                raise GuiNeedsActiveDesktop(
+                    "the interactive desktop cannot take mouse input (locked or "
+                    "disconnected); open_project/compile work without it, the Files "
+                    "tree does not"
+                ) from exc
             raise
 
 
@@ -160,18 +232,35 @@ def attach(hwnd: int):
     return Application(backend="uia").connect(handle=hwnd).window(handle=hwnd)
 
 
-def main_window():
+def main_window(pid: int | None = None):
     """Return (wrapper, win_info) for the Robei main window, or (None, None).
 
-    Modal dialogs share the ``Qt640QWindowIcon`` class, so pick the biggest window
-    that actually owns a menu bar instead of the first Qt window.
+    ``pid`` - or the pid recorded when this bridge launched Robei - pins the
+    lookup to that exact process.  The old "biggest window with a menu bar"
+    heuristic only runs when no pid is known, which is the read-only status path;
+    with a record present a missing window means the recorded instance is gone.
     """
+    target = pid if pid is not None else owned_pid()
+    if target is not None:
+        for win in windows():
+            if win.get("pid") != target:
+                continue
+            try:
+                dlg = attach(win["hwnd"])
+            except Exception:
+                continue
+            try:
+                if dlg.child_window(auto_id=MENU_BAR_ID).exists(timeout=1.5):
+                    return dlg, win
+            except Exception:
+                continue
+        return None, None
     candidates = [w for w in windows() if w["class"].startswith("Qt")]
     candidates.sort(key=lambda w: -((w["rect"][2] - w["rect"][0]) * (w["rect"][3] - w["rect"][1])))
     for win in candidates:
         try:
             dlg = attach(win["hwnd"])
-            if dlg.child_window(auto_id="QApplication.Romain.QMenuBar").exists(timeout=1.5):
+            if dlg.child_window(auto_id=MENU_BAR_ID).exists(timeout=1.5):
                 return dlg, win
         except Exception:
             continue
@@ -320,6 +409,61 @@ def click_menu(dlg, title: str, item: str, attempts: int = 3) -> dict:
     return {"ok": False, "error": f"{item!r} not found under {title!r}", "tries": tries}
 
 
+def _menu_report(click: dict) -> dict:
+    """Which path reached the menu (``uia`` or ``mouse``) and why, if it fell back."""
+    return {
+        "via": click.get("via"),
+        "uia_error": click.get("uia_error"),
+        "tries": click.get("tries"),
+    }
+
+
+def _menu_action(dlg, title: str, item: str) -> dict:
+    """Expand a top menu through UIA and Invoke one entry - no mouse involved.
+
+    Qt exposes Invoke on the popup entries but a plain ``Invoke()`` on the menu
+    bar button does nothing, so the header is opened with
+    ``ExpandCollapse.Expand()``.  Invoke returns immediately; callers must confirm
+    completion from the Output dock or the produced files, never from the return
+    value.  The click path stays as a fallback.
+    """
+    failure = None
+    try:
+        header = None
+        for candidate in dlg.child_window(auto_id=MENU_BAR_ID).descendants(control_type="MenuItem"):
+            if candidate.element_info.name == title:
+                header = candidate
+                break
+        if header is None:
+            raise LookupError(f"menu {title!r} not found")
+        header.iface_expand_collapse.Expand()
+        prefix = f"{MENU_BAR_ID}.QAction.QMenu.QAction"
+        deadline = time.time() + 4.0
+        entry = None
+        while entry is None and time.time() < deadline:
+            for candidate in dlg.descendants(control_type="MenuItem"):
+                auto_id = candidate.element_info.automation_id or ""
+                if auto_id.startswith(prefix) and candidate.element_info.name == item:
+                    entry = candidate
+                    break
+            if entry is None:
+                time.sleep(0.2)
+        if entry is None:
+            raise LookupError(f"{item!r} not found under {title!r}")
+        invoke = entry.iface_invoke
+        if invoke is None:
+            raise LookupError(f"{title!r} > {item!r} exposes no Invoke pattern")
+        invoke.Invoke()
+        time.sleep(0.6)
+        return {"ok": True, "menu": title, "item": item, "via": "uia"}
+    except Exception as exc:  # noqa: BLE001 - any UIA hiccup falls back to the click path
+        failure = f"{type(exc).__name__}: {exc}"
+    result = click_menu(dlg, title, item)
+    result["via"] = "mouse"
+    result["uia_error"] = failure
+    return result
+
+
 def _wait_dialog(timeout_s: float = 8.0) -> dict | None:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -450,49 +594,93 @@ def uia_health() -> dict:
     }
 
 
-def _open_project_once(target: Path) -> dict:
-    dlg, win = main_window()
-    if dlg is None:
-        return {"ok": False, "error": "Robei is not running"}
-    report: dict = {"ok": False, "path": str(target)}
-    report["menu"] = click_menu(dlg, "File", "Open")
-    if not report["menu"].get("ok"):
-        report["error"] = "could not open the File menu"
-        return report
-    report["dialog"] = select_file_in_dialog(str(target))
-    if not report["dialog"].get("ok"):
-        report["error"] = "file dialog handling failed"
-        return report
-    time.sleep(2.0)
-    tree = tree_items(dlg)
-    report["tree"] = tree
-    report["models"] = model_tabs(dlg)
-    report["project"] = tree[0] if tree else None
-    expected = target.stem.lower()
-    report["ok"] = bool(tree) and str(report["project"]).lower() == expected
-    if not report["ok"]:
-        report["error"] = f"loaded project root is {report['project']!r}, expected {target.stem!r}"
-    report["output_tail"] = _tail(read_output(dlg), 10)
-    return report
+def _unsaved_marker(dlg, win) -> str | None:
+    """Best-effort "canvas has unsaved edits" probe (window title or model tabs)."""
+    texts = [(win or {}).get("title") or ""]
+    if dlg is not None:
+        texts.extend(model_tabs(dlg))
+    for text in texts:
+        if "*" in text:
+            return text
+    return None
 
 
-def open_project(path: str, attempts: int = 2) -> dict:
-    """Open a .proj; retries once because a freshly started IDE may swallow the first try."""
+def open_project(path: str, attempts: int = 2, discard_unsaved: bool = False) -> dict:
+    """Open a .proj by relaunching Robei with the project on its command line.
+
+    The Qt Open dialog wedges Robei's UIA provider (the bridge stops answering
+    while the modal dialog is up), so 1.3 opens the file through argv: no mouse,
+    no keyboard, no dialog - and it also works when the desktop is locked.
+
+    Only an instance this bridge started is ever closed.  A window started by
+    hand (or by anything else) raises ``GuiForeignInstance`` instead of being
+    killed.  ``attempts`` is kept for backwards compatibility; the argv path is
+    retried by the caller if it fails.
+    """
     target = Path(path)
     if not target.is_file():
-        return {"ok": False, "error": f"project not found: {path}"}
-    tries = []
-    for attempt in range(max(1, attempts)):
-        result = _open_project_once(target)
-        tries.append({k: result.get(k) for k in ("ok", "project", "error")})
-        if result.get("ok"):
-            result["attempts"] = len(tries)
-            return result
-        time.sleep(2.0)
-    last = result
-    last["attempts"] = len(tries)
-    last["tries"] = tries
-    return last
+        return {"ok": False, "code": "not_found", "error": f"project not found: {path}"}
+
+    owned = owned_pid()
+    running = [w for w in windows() if w["class"].startswith("Qt")]
+    foreign = [w for w in running if w.get("pid") != owned]
+    if foreign:
+        raise GuiForeignInstance(
+            "a Robei instance this bridge did not start is running (pid "
+            + ", ".join(str(w.get("pid")) for w in foreign)
+            + "); close it yourself and retry"
+        )
+
+    notes: list[str] = []
+    discarded = None
+    if owned is not None and running:
+        dlg, win = main_window(owned)
+        marker = _unsaved_marker(dlg, win) if dlg is not None else None
+        if marker is not None:
+            if not discard_unsaved:
+                raise GuiUnsavedChanges(
+                    f"Robei reports unsaved changes ({marker!r}); pass "
+                    "discard_unsaved=true to reopen anyway"
+                )
+            discarded = marker
+            notes.append(f"discarded unsaved changes ({marker})")
+        close()
+        if not _wait_exit(15.0):
+            return {"ok": False, "error": "Robei did not exit; close it manually and retry"}
+
+    exe = str(SETTINGS.robei_gui_exe)
+    started = launch(exe, 30.0, args=[str(target)])
+    if not started.get("ok"):
+        return {"ok": False, "error": started.get("error") or "Robei did not start", "launch": started}
+    pid = started.get("pid")
+    dlg, win = main_window(pid)
+    if dlg is None:
+        return {"ok": False, "error": "Robei window did not appear for the new process", "pid": pid}
+
+    deadline = time.time() + 25.0
+    tree: list[str] = []
+    while time.time() < deadline:
+        tree = tree_items(dlg)
+        if tree and tree[0].lower() == target.stem.lower():
+            break
+        time.sleep(0.5)
+    models = model_tabs(dlg)
+    report: dict = {
+        "ok": bool(tree) and tree[0].lower() == target.stem.lower(),
+        "path": str(target),
+        "project": tree[0] if tree else None,
+        "tree": tree,
+        "models": models,
+        "pid": pid,
+        "restarted": True,
+        "argv": started.get("argv"),
+        "unsaved_at_close": discarded,
+        "warnings": notes,
+        "output_tail": _tail(read_output(dlg), 10),
+    }
+    if not report["ok"]:
+        report["error"] = f"loaded project root is {report['project']!r}, expected {target.stem!r}"
+    return report
 
 
 def compile_model(timeout_s: float = 25.0) -> dict:
@@ -507,7 +695,7 @@ def compile_model(timeout_s: float = 25.0) -> dict:
             "models": models,
         }
     before = read_output(dlg)
-    click = click_menu(dlg, "Build", "Compile")
+    click = _menu_action(dlg, "Build", "Compile")
     if not click.get("ok"):
         return {"ok": False, "error": "could not reach Build>Compile", "detail": click}
     after, delta, marker, stopped = _wait_for(dlg, before, COMPILE_MARKERS + CONSTRAIN_MARKERS, timeout_s)
@@ -524,6 +712,7 @@ def compile_model(timeout_s: float = 25.0) -> dict:
     check = re.search(r"Check complete with (\d+) warning", delta)
     return {
         "ok": done and not errors,
+        "menu": _menu_report(click),
         "compiled": done,
         "constrain": constrain,
         "state": "ok" if done and not errors else ("failed" if errors else "unknown_state"),
@@ -546,7 +735,7 @@ def save_project() -> dict:
     if dlg is None:
         return {"ok": False, "error": "Robei is not running"}
     before = read_output(dlg)
-    click = click_menu(dlg, "File", "Save")
+    click = _menu_action(dlg, "File", "Save")
     if not click.get("ok"):
         return {"ok": False, "error": "could not reach File>Save", "detail": click}
     time.sleep(2.0)
@@ -554,6 +743,7 @@ def save_project() -> dict:
     delta = after[len(before):] if after.startswith(before) else after
     return {
         "ok": True,
+        "menu": _menu_report(click),
         "saved": "saved" in delta.lower(),
         "delta": delta.strip()[-2000:],
         "output_tail": _tail(after, 10),
@@ -569,7 +759,7 @@ def synthesis(timeout_s: float = 300.0) -> dict:
     if not models:
         return {"ok": False, "error": "no model is open; open the constrain file first", "models": models}
     before = read_output(dlg)
-    click = click_menu(dlg, "Build", "Synthesis")
+    click = _menu_action(dlg, "Build", "Synthesis")
     if not click.get("ok"):
         return {"ok": False, "error": "could not reach Build>Synthesis", "detail": click}
     after, delta, marker, stopped = _wait_for(
@@ -587,6 +777,7 @@ def synthesis(timeout_s: float = 300.0) -> dict:
     complete = marker in SYNTH_MARKERS
     return {
         "ok": complete and not errors,
+        "menu": _menu_report(click),
         "completed": complete,
         "state": "ok" if complete and not errors else ("failed" if (errors or stopped) else "unknown_state"),
         "model": models,
@@ -1130,10 +1321,25 @@ def open_model(name: str) -> dict:
             "tree": [e["text"] for e in _tree_entries(tree)],
         }
     rect = _rect(target.element_info.rectangle)
-    _double_click(_center(rect))
-    time.sleep(2.5)
-    models = model_tabs(dlg)
-    active = active_model(dlg)
+    # The canvas tab is the proof; poll for it instead of trusting one fixed
+    # sleep (a compile right before this call makes Robei slower to switch).
+    deadline = time.time() + 12.0
+    models: list[str] = []
+    active = None
+    attempts = 0
+    while time.time() < deadline:
+        _double_click(_center(rect))
+        attempts += 1
+        settle = time.time() + 3.5
+        while time.time() < settle:
+            models = model_tabs(dlg)
+            active = active_model(dlg)
+            if (active or "").lower() == stem:
+                break
+            time.sleep(0.4)
+        if (active or "").lower() == stem or attempts >= 2:
+            break
+        time.sleep(0.8)
     active_lower = (active or "").lower()
     return {
         # The active tab is the real proof; a stale tab from the previous project
@@ -1143,29 +1349,70 @@ def open_model(name: str) -> dict:
         "opened": name,
         "models": models,
         "active": active,
+        "attempts": attempts,
         "tree": [e["text"] for e in _tree_entries(tree)],
     }
 
 
-def launch(exe: str, wait_s: float = 20.0) -> dict:
+def launch(exe: str, wait_s: float = 20.0, args: list[str] | None = None) -> dict:
+    """Start Robei (optionally ``Robei.exe <file>``) and remember its pid."""
     import subprocess
 
-    if any(w["class"].startswith("Qt") for w in windows()):
-        return {"ok": True, "already_running": True, "windows": windows()}
-    proc = subprocess.Popen([exe], cwd=str(Path(exe).parent))
+    if any(w["class"].startswith("Qt") for w in windows()) and not args:
+        return {
+            "ok": True,
+            "already_running": True,
+            "windows": windows(),
+            "pid": owned_pid(),
+        }
+    command = [str(exe), *(args or [])]
+    proc = subprocess.Popen(command, cwd=str(Path(exe).parent))
+    _write_pid_record(proc.pid, str(exe))
     deadline = time.time() + wait_s
     while time.time() < deadline:
         time.sleep(1.0)
-        if main_window()[0] is not None:
-            return {"ok": True, "pid": proc.pid, "title": main_window()[1]["title"]}
-    return {"ok": False, "error": "Robei window did not appear", "pid": proc.pid}
+        dlg, win = main_window(proc.pid)
+        if dlg is not None:
+            return {
+                "ok": True,
+                "pid": proc.pid,
+                "title": win["title"],
+                "argv": command,
+            }
+    return {
+        "ok": False,
+        "error": "Robei window did not appear",
+        "pid": proc.pid,
+        "argv": command,
+    }
 
 
 def close() -> dict:
+    """Close only the Robei instance this bridge started."""
     import subprocess
 
-    proc = subprocess.run(["taskkill", "/F", "/IM", PROCESS], capture_output=True, text=True)
-    return {"ok": proc.returncode == 0, "stdout": proc.stdout.strip(), "stderr": proc.stderr.strip()}
+    pid = owned_pid()
+    if pid is None:
+        return {
+            "ok": True,
+            "closed": False,
+            "hint": "no Robei instance was started by this bridge (or it already exited)",
+        }
+    proc = subprocess.run(
+        ["taskkill", "/F", "/PID", str(pid)], capture_output=True, text=True
+    )
+    _wait_exit(15.0)
+    try:
+        PID_FILE.unlink()
+    except OSError:
+        pass
+    return {
+        "ok": proc.returncode == 0,
+        "closed": proc.returncode == 0,
+        "pid": pid,
+        "stdout": proc.stdout.strip(),
+        "stderr": proc.stderr.strip(),
+    }
 
 
 def _wait_exit(timeout_s: float = 15.0) -> bool:

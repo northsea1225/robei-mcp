@@ -15,6 +15,8 @@ JOB_FILE = RUN_DIR / "agent-job.json"
 LOCK_FILE = RUN_DIR / "agent.lock"
 SHOTS_DIR = SETTINGS.workspace / "gui_shots"
 LAST_JSON = SHOTS_DIR / "last.json"
+# pid of the Robei instance this bridge started (never a hand-started one)
+PID_FILE = RUN_DIR / "robei_pid.json"
 
 
 def ensure_run_dir() -> Path:

@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import json
+from pathlib import Path
 from typing import Any, Literal
 
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
-from mcp.types import ToolAnnotations
+from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 
 from . import __version__
 from . import constraints, doctor, errors, fpga, gui, p1, runstate, tools
@@ -35,6 +37,39 @@ WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHin
 WRITE_GUI = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True)
 DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False)
 DESTRUCTIVE_GUI = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True)
+
+
+def _image_or_payload(
+    payload: dict[str, Any],
+    inline: dict[str, Any] | None,
+    holder: dict[str, Any] | None = None,
+) -> Any:
+    """``[text, image]`` when a PNG was inlined, otherwise the plain payload.
+
+    ``inline=true`` is opt-in: the image rides along as an ``ImageContent`` while
+    the text block keeps the same JSON (minus the base64) plus an ``inline``
+    report.  Anything that cannot be inlined keeps the payload and says why.
+    """
+    if not inline:
+        return payload
+    target = payload if holder is None else holder
+    data = inline.get("data_b64")
+    target["inline"] = {k: v for k, v in inline.items() if k != "data_b64"}
+    content: list[Any] = [
+        TextContent(
+            type="text",
+            text=json.dumps(payload, ensure_ascii=False, default=str),
+        )
+    ]
+    if inline.get("ok") and data:
+        content.append(
+            ImageContent(
+                type="image",
+                mimeType=inline.get("mime_type") or "image/png",
+                data=data,
+            )
+        )
+    return CallToolResult(content=content, structured_content=payload)
 
 
 def _error(exc: Exception) -> dict[str, Any]:
@@ -127,6 +162,7 @@ async def simulate_project(
     test_name: str,
     timeout_s: int = 30,
     render: bool = False,
+    inline: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Run a Robei test/*.test model headlessly with the bundled iverilog (no IDE, no desktop).
@@ -136,11 +172,20 @@ async def simulate_project(
     get a PNG of the produced VCD.
     """
     try:
-        return await _invoke(tools.simulate_project, ctx, "simulate_project", 
-            proj_path=proj_path, test_name=test_name, timeout_s=timeout_s, render=render
+        payload = await _invoke(
+            tools.simulate_project,
+            ctx,
+            "simulate_project",
+            proj_path=proj_path,
+            test_name=test_name,
+            timeout_s=timeout_s,
+            render=render,
+            inline=inline,
         )
     except Exception as exc:
         return _error(exc)
+    plot = payload.get("plot") or {}
+    return _image_or_payload(payload, plot.get("inline"), holder=plot)
 
 
 @mcp.tool(annotations=READ)
@@ -200,12 +245,25 @@ def render_waveform(
     signals: list[str],
     out_name: str | None = None,
     title: str | None = None,
+    inline: bool = False,
 ) -> dict[str, Any]:
-    """Render selected VCD signals to a PNG under workspace/build/waveforms."""
+    """Render selected VCD signals to a PNG (project build/ or workspace/build/waveforms).
+
+    ``inline=true`` also returns the PNG as an ``ImageContent`` block (capped at
+    5 MiB; over the cap the payload carries ``inline.code=image_too_large`` and the
+    path is still returned).
+    """
     try:
-        return tools.render_waveform(vcd_path=vcd_path, signals=signals, out_name=out_name, title=title)
+        payload = tools.render_waveform(
+            vcd_path=vcd_path,
+            signals=signals,
+            out_name=out_name,
+            title=title,
+            inline=inline,
+        )
     except Exception as exc:
         return _error(exc)
+    return _image_or_payload(payload, payload.get("inline"))
 
 
 @mcp.tool(annotations=READ)
@@ -306,10 +364,14 @@ def import_library_model(
 
 
 @mcp.tool(annotations=WRITE)
-def create_robei_project(name: str, models: list[str] | None = None) -> dict[str, Any]:
+def create_robei_project(
+    name: str,
+    models: list[str] | None = None,
+    skeleton: bool = True,
+) -> dict[str, Any]:
     """Create a Robei project skeleton (folders, .proj, blank models) under the workspace."""
     try:
-        return tools.create_robei_project(name=name, models=models)
+        return tools.create_robei_project(name=name, models=models, skeleton=skeleton)
     except Exception as exc:
         return _error(exc)
 
@@ -736,10 +798,26 @@ async def robei_gui_launch(wait_s: int = 30, ctx: Context | None = None) -> dict
         return _error(exc)
 
 
-async def robei_gui_open_project(proj_path: str, timeout_s: int = 90, ctx: Context | None = None) -> dict[str, Any]:
-    """Open a .proj through File > Open and verify the Files tree shows that project."""
+async def robei_gui_open_project(
+    proj_path: str,
+    discard_unsaved: bool = False,
+    timeout_s: int = 90,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Open a .proj by relaunching Robei with it on the command line (no dialog, no mouse).
+
+    Any canvas edits are lost when the IDE restarts; pass discard_unsaved=true if
+    Robei reports unsaved changes and you accept that.
+    """
     try:
-        return await _invoke(gui.open_project, ctx, "robei_gui_open_project", proj_path=proj_path, timeout_s=timeout_s)
+        return await _invoke(
+            gui.open_project,
+            ctx,
+            "robei_gui_open_project",
+            proj_path=proj_path,
+            timeout_s=timeout_s,
+            discard_unsaved=discard_unsaved,
+        )
     except Exception as exc:
         return _error(exc)
 
@@ -800,12 +878,23 @@ async def robei_gui_compile_all(models: list[str] | None = None, ctx: Context | 
         return _error(exc)
 
 
-def robei_gui_screenshot(label: str = "shot") -> dict[str, Any]:
-    """Grab the interactive desktop and save a PNG under workspace/gui_shots."""
+def robei_gui_screenshot(label: str = "shot", inline: bool = False) -> dict[str, Any]:
+    """Grab the interactive desktop and save a PNG under workspace/gui_shots.
+
+    ``inline=true`` also returns the PNG as an ``ImageContent`` block (5 MiB cap,
+    same ``image_too_large`` report as ``render_waveform``).
+    """
     try:
-        return gui.screenshot(label=label)
+        payload = gui.screenshot(label=label)
     except Exception as exc:
         return _error(exc)
+    if not inline:
+        return payload
+    path = payload.get("path")
+    if not path:
+        payload["inline"] = {"ok": False, "code": "not_found", "error": "no screenshot path"}
+        return payload
+    return _image_or_payload(payload, tools.inline_image_payload(Path(path)))
 
 
 # ---------------------------------------------------------------------------

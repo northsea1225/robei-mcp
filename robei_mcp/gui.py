@@ -291,9 +291,15 @@ def launch(wait_s: int = 30) -> dict[str, Any]:
     return call("launch", {"exe": str(SETTINGS.robei_gui_exe), "wait_s": wait_s}, timeout_s=wait_s + 30)
 
 
-def open_project(proj_path: str, timeout_s: int = 90) -> dict[str, Any]:
+def open_project(
+    proj_path: str, timeout_s: int = 90, discard_unsaved: bool = False
+) -> dict[str, Any]:
     path = resolve_project_path(proj_path)
-    return call("open_project", {"path": str(path)}, timeout_s=timeout_s)
+    return call(
+        "open_project",
+        {"path": str(path), "discard_unsaved": discard_unsaved},
+        timeout_s=timeout_s,
+    )
 
 
 def open_model(name: str, timeout_s: int = 90) -> dict[str, Any]:

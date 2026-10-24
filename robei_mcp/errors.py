@@ -38,6 +38,18 @@ class UnconstrainedIO(ValueError):
         self.missing = missing or []
 
 
+class GuiForeignInstance(RuntimeError):
+    """A Robei window this bridge did not start is running."""
+
+
+class GuiNeedsActiveDesktop(RuntimeError):
+    """The interactive desktop cannot accept mouse input (locked or disconnected)."""
+
+
+class GuiUnsavedChanges(RuntimeError):
+    """The open canvas has unsaved edits and the caller did not pass discard_unsaved."""
+
+
 class FpgaStepFailed(RuntimeError):
     """One FPGA stage (synth/route/package) failed; ``stage`` names it.
 
@@ -87,6 +99,18 @@ HINTS = {
         "every port bit needs a package pin: create_robei_const / set_port the missing pins, "
         "then export_xdc again"
     ),
+    "gui_foreign_instance": (
+        "a Robei window started outside this bridge is in the way; close it yourself "
+        "(the bridge only stops instances it launched), then retry"
+    ),
+    "gui_needs_active_desktop": (
+        "the Windows session is locked or its desktop is disconnected: unlock it and "
+        "retry. open_project/compile work without the desktop, the Files tree needs the mouse"
+    ),
+    "gui_unsaved_changes": (
+        "Robei reports unsaved canvas edits; pass discard_unsaved=true to reopen and lose "
+        "them, or save the project first"
+    ),
     "fpga_step_failed": (
         "the failing stage is named in `stage`; `log_path` (or record.log_path) is a file "
         "under workspace/build that read_run_log can open, and log_tail already holds the last "
@@ -112,6 +136,12 @@ HINTS = {
 
 
 def code_for(exc: BaseException) -> str:
+    if isinstance(exc, GuiForeignInstance):
+        return "gui_foreign_instance"
+    if isinstance(exc, GuiNeedsActiveDesktop):
+        return "gui_needs_active_desktop"
+    if isinstance(exc, GuiUnsavedChanges):
+        return "gui_unsaved_changes"
     if isinstance(exc, FpgaStepFailed):
         return getattr(exc, "code_override", None) or "fpga_step_failed"
     if isinstance(exc, DeviceUnsupported):
