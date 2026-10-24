@@ -17,7 +17,13 @@ from pathlib import Path
 from typing import Any
 
 from .config import SETTINGS, file_version
-from .model import _attr_ci, generic_node, model_to_verilog, parse_robei_model
+from .model import (
+    _attr_ci,
+    generic_node,
+    model_to_verilog,
+    model_to_verilog_with_warnings,
+    parse_robei_model,
+)
 from . import runstate, xmlsafe
 from .security import (
     is_within,
@@ -1227,7 +1233,9 @@ def export_robei_verilog(
     path = resolve_model_path(model_path)
     sha_before = _sha256(path)
     model = parse_robei_model(path)
-    text = model_to_verilog(model, parameter_overrides=parameter_overrides)
+    text, export_warnings = model_to_verilog_with_warnings(
+        model, parameter_overrides=parameter_overrides
+    )
 
     name = out_name or f"{model['name']}.v"
     if not FILE_RE.match(name) or not name.lower().endswith(".v"):
@@ -1254,6 +1262,7 @@ def export_robei_verilog(
         "module": model["name"],
         "ports": [p["name"] for p in model["ports"]],
         "parameter_overrides": parameter_overrides or {},
+        "warnings": export_warnings,
         "lint": lint,
     }
 
@@ -1549,10 +1558,11 @@ def sync_robei_verilog(proj_path: str, overwrite: bool = True) -> dict[str, Any]
     written: list[dict[str, Any]] = []
     skipped: list[str] = []
     errors: list[dict[str, str]] = []
+    warnings: list[str] = []
     for model_file in sorted(model_dir.glob("*.model")):
         try:
             model = parse_robei_model(model_file)
-            text = model_to_verilog(model)
+            text, model_warnings = model_to_verilog_with_warnings(model)
         except Exception as exc:
             errors.append({"file": str(model_file), "error": f"{type(exc).__name__}: {exc}"})
             continue
@@ -1561,6 +1571,7 @@ def sync_robei_verilog(proj_path: str, overwrite: bool = True) -> dict[str, Any]
             skipped.append(str(target))
             continue
         target.write_text(text, encoding="utf-8", newline="\n")
+        warnings.extend(f"{model['name']}: {item}" for item in model_warnings)
         written.append(
             {
                 "path": str(target),
@@ -1576,6 +1587,7 @@ def sync_robei_verilog(proj_path: str, overwrite: bool = True) -> dict[str, Any]
         "written": written,
         "skipped": skipped,
         "errors": errors,
+        "warnings": warnings,
     }
 
 

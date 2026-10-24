@@ -684,6 +684,7 @@ def test_instance_parameter_overrides_are_emitted(work: Path) -> None:
         )
         text = model_to_verilog(parse_robei_model(Path(override["path"])))
         assert "pw #(.W(4)) u1(" in text
+        assert parse_robei_model(Path(override["path"]))["instances"][0]["parameters"] == "W = 4;"
 
         same_default = tools.create_robei_canvas_model(
             proj_path=str(proj), name="top_default",
@@ -696,6 +697,45 @@ def test_instance_parameter_overrides_are_emitted(work: Path) -> None:
         plain = model_to_verilog(parse_robei_model(Path(same_default["path"])))
         assert "pw u1(" in plain
         assert "#(" not in plain
+    finally:
+        shutil.rmtree(SETTINGS.workspace / name, ignore_errors=True)
+
+
+def test_malformed_instance_parameters_warn_and_emit_nothing(work: Path) -> None:
+    from robei_mcp.model import model_to_verilog_with_warnings
+
+    name = f"regress_badparam_{uuid.uuid4().hex[:8]}"
+    project = tools.create_robei_project(name, models=[])
+    try:
+        proj = Path(project["proj"])
+        model_dir = proj.parent / "model"
+        (model_dir / "pw.model").write_text(
+            _param_model_xml(
+                "pw",
+                "W = 1; // width",
+                [("a", "input", "W-1:0"), ("y", "output", "W-1:0")],
+                "assign y = a;",
+            ),
+            encoding="utf-8",
+        )
+        tools._register_model_in_project(proj, "pw")
+        canvas = tools.create_robei_canvas_model(
+            proj_path=str(proj), name="top_bad",
+            ports=[{"name": "a", "direction": "input", "width": 4},
+                   {"name": "y", "direction": "output", "width": 4}],
+            instances=[{"name": "u1", "model": "pw", "parameters": "W = ;"}],
+            wires=[{"from": "a", "to": "u1.a", "net": "a_n", "datasize": 4},
+                   {"from": "u1.y", "to": "y", "net": "y_n", "datasize": 4}],
+        )
+        text, warnings = model_to_verilog_with_warnings(parse_robei_model(Path(canvas["path"])))
+        assert "#(" not in text
+        assert warnings and "cannot parse Parameters" in warnings[0]
+
+        synced = tools.sync_robei_verilog(str(proj), overwrite=True)
+        assert synced["ok"] is True
+        assert any("cannot parse Parameters" in item for item in synced["warnings"])
+        exported = (proj.parent / "verilog" / "top_bad.v").read_text(encoding="utf-8")
+        assert "#(" not in exported
     finally:
         shutil.rmtree(SETTINGS.workspace / name, ignore_errors=True)
 

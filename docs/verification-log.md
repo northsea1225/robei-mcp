@@ -42,11 +42,21 @@ Datasize 生成范围，实例参数非空且与子模型默认值不同时生�
 - `test_modules_without_ports_parse_consistently`
 - `test_list_projects_skips_qa_trees`
 - `test_const_drive_pull_and_voltage_reach_xdc`
+- `test_malformed_instance_parameters_warn_and_emit_nothing`（写坏的 Parameters 不产生 `#(`，`sync` 返回 warnings）
 
-**Windows 回归**：`pytest -q tests` 47 passed；`portable_core` 16/16；stage3/4 OK；
+**Windows 回归**：`pytest -q tests` 48 passed；`portable_core` 16/16；stage3/4 OK；
 stage7 12/12；stage9、stage10 退出码 0；stage11 13/13；stage12 18/18；stage13 18/18；
 stage14 9/9；stage17 28/28；stage19 26/26（含 GUI Compile + Synthesis）；stage21 13/13。
 工具数 39（GUI 11），`ROBEI_MCP_GUI=0` 时 28。
+
+**GUI 截图实测**：打开 `workspace/robei_samples/two_level/two_level.proj` 后调用
+`robei_gui_screenshot`，得到
+`C:\dev\robei-mcp\workspace\gui_shots\review-1-0-3-20261024-144138.png`，
+3200×2000、953,568 字节，`transport=schtasks`；跑完 `git status` 仍只有 5 个 QA 未跟踪目录。
+
+**path_escape 实测**：`read_robei_model("C:\\Windows\\win.ini")` 返回
+`code=path_escape` 与 hint；`simulate` 引用 `C:/Windows/win.ini` 返回
+`code=path_rejected` + 顶层 `rejected` 列表。
 
 ### 1.0.2：QA 回归修复（2026-10-24）
 

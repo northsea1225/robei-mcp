@@ -12,17 +12,19 @@
 - **内部 wire 保留位宽**：画布上的 `<Wire Datasize="4">` 以前导出成 `wire mid;`，
   iverilog 报端口位宽不匹配、仿真得到 0。现在按 Datasize 生成 `wire [3:0] mid;`
   （Datasize 为 1/空时不加范围），同一条线取最宽的声明。
-- **实例参数覆盖**：嵌套 `<Module Parameters>` 非空、且与子模型 `Parameters` 的默认值不同时，
-  生成 `child #(.W(4)) u1(...)`；等于默认值则不输出。
-- **取证边界**：安装目录 + 仓库共 67 个 `.model` 里**没有**带实例参数覆盖的真实样本
-  （`<Module Parameters>` 全是空串），所以参数覆盖的“写入方”仍未经 Robei 实机确认。
-  读取沿用模型根节点同一种 `NAME = value;` 语法；解析为空就完全不输出，
-  不会猜测或写坏用户文件。`<Wire Datasize>` 字段本身在这些文件里是确认存在的。
+- **实例参数覆盖（experimental）**：嵌套 `<Module Parameters>` 非空、且与子模型
+  `Parameters` 的默认值不同时，生成 `child #(.W(4)) u1(...)`；等于默认值则不输出。
+  **还没有 Robei GUI 保存的样本，格式按根节点的 `NAME = value;` 推断**——安装目录 + 仓库
+  共 67 个 `.model` 里 `<Module Parameters>` 全是空串，没有可对照的实机样本。
+- `Parameters` 写坏/无法解析时**不输出任何 `#(...)`**，并把这些情况作为 `warnings`
+  返回（`export_robei_verilog` / `sync_robei_verilog`），不静默跳过。
+  `<Wire Datasize>` 字段本身在样本里是确认存在的。
 
 ### 路径与接口
 
 - 新增错误码 **`path_escape`**（`errors.py`），所有 `resolve_*` 越界都抛它，
-  hint 明确写“路径必须在 workspace 内”。`invalid_argument` 不再兜底路径问题。
+  hint 明确说明路径必须留在 workspace 内
+  （`the path must stay inside the workspace: ...`）。`invalid_argument` 不再兜底路径问题。
 - 配置里的 model roots 在 `_default_model_roots` / `_pick_roots` 去重，
   错误信息里的 allowed roots 不再重复列出 workspace。
 - `list_projects` 默认跳过 `workspace/_qa_runs` 与 `workspace/qa_*`，新增 `include_qa=true`。
