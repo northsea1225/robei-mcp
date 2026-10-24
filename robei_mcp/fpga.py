@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import SETTINGS
-from .errors import DeviceUnsupported, FpgaStepFailed
+from .errors import DeviceUnsupported, FpgaStepFailed, UnconstrainedIO
 from .model import model_to_verilog_with_warnings, parse_robei_model
 from .security import is_within, resolve_project_path
 from .verilog import parse_module_ports, robei_width
@@ -510,3 +510,230 @@ def _sha(path: Path) -> str:
     from . import tools
 
     return tools._sha256(path)
+
+
+# ---------------------------------------------------------------------------
+# M2: route + package -> .bit
+# ---------------------------------------------------------------------------
+def _missing_io(proj: Path, const: Path, exported: dict[str, Any], top: str | None) -> list[dict[str, Any]]:
+    """Port bits of the top model that the .const does not bind to a package pin."""
+    from . import constraints
+
+    info = constraints.pin_map(const)
+    covered = {(port, bit) for port, bits in (info.get("pins") or {}).items() for bit in bits}
+    model_name = info.get("model")
+    model_file = _project_paths(proj)["model"] / f"{model_name}.model" if model_name else None
+    ports: list[dict[str, Any]] = []
+    if model_file and model_file.is_file():
+        ports = parse_robei_model(model_file)["ports"]
+    elif exported["files"]:
+        chosen, _ = _pick_sources(exported, top)
+        source = chosen[0] if chosen else None
+        ports = []
+        if source is not None:
+            text = source.read_text(encoding="utf-8", errors="replace")
+            for port in parse_module_ports(text, top or MODULE_RE.search(text).group(1)):
+                ports.append(
+                    {"name": port["name"], "datasize": str(robei_width(port.get("width")) or 1),
+                     "inout": port.get("direction") or ""}
+                )
+    missing: list[dict[str, Any]] = []
+    for port in ports:
+        width = int(port.get("datasize") or 1)
+        holes = [bit for bit in range(width) if (port["name"], bit) not in covered]
+        if holes:
+            missing.append(
+                {
+                    "port": port["name"],
+                    "direction": port.get("inout") or "input",
+                    "missing_bits": holes if width > 1 else [0],
+                }
+            )
+    return missing
+
+
+def _normalize_steps(steps: list[str] | None) -> list[str]:
+    chosen = [str(step).strip().lower() for step in (steps or STAGES)]
+    unknown = [step for step in chosen if step not in STAGES]
+    if unknown:
+        raise ValueError(f"unknown step(s) {unknown}; expected a subset of {list(STAGES)}")
+    ordered = [step for step in STAGES if step in chosen]
+    if len(set(chosen)) != len(chosen):
+        raise ValueError("steps contains duplicates")
+    return ordered
+
+
+def build_bitstream(
+    proj_path: str,
+    part: str,
+    const_name: str | None = None,
+    steps: list[str] | None = None,
+    timeout_s: int = 600,
+) -> dict[str, Any]:
+    """Run yosys -> Roplace -> fasm2frames -> xc7frames2bit and report every stage."""
+    import time
+
+    from . import constraints, tools
+
+    started = time.monotonic()
+    proj = resolve_project_path(proj_path)
+    if not is_within(proj, SETTINGS.workspace):
+        raise ValueError("refusing to build a project outside the workspace")
+    device = _device(part)
+    if not device["buildable"]:
+        raise DeviceUnsupported(
+            f"{part} cannot be built: {device['reason']}; "
+            "call list_fpga_devices() for the parts that have both chipdb and part.yaml"
+        )
+    wanted = _normalize_steps(steps)
+    binaries = tool_paths()
+    missing_tools = [key for key, path in binaries.items() if not path.is_file()]
+    if missing_tools:
+        raise FpgaStepFailed(
+            f"missing FPGA binaries {missing_tools} next to Robei ({_bin_dir()}); "
+            "set ROBEI_FPGA_BIN to the folder holding Roplace.exe",
+            stage=wanted[0],
+        )
+
+    const = _const_path(proj, const_name)
+    exported = _export_build_verilog(proj)
+    sources, top = _pick_sources(exported, _const_model(const))
+    build = _project_paths(proj)["build"]
+    xdc = constraints.export_xdc(proj_path=str(proj), const_name=const.stem, also_build=True)
+    missing_io = _missing_io(proj, const, exported, top)
+    if missing_io:
+        names = [f"{item['port']}[{bit}]" for item in missing_io for bit in item["missing_bits"]]
+        raise UnconstrainedIO(
+            f"{const.name} leaves {len(names)} port bit(s) without a package pin: {names}",
+            missing=missing_io,
+        )
+
+    json_out = build / f"{const.stem}.json"
+    fasm_out = build / f"{const.stem}.fasm"
+    frame_out = build / f"{const.stem}.frame"
+    bit_out = build / f"{const.stem}.bit"
+    routed_out = build / f"{const.stem}_routed.json"
+    family = device["family"]
+    chipdb = Path(device["chipdb"] or "")
+    part_yaml = Path(device["part_yaml"] or "")
+
+    records: list[dict[str, Any]] = []
+    fmax: dict[str, Any] | None = None
+    if "synth" in wanted:
+        script = _yosys_script(sources, json_out)
+        records.append(
+            _run_stage(
+                [SETTINGS.yosys, "-p", script],
+                cwd=build,
+                timeout_s=int(timeout_s),
+                stage="synth",
+                outputs={"json": json_out},
+            )
+        )
+    elif "route" in wanted and not json_out.is_file():
+        raise FpgaStepFailed(
+            f"route needs {json_out.name}: run the synth step first (steps=['synth','route',...])",
+            stage="route",
+        )
+
+    if "route" in wanted:
+        route = _run_stage(
+            [
+                binaries["ropllace"],
+                "--chipdb",
+                chipdb,
+                "--xdc",
+                build / f"{const.stem}.xdc",
+                "--json",
+                json_out,
+                "--write",
+                routed_out,
+                "--fasm",
+                fasm_out,
+            ],
+            cwd=build,
+            timeout_s=int(timeout_s),
+            stage="route",
+            outputs={"fasm": fasm_out, "routed_json": routed_out},
+        )
+        route["unconstrained_note"] = None
+        fmax = _fmax("\n".join(route["log_tail"]))
+        records.append(route)
+    elif "package" in wanted and not fasm_out.is_file():
+        raise FpgaStepFailed(
+            f"package needs {fasm_out.name}: run the route step first",
+            stage="package",
+        )
+
+    if "package" in wanted:
+        package = _run_stage(
+            [
+                binaries["fasm2frames"],
+                "--db-root",
+                (db_root() / (family or "")).as_posix().rstrip("/") + "/",
+                "--part",
+                part,
+                fasm_out,
+                frame_out,
+            ],
+            cwd=build,
+            timeout_s=int(timeout_s),
+            stage="package.frames",
+            outputs={"frame": frame_out},
+        )
+        records.append(package)
+        records.append(
+            _run_stage(
+                [
+                    binaries["xc7frames2bit"],
+                    "--part_file",
+                    part_yaml,
+                    "--part_name",
+                    part,
+                    "--frm_file",
+                    frame_out,
+                    "--output_file",
+                    bit_out,
+                ],
+                cwd=build,
+                timeout_s=int(timeout_s),
+                stage="package.bit",
+                outputs={"bit": bit_out},
+            )
+        )
+
+    stat = _stat_pass(json_out, int(timeout_s)) if json_out.is_file() else {"counts": {}}
+    payload = _common(proj, part)
+    payload.update(
+        {
+            "ok": bit_out.is_file(),
+            "family": family,
+            "top": top,
+            "const": str(const),
+            "xdc": xdc["path"],
+            "steps_run": [record["stage"] for record in records],
+            "stages": records,
+            "artifacts": {
+                "json": {"path": str(json_out), "size_bytes": json_out.stat().st_size} if json_out.is_file() else None,
+                "fasm": {"path": str(fasm_out), "size_bytes": fasm_out.stat().st_size} if fasm_out.is_file() else None,
+                "frame": {"path": str(frame_out), "size_bytes": frame_out.stat().st_size} if frame_out.is_file() else None,
+                "bit": {
+                    "path": str(bit_out),
+                    "size_bytes": bit_out.stat().st_size,
+                    "sha256": _sha(bit_out),
+                }
+                if bit_out.is_file()
+                else None,
+            },
+            "utilization": _utilization(stat["counts"], _io_bits(sources, top)),
+            "fmax_reference": fmax,
+            "timing_note": (
+                "Roplace's Fmax is a reference number only: this build is not timing-signed off "
+                "(no .xdc clock constraints are turned into a sign-off report)"
+            ),
+            "seconds": round(time.monotonic() - started, 2),
+            "warnings": exported["warnings"],
+        }
+    )
+    payload["summary_path"] = _write_summary(_summary_path("fpga"), payload)
+    return payload

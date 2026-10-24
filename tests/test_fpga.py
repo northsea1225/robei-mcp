@@ -136,3 +136,91 @@ def test_synthesize_accepts_explicit_top(light_project: str) -> None:
     result = fpga.synthesize_project(proj_path=light_project, top="light", timeout_s=180)
     assert result["top"] == "light"
     assert result["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# M2: route + package
+# ---------------------------------------------------------------------------
+def _drop_pin(const_path: Path, pin: str) -> None:
+    """Remove one package pin (Port + Wire) so the const no longer covers a port bit."""
+    lines = const_path.read_text(encoding="utf-8").splitlines()
+    kept = []
+    for line in lines:
+        if f'Name="{pin}"' in line and "<Port" in line:
+            continue
+        # Robei escapes '>' as &gt; inside Wire endpoints, so match the pin loosely.
+        if pin in line and "<Wire" in line:
+            continue
+        kept.append(line)
+    const_path.write_text("\n".join(kept) + "\n", encoding="utf-8", newline="\n")
+
+
+@needs_yosys
+@needs_db
+@needs_fpga_binaries
+def test_build_bitstream_produces_bit_with_all_stages(light_project: str) -> None:
+    result = fpga.build_bitstream(proj_path=light_project, part="xc7a50tfgg484-1")
+    assert result["ok"] is True
+    assert [stage["stage"] for stage in result["stages"]] == [
+        "synth",
+        "route",
+        "package.frames",
+        "package.bit",
+    ]
+    bit = result["artifacts"]["bit"]
+    assert bit and Path(bit["path"]).is_file()
+    assert bit["size_bytes"] == Path(bit["path"]).stat().st_size
+    assert len(bit["sha256"]) == 64
+    assert Path(result["artifacts"]["fasm"]["path"]).is_file()
+    assert Path(result["artifacts"]["frame"]["path"]).is_file()
+    assert result["timing_note"]
+
+
+@needs_yosys
+@needs_db
+@needs_fpga_binaries
+def test_build_bitstream_steps_subset_stops_after_synth(light_project: str) -> None:
+    result = fpga.build_bitstream(proj_path=light_project, part="xc7a50tfgg484-1", steps=["synth"])
+    assert [stage["stage"] for stage in result["stages"]] == ["synth"]
+    assert result["ok"] is False
+    assert result["artifacts"]["bit"] is None
+
+
+@needs_db
+def test_build_bitstream_rejects_part_without_chipdb(light_project: str) -> None:
+    with pytest.raises(DeviceUnsupported) as excinfo:
+        fpga.build_bitstream(proj_path=light_project, part="xc7a100tcsg324-1")
+    assert code_for(excinfo.value) == "device_unsupported"
+    assert "chipdb" in str(excinfo.value)
+
+
+@needs_db
+def test_build_bitstream_reports_missing_pins(light_project: str) -> None:
+    from robei_mcp.errors import UnconstrainedIO
+
+    const = Path(light_project).parent / "const" / "light_constrain.const"
+    _drop_pin(const, "A18")
+    with pytest.raises(UnconstrainedIO) as excinfo:
+        fpga.build_bitstream(proj_path=light_project, part="xc7a50tfgg484-1")
+    assert code_for(excinfo.value) == "unconstrained_io"
+    assert excinfo.value.missing == [
+        {"port": "led", "direction": "output", "missing_bits": [3]}
+    ]
+
+
+@needs_db
+def test_build_bitstream_reports_missing_binaries(light_project: str, monkeypatch) -> None:
+    from robei_mcp.errors import FpgaStepFailed
+
+    monkeypatch.setattr(
+        fpga, "tool_paths", lambda: {name: Path(f"missing/{name}.exe") for name in ("ropllace", "fasm2frames", "xc7frames2bit")}
+    )
+    with pytest.raises(FpgaStepFailed) as excinfo:
+        fpga.build_bitstream(proj_path=light_project, part="xc7a50tfgg484-1")
+    assert code_for(excinfo.value) == "fpga_step_failed"
+    assert excinfo.value.stage == "synth"
+
+
+def test_normalize_steps_rejects_unknown_stage() -> None:
+    with pytest.raises(ValueError):
+        fpga._normalize_steps(["synth", "gdsii"])

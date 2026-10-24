@@ -26,6 +26,14 @@ class DeviceUnsupported(ValueError):
     """The requested FPGA part has no place-and-route model in the installed database."""
 
 
+class UnconstrainedIO(ValueError):
+    """A port bit has no package pin, so place-and-route cannot build a bitstream."""
+
+    def __init__(self, message: str, missing: list[dict] | None = None) -> None:
+        super().__init__(message)
+        self.missing = missing or []
+
+
 class FpgaStepFailed(RuntimeError):
     """One FPGA stage (synth/route/package) failed; ``stage`` names it."""
 
@@ -54,6 +62,10 @@ HINTS = {
         "this part has no chipdb (or no part.yaml); list_fpga_devices() shows which parts are buildable "
         "on the installed Robei database"
     ),
+    "unconstrained_io": (
+        "every port bit needs a package pin: create_robei_const / set_port the missing pins, "
+        "then export_xdc again"
+    ),
     "fpga_step_failed": (
         "the failing stage is named in `stage` and its log tail in `record.log_tail`; "
         "fix that stage before retrying (synth -> route -> package)"
@@ -75,6 +87,8 @@ def code_for(exc: BaseException) -> str:
         return getattr(exc, "code_override", None) or "fpga_step_failed"
     if isinstance(exc, DeviceUnsupported):
         return "device_unsupported"
+    if isinstance(exc, UnconstrainedIO):
+        return "unconstrained_io"
     if isinstance(exc, UnsafeXml):
         return "unsafe_xml"
     if isinstance(exc, PathEscape):

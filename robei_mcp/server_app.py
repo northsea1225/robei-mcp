@@ -652,6 +652,32 @@ async def synthesize_project(
         return _error(exc)
 
 
+@mcp.tool(annotations=WRITE)
+async def build_bitstream(
+    proj_path: str,
+    part: str,
+    const_name: str | None = None,
+    steps: list[str] | None = None,
+    timeout_s: int = 600,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Roplace -> fasm2frames -> xc7frames2bit, the three steps behind Build > Route/Package.
+
+    Each stage reports rc, seconds, log tail and its artifact; the first failure stops the
+    run with code=fpga_step_failed and that stage name. Parts without a chipdb return
+    device_unsupported; port bits without a package pin return unconstrained_io with the
+    missing list. Roplace's Fmax is a reference only - this is not a timing sign-off.
+    """
+    try:
+        return await _invoke(
+            fpga.build_bitstream, ctx, "build_bitstream",
+            proj_path=proj_path, part=part, const_name=const_name,
+            steps=steps, timeout_s=timeout_s,
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
 def robei_gui_status(output_lines: int = 20, probe: bool = False) -> dict[str, Any]:
     """Report whether Robei is running, the loaded project, open models and the Output tail.
 
