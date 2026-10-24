@@ -537,3 +537,47 @@ def test_set_parameter_dry_run_keeps_the_file(project: Path) -> None:
     out = tools.set_robei_parameter(f"{project.stem}/model/pw3.model", "LEN", 4, dry_run=True)
     assert out["dry_run"] is True and out["new_value"] == "4"
     assert target.read_bytes() == before
+
+
+def test_duplicate_wire_declaration_keeps_the_widest_datasize(project: Path) -> None:
+    """Robei writes ``Datasize`` as a width, so ``4`` must beat ``1`` on one net.
+
+    ``width_of`` used to read ``"4"`` as one bit, so the first declaration won by
+    accident and the bus silently collapsed.
+    """
+    _four_bit_project(project)
+    target = _model(project, "chain")
+    header = (
+        '<!DOCTYPE Robei>\n'
+        '<Module Category="Current" Class="module" Code="" Name="chain" Parameters="" '
+        'Parent="0" Type="model" Width="900">\n'
+        ' <Port Inout="input" Datasize="4" Datatype="wire" Name="a" Parent="chain"/>\n'
+        ' <Port Inout="output" Datasize="4" Datatype="wire" Name="y" Parent="chain"/>\n'
+        ' <Module Class="buf4" File="Current/buf4.model" Name="u1" Parent="chain" Type="model">\n'
+        '  <Port Inout="input" Datasize="4" Datatype="wire" Name="a" Parent="u1"/>\n'
+        '  <Port Inout="output" Datasize="4" Datatype="wire" Name="y" Parent="u1"/>\n'
+        " </Module>\n"
+        ' <Module Class="buf4" File="Current/buf4.model" Name="u2" Parent="chain" Type="model">\n'
+        '  <Port Inout="input" Datasize="4" Datatype="wire" Name="a" Parent="u2"/>\n'
+        '  <Port Inout="output" Datasize="4" Datatype="wire" Name="y" Parent="u2"/>\n'
+        " </Module>\n"
+        ' <Wire Name="a_n" From="chain>a" To="chain#u1>a" Datasize="4"/>\n'
+        ' <Wire Name="y_n" From="chain#u2>y" To="chain>y" Datasize="4"/>\n'
+    )
+    # the same net declared twice, narrow first: the wide one has to win
+    narrow_first = header + (
+        ' <Wire Name="mid" From="chain#u1>y" To="chain#u2>a" Datasize="1"/>\n'
+        ' <Wire Name="mid" From="chain#u1>y" To="chain#u2>a" Datasize="4"/>\n'
+        "</Module>\n"
+    )
+    target.write_text(narrow_first, encoding="utf-8")
+    text = model_to_verilog(parse_robei_model(target))
+    assert "wire [3:0] mid;" in text
+    assert "wire mid;" not in text
+
+    narrow_only = header + (
+        ' <Wire Name="mid" From="chain#u1>y" To="chain#u2>a" Datasize="1"/>\n'
+        "</Module>\n"
+    )
+    target.write_text(narrow_only, encoding="utf-8")
+    assert "wire mid;" in model_to_verilog(parse_robei_model(target))

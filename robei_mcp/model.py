@@ -354,6 +354,20 @@ def model_to_verilog(
     return text
 
 
+def _wider(candidate: int | None, current: int | None) -> bool:
+    """True when a wire declaration is strictly wider than the one already kept.
+
+    ``robei_width`` returns ``None`` for an expression it cannot resolve yet
+    (``LEN-1:0``); such a declaration never wins, and any resolvable width beats
+    it, so ``Datasize="4"`` is no longer read as one bit.
+    """
+    if candidate is None:
+        return False
+    if current is None:
+        return True
+    return candidate > current
+
+
 def model_to_verilog_with_warnings(
     model: dict[str, Any],
     parameter_overrides: dict[str, str | int] | None = None,
@@ -417,7 +431,7 @@ def model_to_verilog_with_warnings(
 
     instances = model.get("instances") or []
     if instances:
-        from .verilog import width_of
+        from .verilog import robei_width
 
         port_names = {p.get("name") for p in (model.get("ports") or [])}
         connections: dict[tuple[str, str], str] = {}
@@ -455,8 +469,8 @@ def model_to_verilog_with_warnings(
             if not net:
                 continue
             previous = wire_meta.get(net)
-            if previous is None or width_of(wire.get("datasize") or "") > width_of(
-                previous.get("datasize") or ""
+            if previous is None or _wider(
+                robei_width(wire.get("datasize")), robei_width(previous.get("datasize"))
             ):
                 wire_meta[net] = wire
         lines.append("")
