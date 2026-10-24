@@ -3,7 +3,7 @@
 > An MCP server that turns Robei EDA into AI-callable tools: Verilog lint, simulation,
 > waveform analysis, project XML, and optional GUI automation. Docs are in Chinese.
 
-**状态：稳定版**（39 个工具）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
+**状态：稳定版**（44 个工具）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
 
 > **升级注意（1.0.2 起）**：`simulate` 默认开启**严格路径扫描**。像
 > `$readmemh(PATH, mem)` 这种无法静态判定路径的写法，以前能跑，现在会直接返回
@@ -14,10 +14,14 @@
 以及（可选）驱动 Robei 本体 GUI。基于 MCP（Model Context Protocol）stdio 传输，
 可在 Codex / Claude Code 里直接用自然语言完成「写代码 → 检查 → 仿真 → 看波形」。
 
-- **39 个工具**，其中 28 个不需要 Robei、不需要桌面：只要有 `iverilog`/`vvp`/`yosys` 就能跑。
+- **44 个工具**，其中 33 个不需要 Robei、不需要桌面：只要有 `iverilog`/`vvp`/`yosys` 就能跑。
 - **不碰安装目录**：`E:\Robei` 全程只读，所有产物写在 `workspace/`。
 - **可回滚**：每次运行独立目录，默认不覆盖已有文件，改模型前先备份。
 - **不执行任意 shell**：固定工具白名单 + `shell=False` + 路径白名单。
+- **元件库直接用**：`list_library_models` 扫 Robei 自带 24 个 ToolBox 模型并逐个跑
+  `iverilog -g2012`；`import_library_model` 一键复制进工程、登记 `.proj`、再 lint 一次。
+- **画布可增量改**：`edit_robei_canvas` 用 `add_instance` / `connect` / `rename_wire` 这组
+  操作改画布，整批校验通过才落盘；`set_robei_code` / `set_robei_parameter` 改行为与参数。
 
 ## 快速开始
 
@@ -130,7 +134,7 @@ read_waveform(<上一步的 vcd_path>, signals=["counter4_tb.dut.count"], time=4
 | `ROBEI_HOME` | Robei 安装根目录 |
 | `IVERILOG_EXE` / `VVP_EXE` / `YOSYS_EXE` | 单独指定工具链 |
 | `VERILATOR_EXE` / `VERILATOR_ROOT_DIR` | Verilator 那一路 |
-| `ROBEI_MCP_GUI` | `0` 强制关闭 GUI 面（工具从 `tools/list` 消失，只剩 28 个） |
+| `ROBEI_MCP_GUI` | `0` 强制关闭 GUI 面（工具从 `tools/list` 消失，只剩 33 个） |
 | `ROBEI_MCP_STRICT_PATHS` | 默认 `1`：源码扫描遇到无法静态判定的路径（`$readmemh(PATH)`）直接拒绝；设 `0` 退回只记录 `unresolved` |
 | `ROBEI_DEFAULT_TIMEOUT_S` / `ROBEI_MAX_TIMEOUT_S` | 子进程超时，默认 30 / 120 秒 |
 
@@ -220,7 +224,7 @@ python C:\dev\robei-mcp\tools\gui\register_task.py --remove   # 删除
 
 | 文件 | 内容 |
 |---|---|
-| [docs/tool-reference.md](docs/tool-reference.md) | 39 个工具的完整参数、返回值、真实示例 |
+| [docs/tool-reference.md](docs/tool-reference.md) | 44 个工具的完整参数、返回值、真实示例 |
 | [docs/gui-tools.md](docs/gui-tools.md) | GUI 工具、Session-1 桥、坐标/菜单/画布的历史坑 |
 | [docs/L1-uia-bridge.md](docs/L1-uia-bridge.md) | Robei 内建 UIA 桥的层级与控件 id |
 | [docs/verification-log.md](docs/verification-log.md) | 每个阶段「实际跑通了什么」的证据日志 |

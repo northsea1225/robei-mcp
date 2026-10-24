@@ -218,6 +218,43 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 - 只写工程自己的 `verilog/` 目录（工程必须位于 workspace 内）
 - 返回每个文件的 `sha256`、大小与出错列表
 
+### `list_library_models`
+
+```json
+{"filter": "counter", "include_lint": true}
+```
+
+只读扫描 Robei 自带的 ToolBox（默认 `C:\ProgramData\Robei`；可用 `ROBEI_MCP_LIBRARY`
+指向别的目录，`;` 分隔多个）。
+
+- 每个模型返回 `name`（文件名）、`module_name`（文件里的 `<Module Name>`）、
+  `name_matches_module`、`type` / `class` / `category`、`ports`、`parameters`、`instances`、`size_bytes`
+- `constant.model` 里声明的是 `module register`，`mod_n_counter.model` 里是 `ring_counter`，
+  这两个 `name_matches_module=false`——导入时得用 `as_name`
+- `lint` 是真编译：把模型导出成 Verilog，再 `iverilog -g2012 -y <library root>` 编一遍，
+  返回 `ok` / `returncode` / `first_error` / `stderr`；`include_lint=false` 跳过（快很多）
+- `filter` 对文件名、模块名、Class、Category 做子串匹配；`limit` 默认 200
+- 库目录只读，不写任何东西
+
+### `import_library_model`
+
+```json
+{"name": "counter", "project": "myproj/myproj.proj"}
+{"name": "constant", "project": "myproj/myproj.proj", "as_name": "register"}
+```
+
+把库模型复制到 `<project>/model/<name>.model`，备份并登记 `.proj`，再对副本 lint 一次。
+
+- 目标已存在且 `overwrite=false` → `code=already_exists`；`overwrite=true` 留 `.bak-<时间戳>`
+- `.proj` 在登记前也备份（返回 `proj_backup`）
+- **文件名和模块名冲突**：`constant.model` 声明的是 `register`，直接导入会被拒绝并提示
+  `pass as_name='register'`；给了 `as_name` 之后文件改名的同时把根节点 `Name` 也改写
+  （`renamed_module` 记录 from/to），保证 Robei 看到的文件名和模块名一致
+- `name` 先按文件名匹配，找不到再按模块名匹配
+- `dry_run=true` 只校验并返回计划，不落盘
+- 返回 `source` / `target` / `relative_path` / `registration` / `backup` / `proj_backup` /
+  `sha256` / `ports` / `parameters` / `lint`
+
 ### `create_robei_test`
 
 ```json
@@ -266,6 +303,60 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 - 只写 workspace 内的工程；目标已存在要 `overwrite=true`（并留 `.bak-<时间戳>`）
 - 返回写回的 `sha256`、`instances` / `wires` / `netlist`（可直接检查有没有悬空端口）
 - Robei 打开后 F2 Compile 会自己把画布转成 Verilog 实例化
+
+### `edit_robei_canvas`
+
+```json
+{"model_path": "chain/model/chain.model",
+ "ops": [{"op": "add_instance", "name": "u1", "model": "buf4"},
+         {"op": "add_instance", "name": "u2", "model": "buf4"},
+         {"op": "connect", "from": "a", "to": "u1.a", "net": "a_n"},
+         {"op": "connect", "from": "u1.y", "to": "u2.a", "net": "mid", "datasize": 4},
+         {"op": "connect", "from": "u2.y", "to": "y", "net": "y_n"}]}
+```
+
+改画布模型，一次调用里的操作**原子执行**（全部校验通过才落盘）：
+
+| op | 参数 | 说明 |
+|---|---|---|
+| `add_instance` | `name`, `model`, 可选 `parameters` / `x` / `y` | 实例名必须唯一，被引用模型要在同一工程的 `model/` 下 |
+| `remove_instance` | `name` | 连带删掉接在该实例上的 wire |
+| `connect` | `from`, `to`, 可选 `net` / `datasize` | 端点写 `u1.a` 或顶层端口 `a`；两端位宽必须一致 |
+| `disconnect` | `net` / `from` / `to` 至少一个 | 匹配不到任何线就报错 |
+| `rename_wire` | `net`（或 `from`）+ `new_name` | 新名字不能和已有 net 撞 |
+
+- 位宽按 Robei 的语义算：`Datasize="4"` 是 4 位、`"3:0"` 是 4 位；`"LEN-1:0"` 这种
+  解析不出来的表达式要求两端字面量一致。不一致返回 `code=width_mismatch`，消息里带两边位宽
+- 端点不存在 / 实例重名 / 未知 op → `invalid_argument`
+- 返回 `diff`（增删的实例与 wire）、`instances`、`wires`、`netlist`、`verilog_preview`
+- 写盘前留 `.bak-<时间戳>`；`dry_run=true` 只返回预览
+- 旧式 `<Instance Name="u1" Module="and2"/>` 也能读：`instances[].module` 就是那个字段，
+  没有 `<Port>` 子节点时端口从子模型补齐
+
+### `set_robei_code`
+
+```json
+{"model_path": "myproj/model/and2.model", "code": "assign y = a & b;"}
+```
+
+只改行为级模型的 `Code`。带实例或 wire 的结构级模型直接拒绝（`code=not_behavioral`），
+避免把画布写成一半代码一半连线。返回 `code` / `code_lines` / `verilog_preview` /
+`sha256_before` / `sha256`；写盘前留备份，`dry_run=true` 不落盘。
+
+### `set_robei_parameter`
+
+```json
+{"model_path": "myproj/model/pw.model", "name": "LEN", "value": 8, "dry_run": true}
+```
+
+改一个根级参数的默认值，名字大小写不敏感。
+
+- 参数不存在 → `code=unknown_parameter`，并列出已声明的名字
+- 改完按新值重算 `width_info`：每个引用该参数的端口给出 `datasize`（原表达式）、
+  `expression`（代入后）、`width`、`resolved`、`range`
+- 其它参数的注释原样保留（`NAME = value; // comment`）；根级 `Parameters` 里有解析失败的
+  chunk 时先拒绝，避免把坏内容一起重写掉
+- 返回 `old_value` / `new_value` / `parameters` / `parameters_text`；写盘前留备份
 
 ### `generate_testbench`
 
@@ -497,12 +588,15 @@ Session-1 桥（direct 或 schtasks）；用来在排查编译/布局问题时"�
 | `unsafe_xml` | 文档里出现 `<!ENTITY>` 或带内部子集的 `<!DOCTYPE>` |
 | `not_found` | 文件/工程/模型/端口不存在 |
 | `already_exists` | 拒绝覆盖（`overwrite=true` 可覆盖并留 `.bak`） |
-| `invalid_argument` | 名字非法、连线端点不存在、路径逃逸、参数越界 |
+| `invalid_argument` | 名字非法、连线端点不存在、参数越界、未知 op |
 | `cancelled` | 客户端取消，子进程已被 kill |
 | `timeout` | 超过 `timeout_s` 或 `max_timeout_s` |
 | `compile_failed` / `run_failed` | iverilog 编译失败 / vvp 运行失败（看 `compile` / `simulation` 段） |
 | `path_rejected` | `simulate` 的安全扫描在编译前拒绝了 `include` / `$fopen` 等越界路径 |
 | `path_escape` | 传入路径解析到 workspace / 允许根目录之外；hint 会说明"路径必须在 workspace 内" |
+| `width_mismatch` | `edit_robei_canvas` 的 `connect` 两端位宽不同 |
+| `not_behavioral` | 对结构级模型（有实例或 wire）调用 `set_robei_code` |
+| `unknown_parameter` | `set_robei_parameter` 的名字不在 `parameter_list` 里 |
 
 **进度**：`simulate` / `simulate_project` / `lint_verilog` 在阶段边界上报
 `notifications/progress`（`total` 是阶段数，不是时间估计）。客户端不订阅就静默无副作用。

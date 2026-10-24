@@ -2,6 +2,68 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.1.0 — 2026-10-24
+
+**元件库可以直接用了，画布也能增量改。** 工具面 44 个（文件级 33 + GUI 11）；
+`ROBEI_MCP_GUI=0` 时 33 个。
+
+### 元件库（M1）
+
+- 新增 `list_library_models(filter?, include_lint=true, limit=200)`：只读扫描 Robei 自带的
+  ToolBox（默认 `C:\ProgramData\Robei`，`ROBEI_MCP_LIBRARY` 可覆盖），给出每个模型的
+  `name` / `module_name` / `ports` / `parameters` 和**真的** `iverilog -g2012` 编译结果。
+  24 个模型里 `constant.model`（模块名 `register`）与 `mod_n_counter.model`
+  （模块名 `ring_counter`）文件名与模块名不一致，用 `name_matches_module=false` 标出来。
+- 新增 `import_library_model(name, project, as_name?, overwrite=false, dry_run=false)`：
+  复制进 `<project>/model/`、备份 `.proj` 并登记、再 lint 副本。重名 → `already_exists`；
+  文件名和模块名冲突时拒绝并提示用 `as_name`（给了 `as_name` 就同时改文件名和根节点 `Name`）。
+
+### 画布增量编辑（M2）
+
+- 新增 `edit_robei_canvas(model, ops[], dry_run=false)`：`add_instance` / `remove_instance` /
+  `connect` / `disconnect` / `rename_wire` 一次调用内**原子执行**——先在内存里跑完全部校验，
+  任何一条失败都不落盘。返回 `diff`、`netlist` 和 `verilog_preview`。
+- 位宽按 Robei 的 `Datasize` 语义算（`4` 是 4 位、`3:0` 是 4 位、`LEN-1:0` 未解析时要求两边
+  字面量一致）：不一致返回新的错误码 `width_mismatch`，消息里带两边位宽。
+- `parse_robei_model` 顺带读出旧式 `<Instance Module="..."/>` 的 `Module` 字段
+  （`instances[].module`），这种实例没有 `<Port>` 子节点时端口从子模型补齐。
+- 新增 `set_robei_code(model, code, dry_run=false)`：只改行为级模型，结构级模型返回
+  `not_behavioral`。
+- 新增 `set_robei_parameter(model, name, value, dry_run=false)`：改一个根级参数并**重算
+  `width_info`**（给出代入后的表达式与解析出的位宽），保留其它参数的注释；名字不存在返回
+  `unknown_parameter`。
+- `create_robei_canvas_model` 与 `edit_robei_canvas` 现在共用同一个 `_render_canvas()`，
+  写出的画布格式只剩一处定义。
+- `verilog.robei_width()` 统一了"`Datasize` 是宽度还是范围"这个判断。
+
+### 测试（M3）
+
+- 给此前 pytest 里没有引用的工具补了测试（`tests/test_tool_coverage.py`，32 项）：
+  `render_waveform`（真出 PNG，校验 PNG 头与不可覆盖）、`robei_doctor`（浅/深两次）、
+  `create_robei_test`、`import_verilog_canvas`、`check_connectivity`（悬空网络 + 未知模块 +
+  完整设计）、`expect_waveform`（`at` 与 `from`+`to` 两种断言）、`waveform_stats`、
+  `create_robei_const` / `read_robei_const` / `export_robei_xdc` 三个工具层封装。
+- GUI 工具用 mock 的 `gui.call` 锁住 op/参数契约（status/launch/open_project/open_model/
+  compile/output/save_project/synthesis/close/compile_all/screenshot/health），并覆盖
+  `transport()=="unsupported"` 时返回 "GUI tools require Windows" 的分支。
+- `errors.py` 的映射表逐条测（15 条），并断言 `code_for` 能产出的每个 code 都在 `HINTS` 里。
+- `tests/test_1_1.py`（25 项）覆盖 M1/M2 的行为，含从零搭 4 位链路后真跑 iverilog/vvp
+  断言 `Y==A`、失败批次不落盘、`dry_run` 不写文件。
+
+### 里程碑实测（Windows，`workspace/verify_1_1_a`，跑完即删）
+
+- **画布**：`edit_robei_canvas` 从零搭出 `a→u1→mid→u2→y` 的 4 位链路（u1/u2 均为 `buf4`），
+  预览里是 `wire [3:0] mid;` + `buf4 u1(` / `buf4 u2(`；用 `iverilog`/`vvp` 实跑，
+  `A=1011 Y=1011 MATCH`、`A=0110 Y=0110 MATCH`。
+- **Robei 自己的 Compile**：工程在 Robei 里打开后，`andgate`（导入的库模型）和 `chain`
+  （编辑过的画布）各 Compile 一次，日志都是 `Check complete with 0 warnings.` +
+  `Compile done.`；Robei 生成的 `build/chain.v` 与我们的导出一致
+  ——`wire [3:0] mid;`、`buf4 u1(.a(a), .y(mid));`、`buf4 u2(.a(mid), .y(y));`。
+- **截图**（3200×2000，留在 `workspace/gui_shots/`，该目录 gitignore）：
+  `1-1-a-andgate-20261024-155633.png` 1,032,217 字节、
+  `1-1-a-chain-20261024-155642.png` 1,046,331 字节（第二张能看到工程树里的
+  `andgate/buf4/chain` 与画布上的 u1/u2）。
+
 ## 1.0.4 — 2026-10-24
 
 **`Parameters` 里的 `//` 注释不再吃掉它后面的参数。** 老解析器先按 `;` 切分再剥注释，于是
