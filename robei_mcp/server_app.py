@@ -678,6 +678,23 @@ async def build_bitstream(
         return _error(exc)
 
 
+@mcp.tool(annotations=ANALYZE)
+async def run_all_tests(
+    proj_path: str,
+    timeout_s: int = 60,
+    render: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Run every test/*.test model in a project and aggregate pass/fail plus VCD paths."""
+    try:
+        return await _invoke(
+            tools.run_all_tests, ctx, "run_all_tests",
+            proj_path=proj_path, timeout_s=timeout_s, render=render,
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
 def robei_gui_status(output_lines: int = 20, probe: bool = False) -> dict[str, Any]:
     """Report whether Robei is running, the loaded project, open models and the Output tail.
 

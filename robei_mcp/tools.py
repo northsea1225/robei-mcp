@@ -376,6 +376,22 @@ def _parse_verilator(text: str) -> tuple[list[dict[str, str]], list[dict[str, st
     return warnings, errors
 
 
+def _verilator_timing_support() -> tuple[bool, str | None]:
+    """``--timing`` exists from Verilator 5.0; older builds reject the flag outright."""
+    result = _run(
+        [SETTINGS.verilator, "--version"],
+        cwd=SETTINGS.workspace,
+        timeout_s=10,
+        env_extra={"VERILATOR_ROOT": str(SETTINGS.verilator_root)},
+    )
+    text = ((result.get("stdout") or "") + (result.get("stderr") or "")).strip()
+    match = re.search(r"Verilator\s+(\d+)\.(\d+)", text)
+    if not match:
+        return False, None
+    version = f"{match.group(1)}.{match.group(2)}"
+    return (int(match.group(1)), int(match.group(2))) >= (5, 0), version
+
+
 def _verilator_lint(sources: list[Path], top: str | None, timeout_s: int, run_dir: Path) -> dict[str, Any]:
     info: dict[str, Any] = {
         "available": SETTINGS.verilator.is_file(),
@@ -390,22 +406,48 @@ def _verilator_lint(sources: list[Path], top: str | None, timeout_s: int, run_di
         info["skipped"] = True
         return info
 
-    cmd: list[str | Path] = [
-        SETTINGS.verilator,
-        "--lint-only",
-        "-Wall",
-        "-Wno-fatal",
-        "-Wno-DECLFILENAME",
-    ]
-    if top:
-        cmd.extend(["--top-module", top])
-    cmd.extend(_tool_path(source) for source in sources)
+    timing_ok, timing_version = _verilator_timing_support()
+
+    def _command(with_timing: bool) -> list[str | Path]:
+        cmd: list[str | Path] = [
+            SETTINGS.verilator,
+            "--lint-only",
+            "-Wall",
+            "-Wno-fatal",
+            "-Wno-DECLFILENAME",
+        ]
+        if with_timing:
+            cmd.append("--timing")
+        if top:
+            cmd.extend(["--top-module", top])
+        cmd.extend(_tool_path(source) for source in sources)
+        return cmd
+
+    cmd = _command(timing_ok)
     result = _run(cmd, cwd=run_dir, timeout_s=timeout_s, env_extra={"VERILATOR_ROOT": str(SETTINGS.verilator_root)})
     text = (result.get("stdout") or "") + (result.get("stderr") or "")
+    timing_warning = None
+    if timing_ok and not result.get("ok") and "--timing" in text and re.search(
+        r"(unknown|unrecogni[sz]ed|invalid|bad).{0,20}timing|timing.{0,20}(unknown|not supported)",
+        text,
+        re.IGNORECASE,
+    ):
+        # Version said yes but this build refuses the flag: fall back and say so.
+        cmd = _command(False)
+        result = _run(cmd, cwd=run_dir, timeout_s=timeout_s, env_extra={"VERILATOR_ROOT": str(SETTINGS.verilator_root)})
+        text = (result.get("stdout") or "") + (result.get("stderr") or "")
+        timing_ok = False
+        timing_warning = (
+            f"verilator {timing_version or 'unknown'} rejected --timing; lint ran without it "
+            "(delays and #-based clocks are then reported as errors)"
+        )
     warnings, errors = _parse_verilator(text)
     info.update(
         {
             "ok": bool(result["ok"] and not errors),
+            "timing": timing_ok,
+            "timing_version": timing_version,
+            "timing_warning": timing_warning,
             "returncode": result["returncode"],
             "duration_ms": result["duration_ms"],
             "command": result["command"],
@@ -761,6 +803,82 @@ def simulate_project(
         except Exception as exc:
             result["plot"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     return result
+
+
+def run_all_tests(
+    proj_path: str,
+    timeout_s: int = 60,
+    render: bool = False,
+    progress=None,
+) -> dict[str, Any]:
+    """Run every ``test/*.test`` model in a project and aggregate the result.
+
+    One failing test does not stop the batch: the payload keeps per-test rc,
+    duration, VCD paths and the error tail so the caller can see what broke.
+    """
+    proj = resolve_project_path(proj_path)
+    if not is_within(proj, SETTINGS.workspace):
+        raise ValueError("refusing to simulate a project outside the workspace")
+    test_dir = proj.parent / "test"
+    tests = sorted(test_dir.glob("*.test")) if test_dir.is_dir() else []
+    rows: list[dict[str, Any]] = []
+    for index, test_path in enumerate(tests):
+        _notify(progress, index, max(1, len(tests)), f"running {test_path.stem}")
+        started = time.monotonic()
+        try:
+            result = simulate_project(
+                proj_path=str(proj),
+                test_name=test_path.stem,
+                timeout_s=timeout_s,
+                render=render,
+            )
+            row = {
+                "test": test_path.stem,
+                "ok": bool(result.get("ok")),
+                "returncode": result.get("returncode"),
+                "duration_ms": round((time.monotonic() - started) * 1000),
+                "vcd_paths": result.get("vcd_paths") or [],
+                "error_tail": [] if result.get("ok") else _result_tail(result),
+            }
+            if result.get("plot"):
+                row["plot"] = result["plot"]
+        except Exception as exc:  # one broken test must not hide the others
+            row = {
+                "test": test_path.stem,
+                "ok": False,
+                "returncode": None,
+                "duration_ms": round((time.monotonic() - started) * 1000),
+                "vcd_paths": [],
+                "error_tail": [f"{type(exc).__name__}: {exc}"],
+            }
+        rows.append(row)
+    _notify(progress, len(tests), max(1, len(tests)), "done")
+    passed = sum(1 for row in rows if row["ok"])
+    return {
+        "ok": bool(rows) and passed == len(rows),
+        "project": str(proj),
+        "project_relative": _rel(proj),
+        "total": len(rows),
+        "passed": passed,
+        "failed": len(rows) - passed,
+        "tests": rows,
+        "vcd_paths": [path for row in rows for path in row["vcd_paths"]],
+    }
+
+
+def _result_tail(result: dict[str, Any], lines: int = 8) -> list[str]:
+    """Error text of a simulate() payload: top level plus the compile/run sections."""
+    chunks = [result.get("stdout") or "", result.get("stderr") or ""]
+    for key in ("compile", "simulation"):
+        section = result.get(key)
+        if isinstance(section, dict):
+            chunks.extend([section.get("stderr") or "", section.get("stdout") or ""])
+    return _tail_lines("\n".join(chunk for chunk in chunks if chunk), lines)
+
+
+def _tail_lines(text: str, lines: int = 8) -> list[str]:
+    kept = [line.rstrip() for line in (text or "").splitlines() if line.strip()]
+    return kept[-lines:]
 
 
 def _norm_value(value: str | None) -> str | None:
@@ -1821,7 +1939,15 @@ def create_robei_canvas_model(
     }
 
 
-OP_KINDS = ("add_instance", "remove_instance", "connect", "disconnect", "rename_wire")
+OP_KINDS = (
+    "add_instance",
+    "remove_instance",
+    "add_port",
+    "remove_port",
+    "connect",
+    "disconnect",
+    "rename_wire",
+)
 
 
 def _canvas_int(value: Any, default: int) -> int:
@@ -1997,6 +2123,49 @@ def _apply_canvas_op(state: dict[str, Any], op: Any, model_dir: Path) -> dict[st
     kind = str(op.get("op") or "").strip()
     if kind not in OP_KINDS:
         raise ValueError(f"unknown op {kind!r}; expected one of {list(OP_KINDS)}")
+
+    if kind == "add_port":
+        name = str(op.get("name") or "").strip()
+        direction = str(op.get("direction") or op.get("inout") or "input").strip().lower()
+        if not PORT_NAME_RE.match(name):
+            raise ValueError(f"invalid port name: {name!r}")
+        if direction not in PORT_DIRECTIONS:
+            raise ValueError(f"invalid direction {direction!r}; expected one of {list(PORT_DIRECTIONS)}")
+        raw_width = op.get("width", op.get("datasize", 1))
+        width = _canvas_int(raw_width, 1) if raw_width not in (None, "") else 1
+        if not 1 <= width <= 1024:
+            raise ValueError("port width must be 1..1024")
+        if any(port["name"] == name for port in state["ports"]):
+            raise ValueError(f"duplicate port name: {name!r}")
+        side = str(op.get("side") or ("left" if direction == "input" else "right")).strip().lower()
+        if side not in {"left", "right", "top", "bottom"}:
+            raise ValueError(f"invalid side {side!r}; expected left/right/top/bottom")
+        state["ports"].append(
+            {
+                "name": name,
+                "direction": direction,
+                "width": width,
+                "datasize": str(width),
+                "datatype": str(op.get("datatype") or "wire").strip().lower(),
+                "side": side,
+            }
+        )
+        return {"op": kind, "port": name, "direction": direction, "width": width}
+
+    if kind == "remove_port":
+        name = str(op.get("name") or "").strip()
+        if not any(port["name"] == name for port in state["ports"]):
+            available = [port["name"] for port in state["ports"]]
+            raise ValueError(f"unknown port {name!r}; model has {available}")
+        dropped = [
+            wire for wire in state["wires"] if wire["from"] == name or wire["to"] == name
+        ]
+        state["ports"] = [port for port in state["ports"] if port["name"] != name]
+        state["wires"] = [
+            wire for wire in state["wires"]
+            if not (wire["from"] == name or wire["to"] == name)
+        ]
+        return {"op": kind, "port": name, "wires_dropped": len(dropped)}
 
     if kind == "add_instance":
         instance = str(op.get("name") or "").strip()
@@ -2175,6 +2344,7 @@ def edit_robei_canvas(
         "relative_path": _rel(path),
         "ops_applied": applied,
         "diff": _canvas_diff(before, working),
+        "ports": working["ports"],
         "instances": working["instances"],
         "wires": working["wires"],
         "netlist": preview_model["netlist"],
