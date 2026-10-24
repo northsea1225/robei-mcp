@@ -298,6 +298,29 @@ def width_of(range_text: str | None) -> int:
     return int(info["width"]) if info["width"] is not None else 1
 
 
+def robei_width(datasize: str | int | None) -> int | None:
+    """Robei's ``Datasize`` as a bit count.
+
+    Robei stores the *width* (``4``) far more often than a range (``3:0``), so
+    ``width_of`` alone is not enough here.  Returns ``None`` for an expression
+    that cannot be resolved yet (``LEN-1:0``) instead of silently saying 1.
+    """
+    if isinstance(datasize, int):
+        return max(1, datasize)
+    text = (str(datasize) if datasize is not None else "").strip()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1].strip()
+    if not text:
+        return 1
+    if ":" in text:
+        info = width_info(text)
+        return int(info["width"]) if info["width"] is not None else None
+    value = const_eval(text)
+    if value is None:
+        return None
+    return max(1, int(value))
+
+
 def classify_clocks(ports: list[dict[str, Any]]) -> list[str]:
     """Every input that looks like a clock, in declaration order."""
     clocks = [port["name"] for port in ports if port["direction"] == "input" and port["name"].lower() in CLOCK_NAMES]

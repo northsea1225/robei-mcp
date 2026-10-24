@@ -427,6 +427,50 @@ def create_robei_canvas_model(
 
 
 @mcp.tool(annotations=WRITE)
+def edit_robei_canvas(
+    model_path: str,
+    ops: list[dict[str, Any]],
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Edit a canvas model in place, atomically, then return the diff and a Verilog preview.
+
+    ops: add_instance [{"op": "add_instance", "name": "u1", "model": "and2"}],
+    remove_instance, connect [{"from": "a", "to": "u1.a", "net": "a_n"}],
+    disconnect [{"net": "a_n"}], rename_wire [{"net": "a_n", "new_name": "a_bus"}].
+    Unknown ports/instances, width mismatches and duplicate names abort the whole call.
+    """
+    try:
+        return tools.edit_robei_canvas(model_path=model_path, ops=ops, dry_run=dry_run)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=WRITE)
+def set_robei_code(model_path: str, code: str, dry_run: bool = False) -> dict[str, Any]:
+    """Replace the Code body of a behavioural model (models with instances/wires are refused)."""
+    try:
+        return tools.set_robei_code(model_path=model_path, code=code, dry_run=dry_run)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=WRITE)
+def set_robei_parameter(
+    model_path: str,
+    name: str,
+    value: str | int,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Change one root parameter default and re-resolve the port widths it feeds."""
+    try:
+        return tools.set_robei_parameter(
+            model_path=model_path, name=name, value=value, dry_run=dry_run
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=WRITE)
 def generate_testbench(
     verilog_path: str,
     top: str,

@@ -93,6 +93,9 @@ def _parse_instance(element: ET.Element) -> dict[str, Any]:
         "instance": _attr_ci(element, "Name") or "",
         "model_file": _attr_ci(element, "File") or "",
         "class": _attr_ci(element, "Class") or "",
+        # Only the legacy <Instance Module="..."> schema carries this; Robei's
+        # nested <Module> keeps the reference in Class/File instead.
+        "module": _attr_ci(element, "Module") or "",
         "x": _attr_ci(element, "X"),
         "y": _attr_ci(element, "Y"),
         "width": _attr_ci(element, "Width"),
@@ -117,7 +120,17 @@ def _parse_wire(element: ET.Element) -> dict[str, Any]:
 
 
 def parse_robei_model(path: Path) -> dict[str, Any]:
-    root = xmlsafe.load(path)
+    return parse_robei_model_root(xmlsafe.load(path), path)
+
+
+def parse_robei_model_text(text: str, path: Path | str = "<memory>") -> dict[str, Any]:
+    """Parse model XML that is already in memory (editor round-trips, previews)."""
+    xmlsafe.check_text(text, str(path))
+    return parse_robei_model_root(ET.fromstring(text), Path(str(path)))
+
+
+def parse_robei_model_root(root: ET.Element, path: Path) -> dict[str, Any]:
+    """Build the model dict from an already-parsed root element."""
     ports: list[dict[str, Any]] = []
     instances: list[dict[str, Any]] = []
     wires: list[dict[str, Any]] = []
@@ -127,7 +140,9 @@ def parse_robei_model(path: Path) -> dict[str, Any]:
         if tag == "port":
             ports.append(_parse_port(child))
             continue
-        if tag == "module":
+        # Robei's canvas uses a nested <Module Type="model"> per placed instance;
+        # the older/synthetic schema writes <Instance Name="u1" Module="child"/>.
+        if tag in {"module", "instance"}:
             instances.append(_parse_instance(child))
             continue
         if tag == "wire":
@@ -163,8 +178,15 @@ def parse_robei_model(path: Path) -> dict[str, Any]:
         "code": code,
         "code_lines": code.splitlines(),
         "other_children": other_children,
-        "size_bytes": path.stat().st_size,
+        "size_bytes": _size_bytes(path, root),
     }
+
+
+def _size_bytes(path: Path, root: ET.Element) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:  # in-memory documents have no file behind them
+        return len(ET.tostring(root, encoding="unicode").encode("utf-8"))
 
 
 def build_netlist(
@@ -470,7 +492,7 @@ def model_to_verilog_with_warnings(
         for inst in instances:
             source = inst.get("model_file") or ""
             module = Path(source).stem if source else ""
-            module = module or inst.get("class") or ""
+            module = module or inst.get("class") or inst.get("module") or ""
             overrides: list[tuple[str, str]] = []
             raw_parameters = (inst.get("parameters") or "").strip()
             if raw_parameters:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import bisect
+import copy
 import hashlib
 import json
 import os
@@ -23,7 +24,9 @@ from .model import (
     model_to_verilog,
     model_to_verilog_with_warnings,
     parse_robei_model,
+    parse_robei_model_text,
 )
+from .errors import NotBehavioral, UnknownParameter, WidthMismatch
 from . import runstate, xmlsafe
 from .security import (
     is_within,
@@ -38,7 +41,7 @@ from .vcd import find_events as vcd_find_events
 from .vcd import match_signals, parse_vcd, query_vcd, render_waveform_png, timescale_fs
 from .verilog import generate_testbench as build_testbench
 from .verilog import parse_module_ports, classify_control
-from .verilog import width_info, width_of
+from .verilog import robei_width, width_info
 
 TOP_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 FILE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -1631,7 +1634,9 @@ def _canvas_port_xml(
     y = 0.1875 + index * step
     direction = port.get("direction") or port.get("inout") or "input"
     datatype = port.get("datatype") or "wire"
-    width = port.get("width") or port.get("datasize") or 1
+    # ``datasize`` keeps Robei's own spelling (a width, a range, or a parameter
+    # expression such as ``LEN-1:0``); ``width`` is the resolved integer.
+    width = port.get("datasize") or port.get("width") or 1
     return (
         f'  <Port Connect="{_attr(port.get("connect", ""))}" Name="{_attr(port["name"])}" '
         f'Inout="{direction}" Function="" Width="20" Side="{side}" X="{x}" Y="{y:.6f}" '
@@ -1726,7 +1731,7 @@ def create_robei_canvas_model(
         )
 
     by_instance = {item["instance"]: item for item in placed}
-    cleaned_wires: list[dict[str, str]] = []
+    cleaned_wires: list[dict[str, Any]] = []
     for index, wire in enumerate(wires):
         frm = str(wire.get("from") or "").strip()
         to = str(wire.get("to") or "").strip()
@@ -1742,38 +1747,54 @@ def create_robei_canvas_model(
         cleaned_wires.append(
             {
                 "net": str(wire.get("net") or f"{name}_n{index}"),
-                "from": _canvas_endpoint(name, frm),
-                "to": _canvas_endpoint(name, to),
+                "from": frm,
+                "to": to,
                 "datasize": str(wire.get("datasize") or 1),
+                "datatype": "wire",
             }
         )
 
-    lines = ["<!DOCTYPE Robei>"]
-    lines.append(
-        f'<Module Name="{_attr(name)}" Type="module" Width="900" Class="module" '
-        f'Comment="{_attr(comment)}" X="0" Parameters="" Y="0" Parent="0" Height="600" '
-        f'Color="#d3d3d3" Include="" File="Current/{_attr(name)}.model" Code="">'
-    )
-    for item in placed:
-        lines.append(
-            f' <Module Name="{_attr(item["instance"])}" Type="model" Width="160" '
-            f'Class="{_attr(item["class"])}" Comment="" X="{item["x"]}" '
-            f'Parameters="{_attr(item["parameters"])}" Y="{item["y"]}" '
-            f'Parent="{_attr(name)}" Height="160" Color="#d3d3d3" Include="" '
-            f'File="Current/{_attr(item["model"])}.model" Code="">'
-        )
-        for index, port in enumerate(item["ports"]):
-            lines.append(_canvas_port_xml(item["instance"], port, index, len(item["ports"]), True))
-        lines.append(" </Module>")
-    for index, port in enumerate(cleaned_ports):
-        lines.append(_canvas_port_xml(name, port, index, len(cleaned_ports), False))
-    for wire in cleaned_wires:
-        lines.append(
-            f' <Wire Name="{_attr(wire["net"])}" To="{wire["to"]}" From="{wire["from"]}" '
-            f'Datatype="wire" Parent="{_attr(name)}" Datasize="{wire["datasize"]}"/>'
-        )
-    lines.append("</Module>")
-    xml_text = "\n".join(lines) + "\n"
+    state: dict[str, Any] = {
+        "name": name,
+        "comment": comment,
+        "parameters": "",
+        "ports": [
+            {
+                "name": port["name"],
+                "direction": port["direction"],
+                "width": port["width"],
+                "datasize": str(port["width"]),
+                "datatype": port["datatype"],
+                "side": port["side"],
+            }
+            for port in cleaned_ports
+        ],
+        "instances": [
+            {
+                "instance": item["instance"],
+                "model": item["model"],
+                "class": item["class"],
+                "module": "",
+                "x": item["x"],
+                "y": item["y"],
+                "parameters": item["parameters"],
+                "ports": [
+                    {
+                        "name": port["name"],
+                        "direction": port["direction"],
+                        "width": robei_width(port["width"]),
+                        "datasize": str(port["width"] or 1),
+                        "datatype": port["datatype"],
+                        "side": "",
+                    }
+                    for port in item["ports"]
+                ],
+            }
+            for item in placed
+        ],
+        "wires": cleaned_wires,
+    }
+    xml_text = _render_canvas(state)
     ET.fromstring(xml_text)
 
     target = model_dir / f"{name}.model"
@@ -1798,6 +1819,507 @@ def create_robei_canvas_model(
         "wires": parsed["wires"],
         "netlist": parsed["netlist"],
     }
+
+
+OP_KINDS = ("add_instance", "remove_instance", "connect", "disconnect", "rename_wire")
+
+
+def _canvas_int(value: Any, default: int) -> int:
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+def _shorthand_endpoint(endpoint: dict[str, Any] | None) -> str:
+    """``top#u1>a`` -> ``u1.a``; ``top>y`` -> ``y``."""
+    if not endpoint:
+        return ""
+    port = endpoint.get("port") or ""
+    if not port:
+        return ""
+    instance = endpoint.get("instance")
+    return f"{instance}.{port}" if instance else port
+
+
+def _canvas_state(model: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a parsed model into the shape the canvas renderer/editor uses."""
+    return {
+        "name": model["name"],
+        "comment": model.get("comment") or "",
+        "parameters": model.get("parameters") or "",
+        "ports": [
+            {
+                "name": port["name"],
+                "direction": port["inout"] or "input",
+                "width": robei_width(port["datasize"]),
+                "datasize": port["datasize"] or "",
+                "datatype": port["datatype"] or "wire",
+                "side": port["side"] or "",
+            }
+            for port in model["ports"]
+        ],
+        "instances": [
+            {
+                "instance": inst["instance"],
+                "model": (
+                    inst.get("module")
+                    or inst.get("class")
+                    or Path(inst.get("model_file") or "").stem
+                ),
+                "class": inst.get("class") or "",
+                "module": inst.get("module") or "",
+                "x": _canvas_int(inst.get("x"), 200),
+                "y": _canvas_int(inst.get("y"), 120),
+                "parameters": inst.get("parameters") or "",
+                "ports": [
+                    {
+                        "name": port["name"],
+                        "direction": port["inout"] or "input",
+                        "width": robei_width(port["datasize"]),
+                        "datasize": port["datasize"] or "",
+                        "datatype": port["datatype"] or "wire",
+                        "side": port["side"] or "",
+                    }
+                    for port in inst["ports"]
+                ],
+            }
+            for inst in model["instances"]
+        ],
+        "wires": [
+            {
+                "net": wire["net"],
+                "from": _shorthand_endpoint(wire.get("from")),
+                "to": _shorthand_endpoint(wire.get("to")),
+                "datasize": wire.get("datasize") or "1",
+                "datatype": wire.get("datatype") or "wire",
+            }
+            for wire in model["wires"]
+        ],
+    }
+
+
+def _render_canvas(state: dict[str, Any]) -> str:
+    """Serialize the editable state back into Robei's canvas XML."""
+    name = state["name"]
+    lines = ["<!DOCTYPE Robei>"]
+    lines.append(
+        f'<Module Name="{_attr(name)}" Type="module" Width="900" Class="module" '
+        f'Comment="{_attr(state.get("comment") or "")}" X="0" '
+        f'Parameters="{_attr(state.get("parameters") or "")}" Y="0" Parent="0" Height="600" '
+        f'Color="#d3d3d3" Include="" File="Current/{_attr(name)}.model" Code="">'
+    )
+    for item in state["instances"]:
+        module_attr = f'Module="{_attr(item["module"])}" ' if item.get("module") else ""
+        lines.append(
+            f' <Module Name="{_attr(item["instance"])}" Type="model" Width="160" '
+            f'Class="{_attr(item["class"] or item["model"])}" {module_attr}Comment="" '
+            f'X="{item["x"]}" Parameters="{_attr(item["parameters"])}" Y="{item["y"]}" '
+            f'Parent="{_attr(name)}" Height="160" Color="#d3d3d3" Include="" '
+            f'File="Current/{_attr(item["model"])}.model" Code="">'
+        )
+        for index, port in enumerate(item["ports"]):
+            lines.append(_canvas_port_xml(item["instance"], port, index, len(item["ports"]), True))
+        lines.append(" </Module>")
+    for index, port in enumerate(state["ports"]):
+        lines.append(_canvas_port_xml(name, port, index, len(state["ports"]), False))
+    for wire in state["wires"]:
+        lines.append(
+            f' <Wire Name="{_attr(wire["net"])}" To="{_canvas_endpoint(name, wire["to"])}" '
+            f'From="{_canvas_endpoint(name, wire["from"])}" Datatype="{_attr(wire["datatype"])}" '
+            f'Parent="{_attr(name)}" Datasize="{_attr(str(wire["datasize"]))}"/>'
+        )
+    lines.append("</Module>")
+    return "\n".join(lines) + "\n"
+
+
+def _canvas_lookup(state: dict[str, Any]) -> tuple[dict[str, dict], dict[str, dict]]:
+    instances = {item["instance"]: item for item in state["instances"]}
+    ports = {port["name"]: port for port in state["ports"]}
+    return instances, ports
+
+
+def _endpoint_info(state: dict[str, Any], ref: str) -> dict[str, Any]:
+    """Width + raw Datasize of ``u1.a`` / ``a``; unknown endpoints raise."""
+    ref = (ref or "").strip()
+    if not ref:
+        raise ValueError("endpoint must not be empty")
+    instances, ports = _canvas_lookup(state)
+    instance_name, separator, port_name = ref.partition(".")
+    if separator:
+        instance = instances.get(instance_name)
+        if instance is None:
+            raise ValueError(f"unknown instance {instance_name!r} in endpoint {ref!r}")
+        port = next((item for item in instance["ports"] if item["name"] == port_name), None)
+        if port is None:
+            known = [item["name"] for item in instance["ports"]]
+            raise ValueError(f"instance {instance_name!r} has no port {port_name!r} (has {known})")
+    else:
+        port = ports.get(ref)
+        if port is None:
+            raise ValueError(f"unknown top-level port {ref!r}")
+    return {"width": port["width"], "datasize": port.get("datasize") or ""}
+
+
+def _instance_ports_from_model(model: dict[str, Any]) -> list[dict[str, Any]]:
+    """The port list a placed instance needs, taken from the referenced model."""
+    return [
+        {
+            "name": port["name"],
+            "direction": port["inout"] or "input",
+            "width": robei_width(port["datasize"]),
+            "datasize": port["datasize"] or "",
+            "datatype": port["datatype"] or "wire",
+            "side": "",
+        }
+        for port in model["ports"]
+    ]
+
+
+def _hydrate_instance_ports(state: dict[str, Any], model_dir: Path) -> None:
+    """Legacy ``<Instance Module="x"/>`` carries no ports; read them from x.model.
+
+    Without this a canvas that only references the child by name could not be
+    wired (there would be nothing to validate the endpoint against).
+    """
+    for item in state["instances"]:
+        if item["ports"] or not item["model"]:
+            continue
+        source = model_dir / f"{item['model']}.model"
+        if source.is_file():
+            item["ports"] = _instance_ports_from_model(parse_robei_model(source))
+
+
+def _apply_canvas_op(state: dict[str, Any], op: Any, model_dir: Path) -> dict[str, Any]:
+    """Mutate ``state`` for one op. Validation happens before anything is written."""
+    if not isinstance(op, dict):
+        raise ValueError("every op must be an object")
+    kind = str(op.get("op") or "").strip()
+    if kind not in OP_KINDS:
+        raise ValueError(f"unknown op {kind!r}; expected one of {list(OP_KINDS)}")
+
+    if kind == "add_instance":
+        instance = str(op.get("name") or "").strip()
+        module = str(op.get("model") or op.get("module") or "").strip()
+        if module.lower().endswith(".model"):
+            module = module[:-6]
+        if not MODEL_NAME_RE.match(instance):
+            raise ValueError(f"invalid instance name: {instance!r}")
+        if not MODEL_NAME_RE.match(module):
+            raise ValueError(f"invalid model reference: {module!r}")
+        if any(item["instance"] == instance for item in state["instances"]):
+            raise ValueError(f"duplicate instance name: {instance!r}")
+        source = model_dir / f"{module}.model"
+        if not source.is_file():
+            available = sorted(path.stem for path in model_dir.glob("*.model"))
+            raise FileNotFoundError(f"model {module!r} not found in the project (available: {available})")
+        target = parse_robei_model(source)
+        state["instances"].append(
+            {
+                "instance": instance,
+                "model": module,
+                "class": module,
+                "module": "",
+                "x": _canvas_int(op.get("x"), 200 + 320 * len(state["instances"])),
+                "y": _canvas_int(op.get("y"), 120),
+                "parameters": str(op.get("parameters") or ""),
+                "ports": _instance_ports_from_model(target),
+            }
+        )
+        return {"op": kind, "instance": instance, "model": module}
+
+    if kind == "remove_instance":
+        instance = str(op.get("name") or "").strip()
+        if not any(item["instance"] == instance for item in state["instances"]):
+            raise ValueError(f"unknown instance {instance!r}")
+        prefix = f"{instance}."
+        dropped = [
+            wire for wire in state["wires"]
+            if wire["from"].startswith(prefix) or wire["to"].startswith(prefix)
+        ]
+        state["instances"] = [item for item in state["instances"] if item["instance"] != instance]
+        state["wires"] = [
+            wire for wire in state["wires"]
+            if not (wire["from"].startswith(prefix) or wire["to"].startswith(prefix))
+        ]
+        return {"op": kind, "instance": instance, "wires_dropped": len(dropped)}
+
+    if kind == "connect":
+        frm = str(op.get("from") or "").strip()
+        to = str(op.get("to") or "").strip()
+        if not frm or not to:
+            raise ValueError("connect needs both from and to")
+        left = _endpoint_info(state, frm)
+        right = _endpoint_info(state, to)
+        if left["width"] is not None and right["width"] is not None:
+            if left["width"] != right["width"]:
+                raise WidthMismatch(
+                    f"cannot connect {frm} ({left['width']} bit) to {to} ({right['width']} bit): "
+                    "both ends of a wire must have the same width"
+                )
+        elif left["datasize"].strip().lower() != right["datasize"].strip().lower():
+            raise WidthMismatch(
+                f"cannot verify {frm} ({left['datasize'] or 1}) against {to} "
+                f"({right['datasize'] or 1}): parameterised widths must match exactly"
+            )
+        width_from = left["width"] if left["width"] is not None else right["width"]
+        net = str(op.get("net") or "").strip()
+        if not net:
+            net = re.sub(r"[^A-Za-z0-9_$]", "_", f"{state['name']}_{frm}_{to}")
+        if not MODEL_NAME_RE.match(net):
+            raise ValueError(f"invalid net name: {net!r}")
+        datasize = str(op.get("datasize") or width_from or 1)
+        for wire in state["wires"]:
+            if wire["from"] == frm and wire["to"] == to:
+                wire.update({"net": net, "datasize": datasize})
+                return {
+                    "op": kind, "net": net, "from": frm, "to": to,
+                    "width": width_from, "updated": True,
+                }
+        state["wires"].append(
+            {"net": net, "from": frm, "to": to, "datasize": datasize, "datatype": "wire"}
+        )
+        return {
+            "op": kind, "net": net, "from": frm, "to": to,
+            "width": width_from, "updated": False,
+        }
+
+    if kind == "disconnect":
+        net = str(op.get("net") or "").strip()
+        frm = str(op.get("from") or "").strip()
+        to = str(op.get("to") or "").strip()
+        if not (net or frm or to):
+            raise ValueError("disconnect needs net, from or to")
+
+        def matches(wire: dict[str, Any]) -> bool:
+            return (
+                (not net or wire["net"] == net)
+                and (not frm or wire["from"] == frm)
+                and (not to or wire["to"] == to)
+            )
+
+        removed = [wire for wire in state["wires"] if matches(wire)]
+        if not removed:
+            raise ValueError(f"no wire matched disconnect(net={net!r}, from={frm!r}, to={to!r})")
+        state["wires"] = [wire for wire in state["wires"] if not matches(wire)]
+        return {"op": kind, "removed": len(removed), "nets": [wire["net"] for wire in removed]}
+
+    net = str(op.get("net") or "").strip()
+    frm = str(op.get("from") or "").strip()
+    new_name = str(op.get("new_name") or op.get("rename_to") or "").strip()
+    if not new_name:
+        raise ValueError("rename_wire needs new_name")
+    if not MODEL_NAME_RE.match(new_name):
+        raise ValueError(f"invalid net name: {new_name!r}")
+    if any(wire["net"] == new_name for wire in state["wires"]):
+        raise ValueError(f"duplicate net name: {new_name!r}")
+    target = [
+        wire for wire in state["wires"]
+        if (net and wire["net"] == net) or (frm and (wire["from"] == frm or wire["to"] == frm))
+    ]
+    if not target:
+        raise ValueError(f"no wire matched rename_wire(net={net!r}, from={frm!r})")
+    for wire in target:
+        wire["net"] = new_name
+    return {"op": kind, "from_name": net or frm, "new_name": new_name, "wires_renamed": len(target)}
+
+
+def _canvas_diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    before_instances = {item["instance"] for item in before["instances"]}
+    after_instances = {item["instance"] for item in after["instances"]}
+    before_wires = {(w["net"], w["from"], w["to"], str(w["datasize"])) for w in before["wires"]}
+    after_wires = {(w["net"], w["from"], w["to"], str(w["datasize"])) for w in after["wires"]}
+
+    def wire_row(key: tuple[str, str, str, str]) -> dict[str, str]:
+        return {"net": key[0], "from": key[1], "to": key[2], "datasize": key[3]}
+
+    return {
+        "instances_added": sorted(after_instances - before_instances),
+        "instances_removed": sorted(before_instances - after_instances),
+        "wires_added": [wire_row(key) for key in sorted(after_wires - before_wires)],
+        "wires_removed": [wire_row(key) for key in sorted(before_wires - after_wires)],
+        "instances_total": len(after_instances),
+        "wires_total": len(after_wires),
+    }
+
+
+def edit_robei_canvas(
+    model_path: str,
+    ops: list[dict[str, Any]],
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Apply canvas ops (add/remove instance, connect, disconnect, rename) atomically.
+
+    Every op is validated before anything is written: an unknown port, a width
+    mismatch or a duplicate instance name aborts the whole call, so a half
+    applied edit can never reach the file.
+    """
+    path = resolve_model_path(model_path)
+    if not dry_run and not is_within(path, SETTINGS.workspace):
+        raise PermissionError(f"refusing to modify a model outside the workspace: {path}")
+    model = parse_robei_model(path)
+    if not isinstance(ops, list) or not ops:
+        raise ValueError("ops must be a non-empty list of canvas operations")
+    before = _canvas_state(model)
+    _hydrate_instance_ports(before, path.parent)
+    working = copy.deepcopy(before)
+    applied = [_apply_canvas_op(working, op, path.parent) for op in ops]
+
+    text = _render_canvas(working)
+    preview_model = parse_robei_model_text(text, path)
+    result: dict[str, Any] = {
+        "ok": True,
+        "dry_run": bool(dry_run),
+        "model": model["name"],
+        "path": str(path),
+        "relative_path": _rel(path),
+        "ops_applied": applied,
+        "diff": _canvas_diff(before, working),
+        "instances": working["instances"],
+        "wires": working["wires"],
+        "netlist": preview_model["netlist"],
+        "verilog_preview": model_to_verilog(preview_model),
+    }
+    if dry_run:
+        return result
+
+    backup = _backup_file(path)
+    path.write_text(text, encoding="utf-8", newline="\n")
+    result.update({"backup": str(backup) if backup else None, "sha256": _sha256(path)})
+    return result
+
+
+def set_robei_code(model_path: str, code: str, dry_run: bool = False) -> dict[str, Any]:
+    """Rewrite the ``Code`` attribute of a *behavioural* model (no instances/wires)."""
+    path = resolve_model_path(model_path)
+    if not dry_run and not is_within(path, SETTINGS.workspace):
+        raise PermissionError(f"refusing to modify a model outside the workspace: {path}")
+    model = parse_robei_model(path)
+    if model["instances"] or model["wires"]:
+        raise NotBehavioral(
+            f"{model['name']}: structural model ({len(model['instances'])} instance(s), "
+            f"{len(model['wires'])} wire(s)) — set_robei_code only edits behavioural models; "
+            "use edit_robei_canvas for a canvas"
+        )
+    text = path.read_text(encoding="utf-8")
+    new_text = _rewrite_root_attr(text, "Code", code)
+    updated = parse_robei_model_text(new_text, path)
+    result: dict[str, Any] = {
+        "ok": True,
+        "dry_run": bool(dry_run),
+        "model": updated["name"],
+        "path": str(path),
+        "relative_path": _rel(path),
+        "code": updated["code"],
+        "code_lines": updated["code_lines"],
+        "sha256_before": _sha256(path),
+        "verilog_preview": model_to_verilog(updated),
+    }
+    if dry_run:
+        result["sha256"] = None
+        return result
+    backup = _backup_file(path)
+    path.write_text(new_text, encoding="utf-8", newline="\n")
+    result.update({"backup": str(backup) if backup else None, "sha256": _sha256(path)})
+    return result
+
+
+def _parameter_text(parameters: list[dict[str, str]]) -> str:
+    """Render a parameter list back into Robei's ``NAME = value; //comment`` lines."""
+    lines = []
+    for param in parameters:
+        line = f"{param['name']} = {param['default']};"
+        if param.get("comment"):
+            line += f" // {param['comment']}"
+        lines.append(line)
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def _param_width_report(model: dict[str, Any], name: str, value: str) -> list[dict[str, Any]]:
+    """Re-resolve every port range that mentions ``name`` with the new value."""
+    pattern = re.compile(rf"\b{re.escape(name)}\b", re.IGNORECASE)
+    rows: list[dict[str, Any]] = []
+    for port in model["ports"]:
+        datasize = port.get("datasize") or ""
+        if not datasize or not pattern.search(datasize):
+            continue
+        expression = pattern.sub(str(value), datasize)
+        info = width_info(expression)
+        rows.append(
+            {
+                "port": port["name"],
+                "datasize": datasize,
+                "expression": expression,
+                "width": info["width"],
+                "resolved": info["resolved"],
+                "range": info["range"],
+            }
+        )
+    return rows
+
+
+def set_robei_parameter(
+    model_path: str,
+    name: str,
+    value: str | int,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Change one root ``Parameters`` default and re-resolve the port widths."""
+    path = resolve_model_path(model_path)
+    if not dry_run and not is_within(path, SETTINGS.workspace):
+        raise PermissionError(f"refusing to modify a model outside the workspace: {path}")
+    model = parse_robei_model(path)
+    if model["parameter_bad"]:
+        raise ValueError(
+            f"{model['name']}: root Parameters contain unparsable chunks {model['parameter_bad']}; "
+            "fix them before editing a single parameter"
+        )
+    wanted = (name or "").strip()
+    match = next(
+        (param for param in model["parameter_list"] if param["name"].lower() == wanted.lower()),
+        None,
+    )
+    if match is None:
+        declared = [param["name"] for param in model["parameter_list"]]
+        raise UnknownParameter(f"{model['name']}: unknown parameter {name!r}; declared: {declared}")
+    new_value = str(value).strip()
+    if not new_value or any(char in new_value for char in ';"<>'):
+        raise ValueError(f"invalid parameter value: {value!r}")
+
+    updated_list = [
+        {**param, "default": new_value if param["name"] == match["name"] else param["default"]}
+        for param in model["parameter_list"]
+    ]
+    new_text = _rewrite_root_attr(path.read_text(encoding="utf-8"), "Parameters", _parameter_text(updated_list))
+    updated = parse_robei_model_text(new_text, path)
+    landed = next(
+        (param for param in updated["parameter_list"] if param["name"] == match["name"]), None
+    )
+    if landed is None or landed["default"] != new_value:
+        raise ValueError(
+            f"parameter {match['name']} did not update (got {landed['default'] if landed else None!r})"
+        )
+    result: dict[str, Any] = {
+        "ok": True,
+        "dry_run": bool(dry_run),
+        "model": updated["name"],
+        "path": str(path),
+        "relative_path": _rel(path),
+        "parameter": match["name"],
+        "old_value": match["default"],
+        "new_value": new_value,
+        "parameters": updated["parameter_list"],
+        "parameters_text": updated["parameters"],
+        "width_info": _param_width_report(updated, match["name"], new_value),
+        "sha256_before": _sha256(path),
+    }
+    if dry_run:
+        result["sha256"] = None
+        return result
+    backup = _backup_file(path)
+    path.write_text(new_text, encoding="utf-8", newline="\n")
+    result.update({"backup": str(backup) if backup else None, "sha256": _sha256(path)})
+    return result
 
 
 def create_robei_test(
@@ -2105,7 +2627,7 @@ def list_library_models(
                 {
                     "name": port["name"],
                     "direction": port["inout"] or "input",
-                    "width": width_of(port["datasize"]),
+                    "width": robei_width(port["datasize"]),
                     "datasize": port["datasize"],
                 }
                 for port in model["ports"]

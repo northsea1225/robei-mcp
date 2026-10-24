@@ -10,12 +10,33 @@ class PathEscape(ValueError):
     """A supplied path resolved outside every root the tool is allowed to touch."""
 
 
+class WidthMismatch(ValueError):
+    """Two wire endpoints do not carry the same number of bits."""
+
+
+class NotBehavioral(ValueError):
+    """A Code-only edit was attempted on a structural (canvas) model."""
+
+
+class UnknownParameter(ValueError):
+    """set_robei_parameter named a parameter the model does not declare."""
+
+
 HINTS = {
     "unsafe_xml": "the XML declares a DTD or entities; Robei files never do",
     "path_escape": (
         "the path must stay inside the workspace: write it relative to workspace/ "
         "(e.g. proj/a.v), never with ../ or an absolute path outside"
     ),
+    "width_mismatch": (
+        "connect endpoints of equal width: widen the port/wire, or drive the narrow "
+        "side through an explicit slice"
+    ),
+    "not_behavioral": (
+        "set_robei_code only edits models without instances or wires; for a structural "
+        "model use edit_robei_canvas or create_robei_model"
+    ),
+    "unknown_parameter": "read_robei_model lists the declared names in parameter_list[].name",
     "not_found": "the path must exist and, for models/projects, sit under an allowed root",
     "already_exists": "pass overwrite=true (the previous file is kept as .bak-<timestamp>)",
     "permission_denied": "the server may only write inside the configured workspace",
@@ -33,6 +54,12 @@ def code_for(exc: BaseException) -> str:
         return "unsafe_xml"
     if isinstance(exc, PathEscape):
         return "path_escape"
+    if isinstance(exc, WidthMismatch):
+        return "width_mismatch"
+    if isinstance(exc, NotBehavioral):
+        return "not_behavioral"
+    if isinstance(exc, UnknownParameter):
+        return "unknown_parameter"
     if isinstance(exc, FileNotFoundError):
         return "not_found"
     if isinstance(exc, FileExistsError):
