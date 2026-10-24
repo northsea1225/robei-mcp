@@ -119,7 +119,11 @@ async def main() -> int:
 
             # --- the imported canvas must be acceptable to Robei itself --------
             await session.call_tool("robei_gui_close", {})  # start from a clean IDE state
-            shutil.rmtree(WS / "p1_demo" / "build", ignore_errors=True)
+            # 1.3 keeps our sim runs inside <proj>/build, so only drop the files
+            # Robei itself regenerates - not the whole directory.
+            for stale in (WS / "p1_demo" / "build").glob("*"):
+                if stale.is_file():
+                    stale.unlink(missing_ok=True)
             await session.call_tool("robei_gui_launch", {"wait_s": 45})
             opened = payload(await session.call_tool("robei_gui_open_project", {"proj_path": proj}))
             compiled = payload(await session.call_tool("robei_gui_compile_all", {}))
