@@ -2,6 +2,30 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.2.1 — 2026-10-24
+
+**修掉 1.2.0 的四个实测问题。** 工具面 48 个（文件级 37 + GUI 11）；`ROBEI_MCP_GUI=0` 时 37 个。
+
+- **默认超时会被自己截断**：`build_bitstream` 默认 `timeout_s` 600 → **120**，
+  `synthesize_project` 300 → **120**（都等于 `ROBEI_MAX_TIMEOUT_S`）。以前不传参数每次都是
+  `clamped:true` 加一条 warning，现在默认调用是 `clamped:false`、没有截断提示；只有显式要
+  更长时间才会被截断并在 `timeout` / `warnings` 里说明。
+- **键名拼写**：`tool_paths()` 的键名多打了一个 l，已改成 `roplace`；`list_fpga_devices`
+  的返回、tool-reference 与 pytest 同步更新，`robei_mcp/`、`tests/`、`docs/tool-reference.md`
+  里已无旧拼写（本段是历史说明）。
+- **`.bit` 说法更正**：xc7frames2bit 会在开头写 ASCII 字段——`a` = `.frame` 的**绝对路径**、
+  `b` = 器件、`c` = 日期、`d` = 时间——之后才是同步字 `0xAA995566` 和帧数据。因此
+  **同样构建的 `.bit` 大小随路径长度变化**（实测同一工程：xc7a50tfgg484-1 2,192,172 B、
+  xc7a100tfgg484-1 3,825,949 B），**逐字节差异只出现在头部**（路径字段与 `d` 时间戳，
+  偏移随路径浮动，不要写死 145–148）。比对请用 `fasm` / `frame`。
+- **新增 `bit_payload_sha256`（+ `bit_payload_offset`）**：从同步字 `0xAA995566` 起算的
+  哈希。`examples/fpga_demo` 连跑两次：整文件 sha256 不同
+  （`e8f9aef7…57c685` vs `50275fe7…d04ebd`），`bit_payload_sha256` 相同
+  （`46d75f4c…c44b547`，`bit_payload_offset` 203；工程目录换长一点，偏移也跟着变）。
+- **`json` 也不是稳定判据**：同一环境连跑两次字节一致，但换一份 yosys 安装（二进制 md5
+  相同）会写出字节数不同的 json（9,382,162 B vs 9,594,583 B），拓扑与 fasm 相同。
+- verification-log 里 1.2.0 那段的“.bit 大小恒定 / 偏移 145–148”已按实测改写。
+
 ## 1.2.0 — 2026-10-24
 
 **FPGA 后端打通到 .bit。** 工具面 48 个（文件级 37 + GUI 11）；`ROBEI_MCP_GUI=0` 时 37 个。

@@ -20,6 +20,7 @@ No timing sign-off: Roplace's own Fmax line is reported as a reference number on
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -34,6 +35,9 @@ from .verilog import parse_module_ports, robei_width
 
 PART_RE = re.compile(r"^[a-z][a-z0-9]*-[0-9][a-z0-9]*$")
 STAGES = ("synth", "route", "package")
+# 7-series bitstreams carry an ASCII header ('a' = .frame path, 'b' = part,
+# 'c'/'d' = date/time) before this sync word; only what follows it is configuration.
+BIT_SYNC_WORD = b"\xaa\x99\x55\x66"
 FMAX_RE = re.compile(r"Max frequency for clock\s+'([^']+)'\s*:\s*([0-9.]+)\s*MHz", re.IGNORECASE)
 _CLOCK_HINT = "no clocks found in design"
 _YOSYS_FPGA_ARCH = "xc7"
@@ -77,7 +81,7 @@ def tool_paths() -> dict[str, Path]:
     bin_dir = _bin_dir()
     out: dict[str, Path] = {}
     for key, stem in (
-        ("ropllace", "Roplace"),
+        ("roplace", "Roplace"),
         ("fasm2frames", "fasm2frames"),
         ("xc7frames2bit", "xc7frames2bit"),
     ):
@@ -344,6 +348,20 @@ def _utilization(counts: dict[str, int], io_bits: int) -> dict[str, Any]:
     return out
 
 
+def _bit_payload(bit_path: Path) -> dict[str, Any]:
+    """Hash of the bitstream from the 0xAA995566 sync word on (header excluded).
+
+    The 'a' field holds the absolute .frame path and 'c'/'d' the date/time, so a
+    byte-for-byte .bit comparison fails on identical builds: both size (path length)
+    and those bytes (timestamp) move. The payload digest does not.
+    """
+    data = bit_path.read_bytes()
+    offset = data.find(BIT_SYNC_WORD)
+    if offset < 0:
+        return {"offset": None, "sha256": None, "reason": "sync word 0xAA995566 not found"}
+    return {"offset": offset, "sha256": hashlib.sha256(data[offset:]).hexdigest()}
+
+
 def _timeout_budget(timeout_s: int) -> dict[str, Any]:
     """``_run`` clamps to max_timeout_s; report both numbers instead of silently cutting."""
     requested = max(1, int(timeout_s))
@@ -446,9 +464,13 @@ def synthesize_project(
     proj_path: str,
     top: str | None = None,
     part: str | None = None,
-    timeout_s: int = 300,
+    timeout_s: int = 120,
 ) -> dict[str, Any]:
-    """Run yosys ``synth_xilinx`` on a project and report LUT/FF/BRAM/DSP/IO counts."""
+    """Run yosys ``synth_xilinx`` on a project and report LUT/FF/BRAM/DSP/IO counts.
+
+    ``timeout_s`` defaults to 120 s, which is also ``ROBEI_MAX_TIMEOUT_S``; a larger
+    request is clamped (and reported in ``timeout.clamped``) rather than silently cut.
+    """
     proj = resolve_project_path(proj_path)
     if not is_within(proj, SETTINGS.workspace):
         raise ValueError("refusing to synthesise a project outside the workspace")
@@ -595,9 +617,13 @@ def build_bitstream(
     part: str,
     const_name: str | None = None,
     steps: list[str] | None = None,
-    timeout_s: int = 600,
+    timeout_s: int = 120,
 ) -> dict[str, Any]:
-    """Run yosys -> Roplace -> fasm2frames -> xc7frames2bit and report every stage."""
+    """Run yosys -> Roplace -> fasm2frames -> xc7frames2bit and report every stage.
+
+    ``timeout_s`` defaults to 120 s (== ``ROBEI_MAX_TIMEOUT_S``); asking for more is
+    clamped and flagged in ``timeout.clamped`` instead of silently truncated.
+    """
     import time
 
     from . import constraints, tools
@@ -668,7 +694,7 @@ def build_bitstream(
     if "route" in wanted:
         route = _run_stage(
             [
-                binaries["ropllace"],
+                binaries["roplace"],
                 "--chipdb",
                 chipdb,
                 "--xdc",
@@ -732,6 +758,7 @@ def build_bitstream(
         )
 
     stat = _stat_pass(json_out, budget["effective_s"]) if json_out.is_file() else {"counts": {}}
+    bit_payload = _bit_payload(bit_out) if bit_out.is_file() else {"offset": None, "sha256": None}
     payload = _common(proj, part)
     payload.update(
         {
@@ -750,10 +777,14 @@ def build_bitstream(
                     "path": str(bit_out),
                     "size_bytes": bit_out.stat().st_size,
                     "sha256": _sha(bit_out),
+                    "payload_sha256": bit_payload["sha256"],
+                    "payload_offset": bit_payload["offset"],
                 }
                 if bit_out.is_file()
                 else None,
             },
+            "bit_payload_sha256": bit_payload["sha256"],
+            "bit_payload_offset": bit_payload["offset"],
             "utilization": _utilization(stat["counts"], _io_bits(sources, top)),
             "fmax_reference": fmax,
             "timing_note": (

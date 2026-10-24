@@ -87,7 +87,7 @@ def test_list_fpga_devices_reports_db_and_tools() -> None:
     payload = fpga.list_fpga_devices()
     assert payload["db_root_exists"] is True
     assert payload["devices"]
-    assert set(payload["tools"]) == {"ropllace", "fasm2frames", "xc7frames2bit"}
+    assert set(payload["tools"]) == {"roplace", "fasm2frames", "xc7frames2bit"}
     for entry in payload["tools"].values():
         assert set(entry) == {"path", "exists"}
 
@@ -174,6 +174,10 @@ def test_build_bitstream_produces_bit_with_all_stages(light_project: str) -> Non
     assert Path(result["artifacts"]["fasm"]["path"]).is_file()
     assert Path(result["artifacts"]["frame"]["path"]).is_file()
     assert result["timing_note"]
+    # 1.2.1: the default request must fit ROBEI_MAX_TIMEOUT_S, so nothing is clamped.
+    assert result["timeout"]["requested_s"] == 120
+    assert result["timeout"]["clamped"] is False
+    assert not [w for w in result["warnings"] if "clamp" in w.lower()]
 
 
 @needs_yosys
@@ -213,7 +217,7 @@ def test_build_bitstream_reports_missing_binaries(light_project: str, monkeypatc
     from robei_mcp.errors import FpgaStepFailed
 
     monkeypatch.setattr(
-        fpga, "tool_paths", lambda: {name: Path(f"missing/{name}.exe") for name in ("ropllace", "fasm2frames", "xc7frames2bit")}
+        fpga, "tool_paths", lambda: {name: Path(f"missing/{name}.exe") for name in ("roplace", "fasm2frames", "xc7frames2bit")}
     )
     with pytest.raises(FpgaStepFailed) as excinfo:
         fpga.build_bitstream(proj_path=light_project, part="xc7a50tfgg484-1")
@@ -224,3 +228,28 @@ def test_build_bitstream_reports_missing_binaries(light_project: str, monkeypatc
 def test_normalize_steps_rejects_unknown_stage() -> None:
     with pytest.raises(ValueError):
         fpga._normalize_steps(["synth", "gdsii"])
+
+
+def test_timeout_budget_clamps_above_the_cap() -> None:
+    from robei_mcp.config import SETTINGS
+
+    budget = fpga._timeout_budget(900)
+    assert budget["requested_s"] == 900
+    assert budget["effective_s"] == SETTINGS.max_timeout_s
+    assert budget["clamped"] is True
+    inside = fpga._timeout_budget(30)
+    assert inside["clamped"] is False
+
+
+@needs_yosys
+@needs_db
+@needs_fpga_binaries
+def test_bit_payload_sha256_survives_header_noise(light_project: str) -> None:
+    """The header carries the .frame path and the time, the payload must not change."""
+    first = fpga.build_bitstream(proj_path=light_project, part="xc7a50tfgg484-1")
+    second = fpga.build_bitstream(proj_path=light_project, part="xc7a50tfgg484-1")
+    assert first["bit_payload_sha256"] and len(first["bit_payload_sha256"]) == 64
+    assert first["bit_payload_sha256"] == second["bit_payload_sha256"]
+    assert first["artifacts"]["bit"]["payload_sha256"] == first["bit_payload_sha256"]
+    assert first["bit_payload_offset"] >= 0
+    assert first["artifacts"]["fasm"] and second["artifacts"]["fasm"]

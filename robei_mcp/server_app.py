@@ -635,13 +635,14 @@ async def synthesize_project(
     proj_path: str,
     top: str | None = None,
     part: str | None = None,
-    timeout_s: int = 300,
+    timeout_s: int = 120,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Run yosys synth_xilinx on a Robei project (same -p script as Build > Synthesis).
 
     Writes build/<const>.json next to the project and returns LUT/FF/BRAM/DSP/IO counts
     from a follow-up ``stat`` pass. ``part`` is optional and only recorded and validated.
+    ``timeout_s`` defaults to 120 s, which is also ROBEI_MAX_TIMEOUT_S (no clamping).
     """
     try:
         return await _invoke(
@@ -658,7 +659,7 @@ async def build_bitstream(
     part: str,
     const_name: str | None = None,
     steps: list[str] | None = None,
-    timeout_s: int = 600,
+    timeout_s: int = 120,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Roplace -> fasm2frames -> xc7frames2bit, the three steps behind Build > Route/Package.
@@ -667,6 +668,8 @@ async def build_bitstream(
     run with code=fpga_step_failed and that stage name. Parts without a chipdb return
     device_unsupported; port bits without a package pin return unconstrained_io with the
     missing list. Roplace's Fmax is a reference only - this is not a timing sign-off.
+    ``timeout_s`` defaults to 120 s (== ROBEI_MAX_TIMEOUT_S); the payload also carries
+    bit_payload_sha256, the bitstream hash from the 0xAA995566 sync word on.
     """
     try:
         return await _invoke(

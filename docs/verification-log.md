@@ -64,12 +64,20 @@ frame    5,585,802 bytes
 资源     LUT 4 / FF 0 / CARRY 0 / BRAM 0 / DSP 0 / IO 8
 ```
 
-**`.bit` 不是逐字节可复现的**：同一工程连跑多次，`json` / `fasm` / `frame` 三次都**逐字节相同**，
-只有 `.bit` 的 sha256 每次不同（`41da154c…e14c`、`a619d48a…3459`、`e8b0c536…eb74`、
-`fc95eaf3…910e`、`1c680234…d722`），大小恒为 2,192,167 B。逐字节比对只差 **3 个字节**，
-位置固定在偏移 145–148，内容就是 bitstream 头里嵌入的"生成时刻"字符串
-（`09:42:56` vs `09:43:00`）。所以：
-对比两份 `.bit` 应该比 `fasm` / `frame`，或者忽略这 3 字节；只比 sha256 会得到假阴性。
+**`.bit` 不能逐字节比对（1.2.1 更正）**：头部是 xc7frames2bit 写的 ASCII 字段——
+`a` = `.frame` 的**绝对路径**、`b` = 器件、`c` = 日期、`d` = 时间——然后才是同步字
+`0xAA995566` 和帧数据。所以同一工程的 `.bit`：
+
+- **大小随路径长度变**：同一工程放在 `workspace/fpga_demo_1201` 时 xc7a50tfgg484-1 是
+  2,192,172 B、xc7a100tfgg484-1 是 3,825,949 B；换一个更短的工程目录就整体小几个字节
+  （1.2.0 记的 2,192,167 B 只对应当时的目录名）。
+- **差异字节在头部**：路径字段（如偏移 46 附近）和 `d` 时间戳（约 142–144），具体偏移随
+  路径长度浮动，不能写死。
+- 从同步字起算的 `bit_payload_sha256` 在两次构建里相同（实测 `46d75f4c…c44b547`，
+  偏移 208；换器件时偏移 209、payload 自然不同）。比对请用 `fasm` / `frame` 或这个值。
+
+`json` 也别当判据：同一环境下连跑两次字节一致，但换一份 yosys 安装（二进制 md5 相同）
+会写出字节数不同的 json（9,382,162 B vs 9,594,583 B），拓扑与 fasm 相同。
 
 `E:\Robei\bin` 与 `D:\robei-lab\robei\bin` 里的 yosys / yosys-abc / Roplace /
 fasm2frames / xc7frames2bit **md5 完全一致**；同一份 json 喂两边的 Roplace，输出 `.fasm`
@@ -111,6 +119,30 @@ stage3 / stage4 / stage5 里"工具清单必须完全一致"的断言按增量�
 `chipdb/-1.bin`；`HKCU`/`HKLM\Software\Robei` 不存在，工程目录里也没有任何 cfg/ini/json
 侧车文件，器件选择只活在 IDE 进程内存里。工具链二进制与 IDE 同 md5、同 json 出的 fasm
 逐字节一致，所以这条差异不属于工具链，本版按已知限制结案。
+
+### 1.2.1：1.2.0 的四个实测问题（2026-10-24）
+
+工具面仍是 **48 个（文件级 37 + GUI 11）**，`ROBEI_MCP_GUI=0` 时 37 个。
+
+- **默认超时**：`build_bitstream` 600 → 120、`synthesize_project` 300 → 120（都等于
+  `ROBEI_MAX_TIMEOUT_S`）。以前不传参数必然 `clamped:true` + warning；现在默认调用
+  `timeout = {requested_s: 120, effective_s: 120, clamped: false}`、`warnings` 里没有截断提示。
+- **键名拼写**：`tool_paths()` 的键名多打了一个 l，已改成 `roplace`（返回、tool-reference、
+  pytest 同步）。在 `robei_mcp`、`tests`、`docs/tool-reference.md` 上 grep 旧拼写是 0 命中
+  （CHANGELOG 与本节各留一处历史说明）。
+- **`.bit` 头部**：如上文更正，大小随 `.frame` 路径长度变、字节随时间变；新增
+  `bit_payload_sha256`（从同步字 `0xAA995566` 起算）。`examples/fpga_demo` 连跑两次：
+  整文件 sha256 `e8f9aef784a7fdd5c4bc8ede3d2e3fa6bedb41ada7b340995c4e1ff01557c685` 与
+  `50275fe750884dd18d849ea2e8b2beaf00dde11857ae09e8e230ad09ebd04ebd` 不同，
+  `bit_payload_sha256` 两次都是 `46d75f4cc52cd78849b7a6d3a895e9ab6edc542a32b1dfebea5c4cf6cc44b547`
+  （offset 203；工程目录名换成 `fpga_demo_1201` 时 offset 变 208，payload 仍相同）。
+  `fasm` = `107fcafa125b3d8c2df2ff21a8da3bfbee3060a4aeefa7a7cad709646b43d9b2`、
+  `frame` = `e27e1ceb842af553fa997f60a298b7bdbcc9f1f3048ffddefef751cdb2365ec5`，两次一致。
+- **json**：不是稳定判据（见上）。
+
+回归：`pytest` **139 项全过**（test_1_1 27 / test_1_2 10 / test_fpga 15 / test_portable 5 /
+test_regressions 50 / test_tool_coverage 32）、`portable_core` 16/16、stage2–21 全过
+（stage5/20 走 Session 1），工具数 48（GUI 11）/ 37（`ROBEI_MCP_GUI=0`）。
 
 ### 1.1.0：元件库与画布增量编辑（2026-10-24）
 

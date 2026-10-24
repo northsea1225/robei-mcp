@@ -463,7 +463,7 @@ Robei 自己写的版本 `IOSTANDARD` 为空，Route 会因此报参数个数错
 | `family` | `artix7` / `zynq7`（就是 part.yaml 所在的目录名） |
 | `chipdb` / `part_yaml` | 两个文件的绝对路径，缺一个就是 `null` |
 | `buildable` | 两个都在才为 `true`，否则 `reason` 写明缺哪个 |
-| `tools` | `ropllace` / `fasm2frames` / `xc7frames2bit` 的路径与是否存在 |
+| `tools` | `roplace` / `fasm2frames` / `xc7frames2bit` 的路径与是否存在 |
 
 本机实测：5 个 chipdb 对 6 个 part.yaml，`xc7a100tcsg324-1` 只有 part.yaml，
 所以它是 `buildable: false`（Robei 自己的器件下拉里也没有它）。`part` 不存在时返回
@@ -472,7 +472,7 @@ Robei 自己写的版本 `IOSTANDARD` 为空，Route 会因此报参数个数错
 ### `synthesize_project`
 
 ```json
-{"proj_path": "fpga_demo/fpga_demo.proj", "part": "xc7a50tfgg484-1", "timeout_s": 300}
+{"proj_path": "fpga_demo/fpga_demo.proj", "part": "xc7a50tfgg484-1", "timeout_s": 120}
 ```
 
 按 Robei `Build > Synthesis` 的同一条命令综合：
@@ -498,7 +498,7 @@ yosys -p "read_verilog <build>/<top>.v; synth_xilinx -flatten -arch xc7 -abc9 -n
 
 ```json
 {"proj_path": "fpga_demo/fpga_demo.proj", "part": "xc7a50tfgg484-1",
- "steps": ["synth", "route", "package"], "timeout_s": 600}
+ "steps": ["synth", "route", "package"], "timeout_s": 120}
 ```
 
 三段命令与 Robei 完全一致（`<db>` = `C:\ProgramData\Robei\xilinx`）：
@@ -524,6 +524,12 @@ xc7frames2bit --part_file <db>/<family>/<part>/part.yaml --part_name <part>
   其余产物照常返回。
 - 已知限制：IDE 打开工程会把 `.const` 根节点的 `Family` / `Device` 清空，所以 GUI 侧的
   Route/Package 无法复现（本工具的 `.fasm` 与 IDE 侧同 json 时逐字节一致，差异不在工具链）。
+- `timeout_s` 默认 **120**（就是 `ROBEI_MAX_TIMEOUT_S`），默认调用不带 warning；
+  显式要更长时间才会被截断，并在 `timeout.clamped=true` 与 `warnings` 里说明。
+- `bit_payload_sha256` / `bit_payload_offset`：从同步字 `0xAA995566` 起算的哈希与偏移。
+  `.bit` 头部会写 `.frame` 的绝对路径（`a` 字段）、器件（`b`）、日期时间（`c`/`d`），
+  所以**同样构建的 `.bit` 大小随路径长度变化、字节随时间变化**；比对构建结果请用
+  `fasm` / `frame`，或者比 `bit_payload_sha256`。
 - `fmax_reference` 是 Roplace 自己打印的 `Max frequency for clock ...`，**仅供参考**；
   组合逻辑设计没有时钟，Roplace 只打印 `Warning: No clocks found in design`，该字段为 `null`。
   `timing_note` 会写明本工具不做时序签核。
