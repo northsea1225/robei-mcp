@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
-from typing import Any
+from typing import Any, Literal
 
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
@@ -209,6 +209,18 @@ def render_waveform(
 
 
 @mcp.tool(annotations=READ)
+def read_run_log(path: str, tail: int = 200, max_bytes: int = 500_000) -> dict[str, Any]:
+    """Read a run log under workspace/logs or workspace/build (size-capped, tail lines).
+
+    Every fpga_step_failed / internal payload names a file this tool can open.
+    """
+    try:
+        return tools.read_run_log(path=path, tail=tail, max_bytes=max_bytes)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool(annotations=READ)
 def read_robei_model(path: str) -> dict[str, Any]:
     """Read a Robei .model XML file and return metadata, ports, parameters and Verilog code."""
     try:
@@ -268,13 +280,18 @@ def list_library_models(
 @mcp.tool(annotations=WRITE)
 def import_library_model(
     name: str,
-    project: str,
+    project: str | None = None,
     as_name: str | None = None,
     overwrite: bool = False,
     dry_run: bool = False,
+    proj_path: str | None = None,
 ) -> dict[str, Any]:
     """Copy a ToolBox model into <project>/model, register it in the .proj (backed up first),
-    then lint it with iverilog. Pass as_name when the file name and module name differ."""
+    then lint it with iverilog. Pass as_name when the file name and module name differ.
+
+    ``project`` is the project path (``work/a.proj``); ``proj_path`` is accepted as an
+    alias for callers that guess the other name.
+    """
     try:
         return tools.import_library_model(
             name=name,
@@ -282,6 +299,7 @@ def import_library_model(
             as_name=as_name,
             overwrite=overwrite,
             dry_run=dry_run,
+            proj_path=proj_path,
         )
     except Exception as exc:
         return _error(exc)
@@ -658,7 +676,7 @@ async def build_bitstream(
     proj_path: str,
     part: str,
     const_name: str | None = None,
-    steps: list[str] | None = None,
+    steps: list[Literal["synth", "route", "package"]] | None = None,
     timeout_s: int = 120,
     ctx: Context | None = None,
 ) -> dict[str, Any]:

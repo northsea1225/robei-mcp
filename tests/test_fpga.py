@@ -13,6 +13,7 @@ import pytest
 
 from robei_mcp import constraints, fpga, tools
 from robei_mcp.config import SETTINGS
+from robei_mcp import errors
 from robei_mcp.errors import DeviceUnsupported, code_for
 
 DB_ROOT = fpga.db_root()
@@ -38,7 +39,7 @@ LIGHT_PINS = {
 }
 
 
-def _light_project() -> str:
+def _light_project(pins: dict[str, list[str]] | None = None) -> str:
     name = f"pytest_fpga_{uuid.uuid4().hex[:8]}"
     created = tools.create_robei_project(name)
     proj = created["proj"]
@@ -55,7 +56,7 @@ def _light_project() -> str:
         proj,
         name="light_constrain",
         model="light",
-        pins=LIGHT_PINS,
+        pins=pins or LIGHT_PINS,
         device="xc7a50tfgg484",
         family="artix7",
     )
@@ -65,6 +66,18 @@ def _light_project() -> str:
 @pytest.fixture()
 def light_project():
     proj = _light_project()
+    yield proj
+    shutil.rmtree(Path(proj).parent, ignore_errors=True)
+
+
+@pytest.fixture()
+def bad_pin_project():
+    """Same design, but one ball xc7a50tfgg484 does not have.
+
+    ``ZZ9`` is not a valid fgg484 ball; ``Y18`` *is* one (a 1.2.2 probe showed the
+    route stage accepts it), so it cannot be used to force a route failure.
+    """
+    proj = _light_project(pins={"swt": ["ZZ9", "A14", "A15", "A16"], "led": list(LIGHT_PINS["led"])})
     yield proj
     shutil.rmtree(Path(proj).parent, ignore_errors=True)
 
@@ -253,3 +266,47 @@ def test_bit_payload_sha256_survives_header_noise(light_project: str) -> None:
     assert first["artifacts"]["bit"]["payload_sha256"] == first["bit_payload_sha256"]
     assert first["bit_payload_offset"] >= 0
     assert first["artifacts"]["fasm"] and second["artifacts"]["fasm"]
+
+
+@needs_yosys
+@needs_db
+@needs_fpga_binaries
+def test_route_failure_reports_code_and_stage(bad_pin_project: str) -> None:
+    """1.2.2 P0: a failing stage must be fpga_step_failed with argv/rc/tail/run_dir."""
+    from robei_mcp.errors import FpgaStepFailed
+
+    with pytest.raises(FpgaStepFailed) as excinfo:
+        fpga.build_bitstream(proj_path=bad_pin_project, part="xc7a50tfgg484-1")
+    exc = excinfo.value
+    assert code_for(exc) == "fpga_step_failed"
+    assert exc.stage == "route", exc.record.get("log_tail")
+    payload = errors.payload(exc)
+    assert payload["code"] == "fpga_step_failed"
+    assert payload["stage"] == "route"
+    assert payload["returncode"] not in (None, 0)
+    assert payload["argv"] and any("Roplace" in part or "roplace" in part.lower() for part in payload["argv"])
+    assert payload["log_tail"]
+    assert payload["log_path"] and Path(payload["log_path"]).is_file()
+    assert payload["run_dir"] and Path(payload["run_dir"]).is_dir()
+    assert "read_run_log" in (payload["hint"] or "")
+
+
+@needs_yosys
+@needs_db
+@needs_fpga_binaries
+def test_route_regenerates_a_missing_xdc(light_project: str) -> None:
+    build = Path(light_project).parent / "build"
+    for stale in build.glob("light_constrain.xdc"):
+        stale.unlink()
+    result = fpga.build_bitstream(proj_path=light_project, part="xc7a50tfgg484-1", steps=["synth", "route"])
+    assert result["xdc_generated"] is True
+    assert Path(result["xdc"]).is_file()
+    assert Path(result["artifacts"]["fasm"]["path"]).is_file()
+
+
+@needs_db
+def test_missing_const_is_invalid_argument(light_project: str) -> None:
+    with pytest.raises(ValueError) as excinfo:
+        fpga.build_bitstream(proj_path=light_project, part="xc7a50tfgg484-1", const_name="nope")
+    assert code_for(excinfo.value) == "invalid_argument"
+    assert "create_robei_const" in str(excinfo.value)

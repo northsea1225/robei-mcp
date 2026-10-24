@@ -2,6 +2,72 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.2.2 — 2026-10-24
+
+**把「用 MCP 做数电实验」这条路上踩到的坑补掉。** 工具面 49 个（文件级 38 + GUI 11）；
+`ROBEI_MCP_GUI=0` 时 38 个。
+
+### P0：失败的 FPGA 段不再变成 `code=internal`
+
+`fpga.py` 里调用的 `FpgaStepFailed.from_record` 以前**根本不存在**：任何一段返回 rc≠0，
+都会在抛异常那一刻抛成 `AttributeError`，上层只能兜成 `code=internal` + 一段看不懂的
+`hint`。现在实现了 `from_record`，失败段返回：
+
+- 顶层 `code=fpga_step_failed`、`stage`（`synth` / `route` / `package.frames` /
+  `package.bit`）、`argv`（脱敏后的真实命令行）、`returncode`、`log_tail`、
+  `log_path`、`run_dir`；完整记录仍在 `record` 里。
+- 每一步的完整 stdout+stderr 落到 `run_dir/<stage>.log`，一次调用共用一个 `run_dir`
+  （`workspace/build/fpga-<时间戳>-<随机>/`），`summary.json` 是整次调用的记录。
+
+实测（实验六的工程，原样交给工具）：
+
+```text
+build_bitstream(proj_path="exp6_counter/exp6_counter.proj",
+                part="xc7a50tfgg484-1", const_name="dec_counter")
+→ code=fpga_step_failed  stage=route  returncode=3
+  log_path=workspace/build/fpga-20261024-203823-2550804b/route.log
+  log_tail: Error: Unable to constrain IO 'cnt[0]', device does not have a pin named 'M14'
+            terminate called after throwing an instance of 'log_execution_error_exception'
+```
+
+（`M14` 是实验指导书那张板的引脚，`xc7a50tfgg484` 上并不存在——所以这条报错是真实约束，
+不是工具链问题。把 `cnt` 改成 `A20/A19/A13/A18`、`clk/rst/en` 改成 `A1/A14/A15`、
+`co` 改成 `A16` 之后同一份 RTL 出 `.bit`：2,192,170 B，
+`bit_payload_sha256=bcd969f3b531ba4c7266ebeba35e9c3dc1e9c1c19e572fea287b8e0d5adc6e85`
+（`bit_payload_offset=206`），Roplace 报 `Max frequency 539.08 MHz`，
+`utilization = LUT 4 / FF 4 / CARRY 1 / IO 8`。）
+
+### 新增 `read_run_log`
+
+只读工具：打开 `fpga_step_failed` / `internal` 返回里的 `log_path`，或者任何落在
+workspace 下 `logs/`、`build/` 目录里的文件。`tail` 默认 200 行，`max_bytes` 默认
+500,000（超长只留末尾并返回 `truncated=true` 与 `note`）。所有 hint 里原来那句
+「see workspace/logs」改成直接给出能喂给它的 `path`。越界不再是通用的 `path_escape`，
+而是新的 `code=path_escape_log`，hint 写明 `logs/` / `build/` 规则。
+
+### 其余修复
+
+- **`steps` 改成枚举**：`build_bitstream` 的 `steps` 在 schema 里就是
+  `enum ["synth","route","package"]`，写错值在 MCP 层被拒。`synthesize_project`
+  本来就没有 `steps` 参数（综合只有一段），tool-reference 里已注明。
+- **`route` 段自动补 xdc**：`build/<const>.xdc` 不存在时用 `.const` 现场导出
+  （等价于 `export_robei_xdc(also_build=true)`），返回 `xdc_generated=true` 并记一条
+  warning；`.const` 本身不存在是 `invalid_argument`，hint 说明先 `create_robei_const`。
+  （1.2.2 之前这条路径直接端到端失败，因为 IDE 打开工程会把 `.const` 的
+  `Family`/`Device` 清空，`.xdc` 也跟着不见。）
+- **`$dumpvars` 只看 testbench 作用域**：自动注入的变成
+  `$dumpvars(0, <tb>);`，iverilog 不再报 `Package ($unit) is not dumpable`。
+- **`import_library_model` 接受 `proj_path`**：和 `read_robei_project` 等工具同名参数
+  对齐；两个都不给时 hint 直接写出正确参数名和示例值，不再返回千篇一律的
+  「check the argument names」。
+
+### 测试
+
+`pytest` 146 passed（1.2.1 是 138）；新增 `test_route_failure_reports_code_and_stage`、
+`test_route_regenerates_a_missing_xdc`、`test_missing_const_is_invalid_argument`、
+`test_read_run_log_returns_the_tail`、`test_read_run_log_caps_long_files`、
+`test_read_run_log_rejects_paths_outside_log_roots`、`test_simulate_project_scopes_dumpvars`。
+
 ## 1.2.1 — 2026-10-24
 
 **修掉 1.2.0 的四个实测问题。** 工具面 48 个（文件级 37 + GUI 11）；`ROBEI_MCP_GUI=0` 时 37 个。

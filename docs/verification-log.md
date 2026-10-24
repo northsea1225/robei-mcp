@@ -12,6 +12,71 @@
 
 ## 交付状态
 
+### 1.2.2：失败的 FPGA 段、运行日志读取（2026-10-24）
+
+工具面 **49 个（文件级 38 + GUI 11）**，`ROBEI_MCP_GUI=0` 时 38 个。
+
+**P0：`FpgaStepFailed.from_record` 根本不存在（已修）**
+
+1.2.1 的 `fpga.py` 在每段失败时调用 `FpgaStepFailed.from_record(record)`，但 `errors.py`
+里没有这个方法，于是任何 rc≠0 的调用都在抛异常那一刻变成 `AttributeError`，顶层只能兜成
+`code=internal`。
+
+实测用数电实验六的工程（`workspace/exp6_counter`，`.const` 把 `cnt` 绑到 `M14/M15/N15/N16`）：
+
+```text
+build_bitstream(proj_path="exp6_counter/exp6_counter.proj",
+                part="xc7a50tfgg484-1", const_name="dec_counter")
+→ code=fpga_step_failed   stage=route   returncode=3
+  argv      E:\Robei\bin\Roplace.exe --chipdb ...\xc7a50tfgg484-1.bin
+            --xdc ...\dec_counter.xdc --json ...\dec_counter.json
+            --write ...\dec_counter_routed.json --fasm ...\dec_counter.fasm
+  log_path  workspace\build\fpga-20261024-203823-2550804b\route.log
+  run_dir   workspace\build\fpga-20261024-203823-2550804b
+  log_tail  Error: Unable to constrain IO 'cnt[0]', device does not have a pin named 'M14'
+            terminate called after throwing an instance of 'log_execution_error_exception'
+```
+
+同一份 `route.log` 再用 MCP 的 `read_run_log(path=log_path, tail=8)` 读回：981 字节、
+8 行（`truncated=false`），末行正是那条 `terminate called ...`。
+
+`M14` 是实验指导书那张板的引脚，`xc7a50tfgg484` 上没有这个球——报错是真的，不是工具链问题。
+
+**换成 fgg484 上真实存在的球之后出 `.bit`**（工程是 `exp6_counter` 的临时副本，同一份
+RTL：`clk=A1 rst=A14 en=A15 cnt=A20,A19,A13,A18 co=A16`；产物留在
+`workspace/build/exp6_valid_pins/`，该目录在 `.gitignore` 里）：
+
+```text
+bit                  workspace/build/exp6_valid_pins/dec_counter_valid.bit
+size                 2,192,170 bytes
+bit_payload_sha256   bcd969f3b531ba4c7266ebeba35e9c3dc1e9c1c19e572fea287b8e0d5adc6e85
+bit_payload_offset   206
+utilization          LUT 4 / FF 4 / CARRY 1 / BRAM36 0 / BRAM18 0 / DSP 0 / IO 8
+fmax_reference       539.08 MHz ($abc$2225$iopadmap$clk)
+xdc_generated        true（build/ 里没有 xdc，这次是现场从 .const 导出的）
+```
+
+**回归（本轮，Windows）**
+
+| 项 | 结果 |
+|---|---|
+| pytest | 147 passed（32.5 s） |
+| portable_core | 16/16 |
+| stage2 / 3 / 4 / 5 / 7 / 8 / 9 / 10 / 11 / 12 / 13 / 14 / 16 / 17 / 18 / 19 / 20 / 21 | 全过：5 → 10/10、7 → 12/12、8 → 10/10、11 → 13/13、12 → 18/18、13 → 18/18、14 → 9/9、16 → 12/12、17 → 28/28、18 → 29/29、19 → 26/26、20 → 14/14、21 → 18/18；stage2/3/4/9/10 只打印 rc=0 |
+| `tools/list` | 49（文件级 38 + GUI 11）；`ROBEI_MCP_GUI=0` 时 38 |
+
+**未测试 / 注意**
+
+- GUI 段**第一次**跑时 `robei_gui_open_project` / `open_model` / `compile` 报了
+  `RuntimeError: There is no active desktop required for moving mouse cursor!`
+  （stage5 7/10、stage7 9/12、stage8 5/9、stage12 13/18、stage16 9/12）。
+  同一台机器隔几分钟重跑，五段全过（10/10、12/12、10/10、18/18、12/12）。这是控制台
+  会话被锁 / 没有活动输入桌面的环境状态，不是代码回归：只有鼠标类操作受影响，UIA 读窗口
+  （`robei_gui_status` / `output`）和 `robei_gui_synthesis` 一直正常。
+- 没有上板；没有跑 `check_wheel.py`、`setup.py --apply`、`verify_1_0_2.py`。
+- 1.3 待办：画布总线位选、实例参数（Robei GUI 保存样本）、嵌套工程名、产物落到工程目录、
+  PNG 内联返回、空骨架模型。
+
 ### 1.2.0：FPGA 后端到 .bit（2026-10-24）
 
 工具面 **48 个（文件级 37 + GUI 11）**，`ROBEI_MCP_GUI=0` 时 37 个。

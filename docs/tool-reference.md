@@ -1,6 +1,6 @@
 # 工具参考
 
-48 个工具的完整参数、返回值和真实调用示例。工具名、参数名、返回字段保持英文。
+49 个工具的完整参数、返回值和真实调用示例。工具名、参数名、返回字段保持英文。
 
 > 这份文件是从早期 README 拆出来的，示例里的时间戳/路径是当时的真实输出，不要当成当前默认值。
 
@@ -85,7 +85,7 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
 ```
 
 **无 GUI、无桌面**地把一个 Robei 实验跑起来：读 `test/<name>.test` 的 `Code`，
-包成 `` `timescale … module <name>(); … endmodule ``（并补 `$dumpfile`/`$dumpvars`），
+包成 `` `timescale … module <name>(); … endmodule ``（并补 `$dumpfile` 和 `$dumpvars(0, <name>)`），
 把 `model/*.model` 全部导出到本次独立的
 `build/headless-<工程>-<test>-<时间戳>-<uuid8>/deps/`，再交给 `iverilog` + `vvp` 跑
 （同一工程连跑两次不会互相覆盖）。
@@ -254,6 +254,10 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 - `dry_run=true` 只校验并返回计划，不落盘
 - 返回 `source` / `target` / `relative_path` / `registration` / `backup` / `proj_backup` /
   `sha256` / `ports` / `parameters` / `lint`
+- 工程参数同时接受 `project` 和 `proj_path`（1.2.2 加，和 `read_robei_project` 等工具
+  同名参数对齐）。两个都不给、或者名字写错，返回的 hint 会点出正确参数名
+  （`path_escape` 之类的通用文案不再兜底），例如
+  `pass the project as project="myproj/myproj.proj" or proj_path="myproj/myproj.proj"`
 
 ### `create_robei_test`
 
@@ -266,7 +270,9 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 生成 `test/<name>.test` 并登记进 `.proj` 的 `<test>` 目录。
 
 - `code` 只写 **module body**：Robei 自己补 `module <name>();`、`endmodule` 和
-  `$dumpfile("./build/<name>.vcd"); $dumpvars;`
+  `$dumpfile("./build/<name>.vcd"); $dumpvars(0, <name>);`（1.2.2 起只 dump testbench
+  自己的作用域，不再是裸 `$dumpvars`——这样 iverilog 不会再报
+  `Package ($unit) is not dumpable`）
 - 默认 `sync_deps=true`，顺带刷新 `verilog/` 依赖库
 - 目标已存在时 `FileExistsError`（`overwrite=true` 才覆盖，并留 `.bak-<时间戳>`）
 - 登记是幂等的：返回 `registered_in_project`（布尔）与 `registration`（`created` / `exists`）
@@ -487,8 +493,10 @@ yosys -p "read_verilog <build>/<top>.v; synth_xilinx -flatten -arch xc7 -abc9 -n
 - 之后单独跑一次 `tee -o <build>/<const>_stat.txt stat`，从文件里解析 cell 表：
   `utilization = {LUT, FF, CARRY, BRAM36, BRAM18, DSP, IO}`。`LUT` 含 `INV`
   （7 系列里反相器同样占一个 LUT 位），`IO` 是顶层端口的总位数。
-- 产物：`<build>/<const>.json`、`<build>/<const>_stat.txt`，外加一份
-  `workspace/build/fpga-*/summary.json`（返回里的 `summary_path`）。
+- 产物：`<build>/<const>.json`、`<build>/<const>_stat.txt`，外加一份运行目录
+  `workspace/build/fpga-*/`（返回里的 `run_dir`）：`summary.json` 是整次调用的记录
+  （`summary_path`），同目录下每个 stage 还有一个 `<stage>.log`（`log_path`）。
+- 本工具没有 `steps` 参数（综合只有一段）；分段执行请用 `build_bitstream`。
 - `part` 可选；给了就校验型号存在，不存在返回 `device_unsupported`。综合本身不依赖 chipdb。
 - `timeout = {requested_s, effective_s, max_timeout_s, clamped}`：子进程超时会被
   `ROBEI_MAX_TIMEOUT_S`（默认 120 s）截断，`clamped=true` 时 `warnings` 里会明说；
@@ -512,10 +520,20 @@ xc7frames2bit --part_file <db>/<family>/<part>/part.yaml --part_name <part>
               --frm_file <frame> --output_file <bit>
 ```
 
-- 每段返回 `{stage, command, returncode, duration_s, timeout, log_tail, outputs}`；
-  `package` 拆成 `package.frames` 与 `package.bit` 两个 stage。
-- 第一个失败就停下：`code=fpga_step_failed`，`stage` 指出是哪一段，
-  `record.log_tail` 是那一段的日志尾部。
+- `steps` 是枚举，只接受 `"synth"` / `"route"` / `"package"` 三个值（schema 里就是
+  `enum`，写错值在 MCP 层就被拒，不会跑到一半才失败）。
+- 每段返回 `{stage, command, returncode, duration_s, timeout, log_tail, log_path,
+  run_dir, argv, outputs}`；`package` 拆成 `package.frames` 与 `package.bit` 两个 stage。
+  每一步的完整 stdout+stderr 落在 `run_dir/<stage>.log`，`log_path` 就是那个文件的绝对
+  路径，可以直接喂给 `read_run_log`。
+- 第一个失败就停下：`code=fpga_step_failed`，`stage` 指出是哪一段。返回的**顶层**直接带
+  `stage` / `argv`（已脱敏）/ `returncode` / `log_tail` / `log_path` / `run_dir`，
+  完整的 stage 记录仍在 `record` 里。1.2.2 之前这条路径实际抛
+  `AttributeError: FpgaStepFailed has no from_record`，所有非零退出都变成 `code=internal`。
+- `route` 段开始前会检查 `build/<const>.xdc`：文件不在就用 `.const` 现场重新导出
+  （等价于 `export_robei_xdc`，同时写 `constrain/` 和 `build/`），返回里
+  `xdc_generated=true` 并在 `warnings` 里记一条；`.const` 本身不存在则是
+  `invalid_argument`，hint 指明先 `create_robei_const`。
 - 器件没有 chipdb（或没有 part.yaml）→ `device_unsupported`，`error` 里带原因。
 - `.const` 没把某个端口位绑到引脚 → `unconstrained_io`，
   `missing: [{port, direction, missing_bits}]`，此时不会启动 Roplace。
@@ -533,6 +551,26 @@ xc7frames2bit --part_file <db>/<family>/<part>/part.yaml --part_name <part>
 - `fmax_reference` 是 Roplace 自己打印的 `Max frequency for clock ...`，**仅供参考**；
   组合逻辑设计没有时钟，Roplace 只打印 `Warning: No clocks found in design`，该字段为 `null`。
   `timing_note` 会写明本工具不做时序签核。
+
+### `read_run_log`
+
+```json
+{"path": "build/fpga-20261024-101530-ab12cd34/route.log"}
+{"path": "build/fpga-20261024-101530-ab12cd34/route.log", "tail": 50, "max_bytes": 200000}
+```
+
+只读工具：打开 `fpga_step_failed` / `internal` 返回里那个 `log_path`，或者任何落在
+workspace 下 `logs/`、`build/` 目录里的文件（工程自带的 `<proj>/build/` 也算）。
+
+- 只认 workspace 内、且**某一级父目录名是 `logs` 或 `build`** 的文件；其它路径返回
+  `code=path_escape_log`，hint 会说明规则。目录穿越（`../`、绝对路径）照旧被
+  `strict_path_scan` 挡掉，返回 `code=path_escape`。
+- `max_bytes` 默认 500,000（下限 4,096、上限 5,000,000）：超长文件只保留末尾这一段，
+  返回 `truncated=true`、`bytes_read` 与 `size_bytes`，`note` 写明丢掉了多少字节。
+- `tail` 默认 200 行：`lines` 是最后 `tail` 行，`line_count` 是实际保留的行数。
+- 返回 `path` / `relative_path` / `lines` / `line_count` / `returned_lines` /
+  `size_bytes` / `bytes_read` / `max_bytes` / `truncated` / `note`。
+- 文件不存在 → `code=not_found`；传的是目录 → `code=not_found`。
 
 ### `run_all_tests`
 

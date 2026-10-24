@@ -26,7 +26,7 @@ from .model import (
     parse_robei_model,
     parse_robei_model_text,
 )
-from .errors import NotBehavioral, UnknownParameter, WidthMismatch
+from .errors import LogPathEscape, NotBehavioral, PathEscape, UnknownParameter, WidthMismatch
 from . import runstate, xmlsafe
 from .security import (
     is_within,
@@ -762,7 +762,7 @@ def simulate_project(
         + body + "\n"
         + "  initial begin\n"
         + '    $dumpfile("' + stem + '.vcd");\n'
-        + "    $dumpvars;\n"
+        + "    $dumpvars(0, " + stem + ");\n"
         + "  end\n"
         + "endmodule\n",
         encoding="utf-8",
@@ -1155,6 +1155,58 @@ def render_waveform(
     result["relative_path"] = _rel(out_path)
     result["vcd"] = _rel(path)
     return result
+
+
+LOG_ROOTS = ("logs", "build")
+
+
+def read_run_log(path: str, tail: int = 200, max_bytes: int = 500_000) -> dict[str, Any]:
+    """Read a run log under ``workspace/logs`` or ``workspace/build``.
+
+    Long files keep the tail (``truncated=True`` says the head was dropped); every
+    ``fpga_step_failed`` / ``internal`` payload points at a file this tool can open.
+    """
+    candidate = resolve_workspace_path(path, must_exist=True)
+    in_log_dir = any(
+        parent.name in LOG_ROOTS
+        for parent in candidate.parents
+        if is_within(parent, SETTINGS.workspace)
+    )
+    if not in_log_dir:
+        raise LogPathEscape(
+            f"{candidate} is not inside a {'/ or '.join(LOG_ROOTS)}/ directory under "
+            f"{SETTINGS.workspace}"
+        )
+    if not candidate.is_file():
+        raise FileNotFoundError(f"log not found: {candidate}")
+    cap = max(4096, min(int(max_bytes), 5_000_000))
+    size = candidate.stat().st_size
+    truncated = size > cap
+    with candidate.open("rb") as handle:
+        if truncated:
+            handle.seek(size - cap)
+        data = handle.read(cap)
+    text = data.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    keep = max(0, int(tail))
+    kept = lines[-keep:] if keep else []
+    return {
+        "ok": True,
+        "path": str(candidate),
+        "relative_path": _rel(candidate),
+        "size_bytes": size,
+        "max_bytes": cap,
+        "truncated": truncated,
+        "bytes_read": len(data),
+        "line_count": len(lines),
+        "returned_lines": len(kept),
+        "note": (
+            f"head dropped: only the last {len(data)} of {size} bytes are present"
+            if truncated
+            else None
+        ),
+        "lines": kept,
+    }
 
 
 def read_robei_model(path: str) -> dict[str, Any]:
@@ -2839,19 +2891,34 @@ def _rewrite_root_attr(text: str, attribute: str, value: str) -> str:
 
 def import_library_model(
     name: str,
-    project: str,
+    project: str | None = None,
     as_name: str | None = None,
     overwrite: bool = False,
     dry_run: bool = False,
+    proj_path: str | None = None,
 ) -> dict[str, Any]:
     """Copy a ToolBox model into ``<project>/model``, register it, then lint it.
+
+    ``project`` is the project path (``work/a.proj``); ``proj_path`` is accepted as an
+    alias so a caller that guesses the other name does not have to retry blind.
 
     ``constant.model`` declares ``module register`` — a copied file whose name
     disagrees with its module name breaks every canvas that instantiates it, so
     that case is refused unless the caller picks ``as_name`` (the copy is then
     renamed *and* its root ``Name`` attribute is rewritten to match).
     """
-    proj = resolve_project_path(project)
+    if project and proj_path and str(project) != str(proj_path):
+        raise ValueError(
+            "project and proj_path disagree; pass only one of them, e.g. "
+            '{"name": "and2", "project": "work/a.proj"}'
+        )
+    target_project = project or proj_path
+    if not target_project:
+        raise ValueError(
+            "import_library_model needs the project path: pass "
+            '{"name": "and2", "project": "work/a.proj"} (alias: proj_path)'
+        )
+    proj = resolve_project_path(target_project)
     if not is_within(proj, SETTINGS.workspace):
         raise ValueError("refusing to modify a project outside the workspace")
     source = _find_library_file(name)

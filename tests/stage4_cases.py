@@ -160,6 +160,7 @@ async def main():
                 "synthesize_project",
                 "build_bitstream",
                 "run_all_tests",
+                "read_run_log",
             ]
             for name in required:
                 assert name in names, f"missing tool: {name}"

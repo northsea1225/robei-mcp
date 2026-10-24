@@ -10,6 +10,10 @@ class PathEscape(ValueError):
     """A supplied path resolved outside every root the tool is allowed to touch."""
 
 
+class LogPathEscape(PathEscape):
+    """read_run_log was pointed at a file outside workspace/logs and workspace/build."""
+
+
 class WidthMismatch(ValueError):
     """Two wire endpoints do not carry the same number of bits."""
 
@@ -35,12 +39,29 @@ class UnconstrainedIO(ValueError):
 
 
 class FpgaStepFailed(RuntimeError):
-    """One FPGA stage (synth/route/package) failed; ``stage`` names it."""
+    """One FPGA stage (synth/route/package) failed; ``stage`` names it.
+
+    ``record`` is the stage report the FPGA backend already built (rc, argv,
+    log tail, outputs). ``from_record`` turns that dict into the exception, so a
+    failing stage never has to be re-raised as a bare RuntimeError.
+    """
 
     def __init__(self, message: str, stage: str | None = None, record: dict | None = None) -> None:
         super().__init__(message)
         self.stage = stage
         self.record = record or {}
+        self.code_override: str | None = None
+
+    @classmethod
+    def from_record(cls, record: dict, code: str = "fpga_step_failed") -> "FpgaStepFailed":
+        """Build the exception from a stage report (``stage``/``returncode``/...)."""
+        stage = str(record.get("stage") or "unknown")
+        tail = list(record.get("log_tail") or [])
+        last = tail[-1] if tail else "no output captured"
+        rc = record.get("returncode")
+        error = cls(f"{stage} failed (rc={rc}): {last}", stage=stage, record=dict(record))
+        error.code_override = code
+        return error
 
 
 HINTS = {
@@ -67,8 +88,9 @@ HINTS = {
         "then export_xdc again"
     ),
     "fpga_step_failed": (
-        "the failing stage is named in `stage` and its log tail in `record.log_tail`; "
-        "fix that stage before retrying (synth -> route -> package)"
+        "the failing stage is named in `stage`; `log_path` (or record.log_path) is a file "
+        "under workspace/build that read_run_log can open, and log_tail already holds the last "
+        "lines - fix that stage before retrying (synth -> route -> package)"
     ),
     "not_found": "the path must exist and, for models/projects, sit under an allowed root",
     "already_exists": "pass overwrite=true (the previous file is kept as .bak-<timestamp>)",
@@ -78,7 +100,14 @@ HINTS = {
     "bad_argument": "check the argument names and types in the tool schema",
     "cancelled": "the client cancelled the request; child processes were killed",
     "unsupported": "this build does not implement the requested feature",
-    "internal": "see workspace/logs for the child-process trace",
+    "internal": (
+        "unexpected failure; retry with the same arguments and, if it repeats, open the "
+        "`log_path` file (or any file under `run_dir`) with read_run_log"
+    ),
+    "path_escape_log": (
+        "read_run_log opens files inside a logs/ or build/ directory under the workspace; "
+        "every fpga_step_failed payload carries the exact `log_path` to pass back"
+    ),
 }
 
 
@@ -91,6 +120,8 @@ def code_for(exc: BaseException) -> str:
         return "unconstrained_io"
     if isinstance(exc, UnsafeXml):
         return "unsafe_xml"
+    if isinstance(exc, LogPathEscape):
+        return "path_escape_log"
     if isinstance(exc, PathEscape):
         return "path_escape"
     if isinstance(exc, WidthMismatch):
@@ -133,5 +164,10 @@ def payload(exc: BaseException, **extra: Any) -> dict[str, Any]:
     record = getattr(exc, "record", None)
     if record:
         data["record"] = record
+        # A failed FPGA stage is only actionable if the caller can see what ran
+        # and where the full log sits; keep both at the top level.
+        for key in ("argv", "returncode", "log_tail", "log_path", "run_dir"):
+            if record.get(key) not in (None, "", []):
+                data[key] = record[key]
     data.update(extra)
     return data

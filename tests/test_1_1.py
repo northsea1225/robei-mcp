@@ -126,6 +126,28 @@ def test_import_copies_file_registers_and_backs_up_project(fake_library: Path) -
         shutil.rmtree(SETTINGS.workspace / name, ignore_errors=True)
 
 
+def test_import_accepts_proj_path_alias(fake_library: Path) -> None:
+    """1.2.2: ``proj_path`` is accepted next to ``project``; a missing one says so."""
+    name = f"libalias_{uuid.uuid4().hex[:6]}"
+    project = _project(name)
+    try:
+        rel = project.relative_to(SETTINGS.workspace).as_posix()
+        out = tools.import_library_model("plain", proj_path=rel, dry_run=True)
+        assert out["dry_run"] is True and out["registration"] == "pending"
+        out = tools.import_library_model("plain", proj_path=str(project), dry_run=True)
+        assert out["dry_run"] is True
+        with pytest.raises(ValueError) as caught:
+            tools.import_library_model("plain")
+        message = str(caught.value)
+        assert '"project": "work/a.proj"' in message
+        assert "proj_path" in message
+        with pytest.raises(ValueError) as caught:
+            tools.import_library_model("plain", project=rel, proj_path="other/x.proj")
+        assert "disagree" in str(caught.value)
+    finally:
+        shutil.rmtree(SETTINGS.workspace / name, ignore_errors=True)
+
+
 def test_import_existing_model_returns_already_exists_code(fake_library: Path) -> None:
     from robei_mcp.errors import code_for
 

@@ -25,7 +25,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .config import SETTINGS
 from .errors import DeviceUnsupported, FpgaStepFailed, UnconstrainedIO
@@ -192,16 +192,25 @@ def _project_paths(proj: Path) -> dict[str, Path]:
 
 
 def _const_path(proj: Path, const_name: str | None) -> Path:
+    """The .const to build from, or a ValueError that says what to do next."""
     const_dir = _project_paths(proj)["const"]
     if const_name:
         stem = const_name[:-6] if const_name.lower().endswith(".const") else const_name
         target = const_dir / f"{stem}.const"
         if not target.is_file():
-            raise FileNotFoundError(f"constraint not found: {target}")
+            available = sorted(path.stem for path in const_dir.glob("*.const")) if const_dir.is_dir() else []
+            raise ValueError(
+                f"constraint {stem!r} not found under {const_dir} (available: {available}); "
+                "create it with create_robei_const(proj_path, name, model, pins) or pass "
+                "const_name=<existing .const stem>"
+            )
         return target
     candidates = sorted(const_dir.glob("*.const"))
     if not candidates:
-        raise FileNotFoundError(f"project has no const/*.const file: {const_dir}")
+        raise ValueError(
+            f"project has no const/*.const file in {const_dir}; build_bitstream needs pin "
+            "constraints - create one with create_robei_const(proj_path, name, model, pins) first"
+        )
     return candidates[0]
 
 
@@ -379,24 +388,47 @@ def _tail(text: str, lines: int = 25) -> list[str]:
     return kept[-lines:]
 
 
+_SECRET_RE = re.compile(r"(gh[pousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+)")
+
+
+def _redact_argv(args: list[Any]) -> list[str]:
+    """Command line as text, with anything token-shaped masked."""
+    out: list[str] = []
+    for arg in args:
+        text = str(arg)
+        text = re.sub(r"https://[^@\s]*@", "https://***@", text)
+        out.append(_SECRET_RE.sub("***", text))
+    return out
+
+
 def _run_stage(
     args: list[Any],
     cwd: Path,
     timeout_s: int,
     stage: str,
     outputs: dict[str, Path],
+    run_dir: Path | None = None,
 ) -> dict[str, Any]:
     from . import tools
 
     result = tools._run(args, cwd=cwd, timeout_s=timeout_s)
     text = (result.get("stdout") or "") + (result.get("stderr") or "")
+    log_path = None
+    if run_dir is not None:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        log_file = run_dir / f"{stage}.log"
+        log_file.write_text(text, encoding="utf-8", errors="replace")
+        log_path = str(log_file)
     record = {
         "stage": stage,
         "command": result.get("command"),
+        "argv": _redact_argv(args),
         "returncode": result.get("returncode"),
         "duration_s": round((result.get("duration_ms") or 0) / 1000.0, 2),
         "timeout": bool(result.get("timeout")),
         "log_tail": _tail(text),
+        "log_path": log_path,
+        "run_dir": str(run_dir) if run_dir is not None else None,
         "outputs": {},
     }
     for name, path in outputs.items():
@@ -443,10 +475,11 @@ def _rel(path: Path) -> str:
         return path.as_posix()
 
 
-def _summary_path(stamp_kind: str) -> Path:
+def _new_run_dir() -> Path:
+    """One directory per FPGA call: stage logs, summary.json, error pointers."""
     from . import tools
 
-    return tools._new_run_dir(stamp_kind) / "summary.json"
+    return tools._new_run_dir("fpga")
 
 
 def _write_summary(run_dir_file: Path, payload: dict[str, Any]) -> str:
@@ -484,7 +517,7 @@ def synthesize_project(
         raise FileNotFoundError("project has no models to synthesise")
     filelist = _write_filelist(_project_paths(proj)["build"], chosen)
     json_out = _project_paths(proj)["build"] / f"{const.stem}.json"
-    summary_file = _summary_path("fpga")
+    run_dir = _new_run_dir()
 
     info = _common(proj, part)
     info.update(
@@ -505,6 +538,7 @@ def synthesize_project(
         timeout_s=budget["effective_s"],
         stage="synth",
         outputs={"json": json_out},
+        run_dir=run_dir,
     )
     stat = _stat_pass(json_out, budget["effective_s"])
     utilization = _utilization(stat["counts"], _io_bits(chosen, resolved_top))
@@ -525,7 +559,8 @@ def synthesize_project(
             "json_sha256": _sha(json_out),
         }
     )
-    info["summary_path"] = _write_summary(summary_file, info)
+    info["run_dir"] = str(run_dir)
+    info["summary_path"] = _write_summary(run_dir / "summary.json", info)
     return info
 
 
@@ -601,7 +636,7 @@ def _missing_io(proj: Path, const: Path, exported: dict[str, Any], top: str | No
     return missing
 
 
-def _normalize_steps(steps: list[str] | None) -> list[str]:
+def _normalize_steps(steps: list[Literal["synth", "route", "package"]] | None) -> list[str]:
     chosen = [str(step).strip().lower() for step in (steps or STAGES)]
     unknown = [step for step in chosen if step not in STAGES]
     if unknown:
@@ -616,7 +651,7 @@ def build_bitstream(
     proj_path: str,
     part: str,
     const_name: str | None = None,
-    steps: list[str] | None = None,
+    steps: list[Literal["synth", "route", "package"]] | None = None,
     timeout_s: int = 120,
 ) -> dict[str, Any]:
     """Run yosys -> Roplace -> fasm2frames -> xc7frames2bit and report every stage.
@@ -652,8 +687,16 @@ def build_bitstream(
     exported = _export_build_verilog(proj)
     sources, top = _pick_sources(exported, _const_model(const))
     build = _project_paths(proj)["build"]
+    run_dir = _new_run_dir()
     _write_filelist(build, sources)
-    xdc = constraints.export_xdc(proj_path=str(proj), const_name=const.stem, also_build=True)
+    xdc_path = build / f"{const.stem}.xdc"
+    xdc_generated = False
+    if not xdc_path.is_file():
+        # Build > Route reads build/<const>.xdc; regenerate it from the .const the way
+        # export_robei_xdc does instead of dying on a missing file.
+        exported_xdc = constraints.export_xdc(proj_path=str(proj), const_name=const.stem, also_build=True)
+        xdc_path = Path(exported_xdc["build_copy"] or exported_xdc["path"])
+        xdc_generated = True
     missing_io = _missing_io(proj, const, exported, top)
     if missing_io:
         names = [f"{item['port']}[{bit}]" for item in missing_io for bit in item["missing_bits"]]
@@ -683,6 +726,7 @@ def build_bitstream(
                 timeout_s=budget["effective_s"],
                 stage="synth",
                 outputs={"json": json_out},
+                run_dir=run_dir,
             )
         )
     elif "route" in wanted and not json_out.is_file():
@@ -698,7 +742,7 @@ def build_bitstream(
                 "--chipdb",
                 chipdb,
                 "--xdc",
-                build / f"{const.stem}.xdc",
+                xdc_path,
                 "--json",
                 json_out,
                 "--write",
@@ -710,6 +754,7 @@ def build_bitstream(
             timeout_s=budget["effective_s"],
             stage="route",
             outputs={"fasm": fasm_out, "routed_json": routed_out},
+            run_dir=run_dir,
         )
         route["unconstrained_note"] = None
         fmax = _fmax("\n".join(route["log_tail"]))
@@ -735,6 +780,7 @@ def build_bitstream(
             timeout_s=budget["effective_s"],
             stage="package.frames",
             outputs={"frame": frame_out},
+            run_dir=run_dir,
         )
         records.append(package)
         records.append(
@@ -754,6 +800,7 @@ def build_bitstream(
                 timeout_s=budget["effective_s"],
                 stage="package.bit",
                 outputs={"bit": bit_out},
+                run_dir=run_dir,
             )
         )
 
@@ -766,7 +813,9 @@ def build_bitstream(
             "family": family,
             "top": top,
             "const": str(const),
-            "xdc": xdc["path"],
+            "xdc": str(xdc_path),
+            "xdc_generated": xdc_generated,
+            "run_dir": str(run_dir),
             "steps_run": [record["stage"] for record in records],
             "stages": records,
             "artifacts": {
@@ -801,5 +850,5 @@ def build_bitstream(
             ),
         }
     )
-    payload["summary_path"] = _write_summary(_summary_path("fpga"), payload)
+    payload["summary_path"] = _write_summary(run_dir / "summary.json", payload)
     return payload

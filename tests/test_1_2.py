@@ -193,3 +193,64 @@ def test_clock_model_lints_ok_with_timing(project: str) -> None:
     assert verilator["timing"] is True
     assert verilator["error_count"] == 0, verilator["errors"]
     assert verilator["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# read_run_log (1.2.2)
+# ---------------------------------------------------------------------------
+def _log_file(project: str, name: str, body: str) -> Path:
+    target = Path(project).parent / "build" / "pytest-logs" / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body, encoding="utf-8", newline="\n")
+    return target
+
+
+def test_read_run_log_returns_the_tail(project: str) -> None:
+    body = "".join(f"line {index}\n" for index in range(1, 21))
+    target = _log_file(project, "run.log", body)
+    rel = target.relative_to(SETTINGS.workspace).as_posix()
+    result = tools.read_run_log(rel, tail=5)
+    assert result["ok"] is True
+    assert result["returned_lines"] == 5
+    assert result["lines"] == ["line 16", "line 17", "line 18", "line 19", "line 20"]
+    assert result["truncated"] is False
+    assert result["size_bytes"] == len(body)
+
+
+def test_read_run_log_caps_long_files(project: str) -> None:
+    body = "x" * 9000 + "\nTAIL-MARKER\n"
+    target = _log_file(project, "big.log", body)
+    rel = target.relative_to(SETTINGS.workspace).as_posix()
+    result = tools.read_run_log(rel, tail=10, max_bytes=4096)
+    assert result["truncated"] is True
+    assert result["bytes_read"] == 4096
+    assert result["note"] and "head dropped" in result["note"]
+    assert result["lines"][-1] == "TAIL-MARKER"
+
+
+def test_read_run_log_rejects_paths_outside_log_roots(project: str) -> None:
+    from robei_mcp.errors import PathEscape, code_for, payload
+
+    model = Path(project).parent / "model" / "inv.model"
+    rel = model.relative_to(SETTINGS.workspace).as_posix()
+    with pytest.raises(PathEscape) as excinfo:
+        tools.read_run_log(rel)
+    assert code_for(excinfo.value) == "path_escape_log"
+    hint = payload(excinfo.value)["hint"]
+    assert "logs/" in hint and "build/" in hint
+
+
+@needs_iverilog
+def test_simulate_project_scopes_dumpvars(project: str) -> None:
+    """The generated testbench must dump its own scope only (1.2.2 P1)."""
+    tools.create_robei_test(
+        project,
+        "tb_scope",
+        code="initial begin #1 $display(\"hi\"); $finish; end",
+    )
+    result = tools.simulate_project(project, "tb_scope", timeout_s=30)
+    tb = Path(result["headless"]["tb_source"])
+    text = tb.read_text(encoding="utf-8")
+    assert "$dumpvars(0, tb_scope);" in text
+    assert "$dumpvars;" not in text
+    assert result["ok"] is True
