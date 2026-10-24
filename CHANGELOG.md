@@ -13,6 +13,8 @@
 - **键名拼写**：`tool_paths()` 的键名多打了一个 l，已改成 `roplace`；`list_fpga_devices`
   的返回、tool-reference 与 pytest 同步更新，`robei_mcp/`、`tests/`、`docs/tool-reference.md`
   里已无旧拼写（本段是历史说明）。
+- **不兼容**：`list_fpga_devices` / `tool_paths` 的键 `ropllace` → `roplace`（1.2.0 的拼写
+  错误，**未保留旧键**），调用方升级后要按新键取值。
 - **`.bit` 说法更正**：xc7frames2bit 会在开头写 ASCII 字段——`a` = `.frame` 的**绝对路径**、
   `b` = 器件、`c` = 日期、`d` = 时间——之后才是同步字 `0xAA995566` 和帧数据。因此
   **同样构建的 `.bit` 大小随路径长度变化**（实测同一工程：xc7a50tfgg484-1 2,192,172 B、
