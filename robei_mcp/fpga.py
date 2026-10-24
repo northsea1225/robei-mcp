@@ -201,6 +201,17 @@ def _const_path(proj: Path, const_name: str | None) -> Path:
     return candidates[0]
 
 
+def _write_filelist(build: Path, sources: list[Path]) -> Path:
+    """``build/filelist.vf``: the file list Robei's Compile leaves for Synthesis."""
+    target = build / "filelist.vf"
+    target.write_text(
+        "\n".join(source.as_posix() for source in sources) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return target
+
+
 def _const_model(const: Path) -> str | None:
     """Model instantiated by a .const (``None`` when the file declares none)."""
     from . import constraints
@@ -333,6 +344,18 @@ def _utilization(counts: dict[str, int], io_bits: int) -> dict[str, Any]:
     return out
 
 
+def _timeout_budget(timeout_s: int) -> dict[str, Any]:
+    """``_run`` clamps to max_timeout_s; report both numbers instead of silently cutting."""
+    requested = max(1, int(timeout_s))
+    effective = max(1, min(requested, SETTINGS.max_timeout_s))
+    return {
+        "requested_s": requested,
+        "effective_s": effective,
+        "max_timeout_s": SETTINGS.max_timeout_s,
+        "clamped": effective != requested,
+    }
+
+
 def _tail(text: str, lines: int = 25) -> list[str]:
     kept = [line for line in (text or "").splitlines() if line.strip()]
     return kept[-lines:]
@@ -437,6 +460,7 @@ def synthesize_project(
     chosen, resolved_top = _pick_sources(exported, preferred)
     if not chosen:
         raise FileNotFoundError("project has no models to synthesise")
+    filelist = _write_filelist(_project_paths(proj)["build"], chosen)
     json_out = _project_paths(proj)["build"] / f"{const.stem}.json"
     summary_file = _summary_path("fpga")
 
@@ -446,25 +470,28 @@ def synthesize_project(
             "top": resolved_top,
             "sources": [item["path"] for item in exported["files"]],
             "const": str(const),
+            "filelist": str(filelist),
             "json_path": str(json_out),
             "warnings": exported["warnings"],
         }
     )
     script = _yosys_script(chosen, json_out)
+    budget = _timeout_budget(timeout_s)
     stage = _run_stage(
         [SETTINGS.yosys, "-p", script],
         cwd=_project_paths(proj)["build"],
-        timeout_s=int(timeout_s),
+        timeout_s=budget["effective_s"],
         stage="synth",
         outputs={"json": json_out},
     )
-    stat = _stat_pass(json_out, timeout_s)
+    stat = _stat_pass(json_out, budget["effective_s"])
     utilization = _utilization(stat["counts"], _io_bits(chosen, resolved_top))
     info.update(
         {
             "ok": True,
             "yosys_script": script,
             "seconds": stage["duration_s"],
+            "timeout": budget,
             "log_tail": stage["log_tail"],
             "cells": stat["counts"],
             "utilization": utilization,
@@ -599,6 +626,7 @@ def build_bitstream(
     exported = _export_build_verilog(proj)
     sources, top = _pick_sources(exported, _const_model(const))
     build = _project_paths(proj)["build"]
+    _write_filelist(build, sources)
     xdc = constraints.export_xdc(proj_path=str(proj), const_name=const.stem, also_build=True)
     missing_io = _missing_io(proj, const, exported, top)
     if missing_io:
@@ -608,6 +636,7 @@ def build_bitstream(
             missing=missing_io,
         )
 
+    budget = _timeout_budget(timeout_s)
     json_out = build / f"{const.stem}.json"
     fasm_out = build / f"{const.stem}.fasm"
     frame_out = build / f"{const.stem}.frame"
@@ -625,7 +654,7 @@ def build_bitstream(
             _run_stage(
                 [SETTINGS.yosys, "-p", script],
                 cwd=build,
-                timeout_s=int(timeout_s),
+                timeout_s=budget["effective_s"],
                 stage="synth",
                 outputs={"json": json_out},
             )
@@ -652,7 +681,7 @@ def build_bitstream(
                 fasm_out,
             ],
             cwd=build,
-            timeout_s=int(timeout_s),
+            timeout_s=budget["effective_s"],
             stage="route",
             outputs={"fasm": fasm_out, "routed_json": routed_out},
         )
@@ -677,7 +706,7 @@ def build_bitstream(
                 frame_out,
             ],
             cwd=build,
-            timeout_s=int(timeout_s),
+            timeout_s=budget["effective_s"],
             stage="package.frames",
             outputs={"frame": frame_out},
         )
@@ -696,13 +725,13 @@ def build_bitstream(
                     bit_out,
                 ],
                 cwd=build,
-                timeout_s=int(timeout_s),
+                timeout_s=budget["effective_s"],
                 stage="package.bit",
                 outputs={"bit": bit_out},
             )
         )
 
-    stat = _stat_pass(json_out, int(timeout_s)) if json_out.is_file() else {"counts": {}}
+    stat = _stat_pass(json_out, budget["effective_s"]) if json_out.is_file() else {"counts": {}}
     payload = _common(proj, part)
     payload.update(
         {
@@ -732,7 +761,13 @@ def build_bitstream(
                 "(no .xdc clock constraints are turned into a sign-off report)"
             ),
             "seconds": round(time.monotonic() - started, 2),
-            "warnings": exported["warnings"],
+            "timeout": budget,
+            "warnings": exported["warnings"]
+            + (
+                [f"timeout_s was clamped to max_timeout_s={budget['max_timeout_s']}"]
+                if budget["clamped"]
+                else []
+            ),
         }
     )
     payload["summary_path"] = _write_summary(_summary_path("fpga"), payload)
