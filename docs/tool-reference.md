@@ -402,6 +402,10 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
   `code=invalid_argument`，不写文件
 - `vendor` / `device` / `family` 只在 `kind="const"` 时写入根节点；留空时 Robei 会提示
   `has no Device/Family configured`（综合仍会跑完），填成目标板卡的器件名即可消掉
+- 想在 `xc7a*fgg484` 上真的走通 Route / Package，实测可用的一组引脚是
+  `swt = A1, A14, A15, A16`、`led = A20, A19, A13, A18`
+  （完整写法见 `examples/fpga_demo/const/light_constrain.const`）。**这只是 Roplace 在该器件上
+  能通过的一套引脚组合，不是任何板卡的引脚表，也没有上板验证。**
 - 已存在要 `overwrite=true`（留 `.bak-<时间戳>`）
 
 ### `read_robei_const`
