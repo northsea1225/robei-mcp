@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import bisect
 import copy
+import difflib
 import hashlib
 import json
 import os
@@ -28,7 +29,14 @@ from .model import (
     parse_robei_model,
     parse_robei_model_text,
 )
-from .errors import LogPathEscape, NotBehavioral, PathEscape, UnknownParameter, WidthMismatch
+from .errors import (
+    BadRequest,
+    LogPathEscape,
+    NotBehavioral,
+    PathEscape,
+    UnknownParameter,
+    WidthMismatch,
+)
 from . import runstate, xmlsafe
 from .security import (
     is_within,
@@ -45,10 +53,97 @@ from .verilog import generate_testbench as build_testbench
 from .verilog import parse_module_ports, classify_control
 from .verilog import robei_width, width_info
 
+# Wall clock at the moment this module was imported, i.e. a few milliseconds
+# after the interpreter started.  File mtimes are compared against it, so
+# editing a .py after the server loaded it flips ``stale``.  (Don't derive this
+# from ``time.monotonic()``: that counts since boot, not since process start,
+# and made every fresh process look two days old.)
+PROCESS_STARTED = time.time()
+
 TOP_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 FILE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _QA_DIR_RE = re.compile(r"^(?:_qa_runs|qa_.*)$", re.IGNORECASE)
 _RENDER_LOCK = threading.Lock()
+
+
+def _source_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _git_commit(directory: Path) -> str | None:
+    """Short HEAD hash of the source checkout; ``None`` outside git, never raises."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(directory), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def _source_mtime(directory: Path) -> float | None:
+    stamps = []
+    for path in directory.glob("*.py"):
+        try:
+            stamps.append(path.stat().st_mtime)
+        except OSError:
+            continue
+    return max(stamps) if stamps else None
+
+
+def stale_warning() -> str | None:
+    """A message when the running process predates the code on disk."""
+    newest = _source_mtime(_source_dir())
+    if newest is None or newest <= PROCESS_STARTED:
+        return None
+    from . import __version__ as server_version
+
+    return (
+        f"the MCP server loaded {server_version} at "
+        f"{datetime.fromtimestamp(PROCESS_STARTED).isoformat(timespec='seconds')}, but "
+        f"{_source_dir()}/*.py changed at "
+        f"{datetime.fromtimestamp(newest).isoformat(timespec='seconds')}: restart the "
+        "server (or reopen Codex) to run the new code"
+    )
+
+
+def _with_stale_note(payload: Any) -> Any:
+    """Attach :func:`stale_warning` to a tool result (no-op when up to date)."""
+    note = stale_warning()
+    if not note or not isinstance(payload, dict):
+        return payload
+    result = dict(payload)
+    warnings = result.get("warnings")
+    result["warnings"] = [note, *warnings] if isinstance(warnings, list) else [note]
+    return result
+
+
+def self_check() -> dict[str, Any]:
+    """Version, commit, source dir and staleness of the *running* process."""
+    from . import __version__ as server_version
+
+    source = _source_dir()
+    newest = _source_mtime(source)
+
+    def stamp(value: float | None) -> str | None:
+        if value is None:
+            return None
+        return datetime.fromtimestamp(value).isoformat(timespec="seconds")
+
+    return {
+        "package_version": server_version,
+        "git_commit": _git_commit(source),
+        "source_dir": str(source),
+        "process_started_at": stamp(PROCESS_STARTED),
+        "process_age_s": round(time.time() - PROCESS_STARTED, 1),
+        "newest_source_mtime": stamp(newest),
+        "stale": bool(newest is not None and newest > PROCESS_STARTED),
+    }
 
 
 def _tool_path(path: Path | str) -> str:
@@ -356,9 +451,20 @@ def runtime_status() -> dict[str, Any]:
     from . import __version__ as server_version
 
     required = ("robei", "iverilog", "vvp", "yosys")
+    check = self_check()
     return {
         "ok": all(tools[name]["exists"] for name in required),
         "verilator_available": verilator["exists"] and verilator["root_exists"],
+        # ``package_version`` is the documented name; ``server_version`` stays for
+        # clients written against 1.4.
+        "package_version": server_version,
+        "git_commit": check["git_commit"],
+        "source_dir": check["source_dir"],
+        "process_started_at": check["process_started_at"],
+        "process_age_s": check["process_age_s"],
+        "newest_source_mtime": check["newest_source_mtime"],
+        "stale": check["stale"],
+        "stale_warning": stale_warning(),
         "server_version": server_version,
         "mcp_version": mcp_version,
         "python_executable": sys.executable,
@@ -1633,7 +1739,7 @@ def _port_tag(
     module: str,
     name: str,
     direction: str,
-    width: int,
+    width: str | int,
     datatype: str,
     side: str,
     index: int,
@@ -1651,7 +1757,7 @@ def set_port(
     model_path: str,
     name: str,
     direction: str = "input",
-    width: int = 1,
+    width: int | str = 1,
     datatype: str = "wire",
     side: str | None = None,
 ) -> dict[str, Any]:
@@ -1671,9 +1777,8 @@ def set_port(
         raise ValueError(f"direction must be one of {sorted(PORT_DIRECTIONS)}")
     if datatype not in PORT_DATATYPES:
         raise ValueError(f"datatype must be one of {sorted(PORT_DATATYPES)}")
-    width = int(width)
-    if not 1 <= width <= 1024:
-        raise ValueError("width must be between 1 and 1024")
+    datasize = _width_text(width, "width")
+    width = robei_width(datasize)
     if side is None:
         side = "left" if direction == "input" else ("right" if direction == "output" else "left")
     side = side.strip().lower()
@@ -1693,7 +1798,7 @@ def set_port(
 
     existing_tags = re.findall(r"<Port\b[^>]*/>", text)
     index = len(existing_tags)
-    replacement = _port_tag(module, name, direction, width, datatype, side, index)
+    replacement = _port_tag(module, name, direction, datasize, datatype, side, index)
     pattern = re.compile(r'<Port\b[^>]*\bName="%s"[^>]*/>' % re.escape(name))
     replaced = False
     if pattern.search(text):
@@ -1701,7 +1806,7 @@ def set_port(
             if re.search(r'\bName="%s"' % re.escape(name), tag):
                 index = position
                 break
-        replacement = _port_tag(module, name, direction, width, datatype, side, index)
+        replacement = _port_tag(module, name, direction, datasize, datatype, side, index)
         new_text = pattern.sub(replacement, text, count=1)
         replaced = True
     else:
@@ -1721,7 +1826,14 @@ def set_port(
         "model": module,
         "path": str(path),
         "relative_path": _rel(path),
-        "port": {"name": name, "direction": direction, "width": width, "datatype": datatype, "side": side},
+        "port": {
+            "name": name,
+            "direction": direction,
+            "width": width,
+            "datasize": _width_value(datasize),
+            "datatype": datatype,
+            "side": side,
+        },
         "replaced": replaced,
         "backup": str(backup),
         "sha256_before": sha_before,
@@ -1743,10 +1855,17 @@ def _attr(value: str) -> str:
     return escape(value, {'"': "&quot;"}).replace("\n", "&#xa;")
 
 
-def _model_xml(name: str, ports: list[dict] | None, code: str, comment: str) -> str:
+def _model_xml(
+    name: str,
+    ports: list[dict] | None,
+    code: str,
+    comment: str,
+    parameters: str = "",
+) -> str:
     head = (
         f'<Module Category="Current" Class="module" Code="{_attr(code)}" Color="#d3d3d3" '
-        f'Comment="{_attr(comment)}" Height="1080" Name="{name}" Parameters="" Parent="0" '
+        f'Comment="{_attr(comment)}" Height="1080" Name="{name}" '
+        f'Parameters="{_attr(parameters)}" Parent="0" '
         f'Type="model" Width="1600" X="0" Y="0">'
     )
     lines = ["<!DOCTYPE Robei>", head]
@@ -1759,7 +1878,7 @@ def _model_xml(name: str, ports: list[dict] | None, code: str, comment: str) -> 
                 name,
                 str(port["name"]),
                 direction,
-                int(port.get("width", 1)),
+                str(port.get("width", 1)),
                 str(port.get("datatype", "wire")).lower(),
                 side,
                 index,
@@ -1894,6 +2013,21 @@ WIRE_SELECT_HINT = (
 )
 PARAM_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 PARAM_HINT = 'pass parameters as an object, e.g. {"LEN": 8}'
+def _closest(name: Any, candidates: Any, limit: int = 3) -> str:
+    """`` (closest: a, b)`` for an unknown name; empty when nothing is near."""
+    pool = [str(item) for item in candidates if str(item)]
+    found = difflib.get_close_matches(str(name), pool, n=limit, cutoff=0.4)
+    return f" (closest: {', '.join(found)})" if found else ""
+
+
+def _names(values: Any, limit: int = 12) -> str:
+    pool = sorted({str(item) for item in values if str(item)})
+    if not pool:
+        return "(none)"
+    shown = ", ".join(pool[:limit])
+    return shown + (f", ... ({len(pool)} total)" if len(pool) > limit else "")
+
+
 UNRESOLVABLE_SELECT_HINT = (
     "cannot resolve the endpoint {ref!r}: only constant selects (a[0], a[7:0]) are "
     'static; write them as wires=[{{"from": "a[0]", "to": "u1.x"}}] so Robei stores '
@@ -1935,22 +2069,27 @@ def _plan_selector_connect(
     if not frm_select and not to_select:
         return "", "", "", {}, []
     if frm_select and to_select:
-        raise ValueError(
+        raise BadRequest(
             f"both ends of {frm!r} -> {to!r} carry a select; only the parent-side port "
-            "can be sliced, the other end must be an instance port"
+            "can be sliced, the other end must be an instance port",
+            'keep the select on the parent side only: wires=[{"from": "a[0]", "to": "u1.x"}]',
         )
     parent_ref, selector = (frm_base, frm_select) if frm_select else (to_base, to_select)
     inst_ref = (to if frm_select else frm).strip()
     parent = resolve(parent_ref)
     if parent.get("instance"):
-        raise ValueError(
+        raise BadRequest(
             f"{parent_ref}[{selector}] is an instance port; a select is only supported on a "
-            "top-level port (Robei writes these as Connect on the instance port)"
+            "top-level port (Robei writes these as Connect on the instance port)",
+            f"{parent_ref} is already inside an instance; select the top-level signal "
+            f'instead, e.g. wires=[{{"from": "a[{selector}]", "to": "{parent_ref}"}}]',
         )
     if "." not in inst_ref:
-        raise ValueError(
+        raise BadRequest(
             f"{parent_ref}[{selector}] is sliced but {inst_ref!r} is not an instance port; put "
-            'the select on the instance side, e.g. {"from": "a[0]", "to": "u1.x"}'
+            'the select on the instance side, e.g. {"from": "a[0]", "to": "u1.x"}',
+            f"{inst_ref!r} must be uN.port (a port of a placed instance); example: "
+            f'{{"from": "{parent_ref}[{selector}]", "to": "u1.x"}}',
         )
     target = resolve(inst_ref)
     warnings: list[str] = []
@@ -1965,22 +2104,31 @@ def _plan_selector_connect(
         if ":" in selector:
             hi, lo = (int(part) for part in selector.split(":"))
             if hi < lo:
-                raise ValueError(
-                    f"{parent_ref}[{selector}]: the high index must not be below the low index"
+                raise BadRequest(
+                    f"{parent_ref}[{selector}]: the high index must not be below the low index",
+                    f"write the slice high:low, i.e. {parent_ref}[{lo}:{hi}]",
                 )
             high = max(hi, lo)
         else:
             high = int(selector)
         if high >= width:
-            raise ValueError(
+            raise BadRequest(
                 f"{parent_ref}[{selector}] is out of range: {parent_ref} is {width} bit(s) "
-                f"wide (valid indices 0..{width - 1})"
+                f"wide (valid indices 0..{width - 1})",
+                f"{parent_ref} is {width} bit(s) wide: address a bit as "
+                f"{parent_ref}[0]..{parent_ref}[{width - 1}], or the whole bus as "
+                f"{parent_ref}[{width - 1}:0]",
             )
         target_width = target.get("width")
         if target_width is not None and target_width != need:
             raise WidthMismatch(
                 f"{parent_ref}[{selector}] is {need} bit(s) but {inst_ref} is "
-                f"{target_width} bit(s); a slice must be exactly as wide as the instance port"
+                f"{target_width} bit(s); a slice must be exactly as wide as the instance port",
+                hint=(
+                    f"the slice must cover exactly {target_width} bit(s): "
+                    f"{parent_ref}[{target_width - 1}:0] for the whole bus, or a "
+                    f"{target_width}-bit window such as {parent_ref}[{target_width}:1]"
+                ),
             )
     return parent_ref, selector, inst_ref, target, warnings
 
@@ -1989,8 +2137,14 @@ def _normalise_instance_parameters(
     label: str,
     value: Any,
     child: dict[str, Any] | None,
+    *,
+    root: bool = False,
 ) -> tuple[str, list[str]]:
-    """Validate an instance ``Parameters`` override and normalise it for Robei.
+    """Validate a ``Parameters`` attribute and normalise it for Robei.
+
+    ``root=True`` is the model's own declaration: there is no child to compare
+    against, so the "is it declared" check is skipped - everything here *is*
+    the declaration.
 
     Robei keeps overrides on the nested ``<Module Parameters="LEN = 8;">`` and
     emits ``#(.LEN(8))`` from it.  The Verilog spellings (``#(.LEN(8))``, a
@@ -2009,13 +2163,22 @@ def _normalise_instance_parameters(
         for raw_name, raw_value in value.items():
             name = str(raw_name).strip()
             if not PARAM_NAME_RE.match(name):
-                raise ValueError(f"{label}: invalid parameter name {name!r}")
+                raise BadRequest(
+                    f"{label}: invalid parameter name {name!r}",
+                    "parameter names are Verilog identifiers "
+                    "([A-Za-z_][A-Za-z0-9_$]*); example: " + PARAM_HINT,
+                )
             text = str(raw_value).strip()
             if not text:
-                raise ValueError(f"{label}: parameter {name} needs a value")
+                raise BadRequest(
+                    f"{label}: parameter {name} needs a value",
+                    f'pass a non-empty value, e.g. {{"{name}": 8}}',
+                )
             if any(char in text for char in ";\r\n"):
-                raise ValueError(
-                    f"{label}: parameter {name} value {text!r} must not contain ';' or a newline"
+                raise BadRequest(
+                    f"{label}: parameter {name} value {text!r} must not contain ';' or a newline",
+                    f'one entry per parameter: {{"{name}": 8}}; the ";" and the separator '
+                    "are added when the attribute is written",
                 )
             pairs.append((name, text))
         pairs.sort(key=lambda pair: pair[0].lower())
@@ -2024,8 +2187,10 @@ def _normalise_instance_parameters(
         if not text:
             return "", warnings
         if "#(" in text or text.startswith(".") or "parameter" in text.lower():
-            raise ValueError(
-                f"{label}: {text!r} is Verilog, not Robei's Parameters attribute; " + PARAM_HINT
+            raise BadRequest(
+                f"{label}: {text!r} is Verilog, not Robei's Parameters attribute; " + PARAM_HINT,
+                'use the object form: parameters={"LEN": 8} (or a Robei "LEN = 8;" string); '
+                'Robei drops "#(...)" and writes "parameter LEN = 8;" as broken Verilog',
             )
         parsed, bad = parse_parameter_text_checked(text)
         if bad or not parsed:
@@ -2038,27 +2203,37 @@ def _normalise_instance_parameters(
             return text, warnings
         pairs = [(item["name"], item["default"].strip()) for item in parsed]
     else:
-        raise ValueError(
-            f"{label}: parameters must be an object or a 'NAME = value;' string; " + PARAM_HINT
+        raise BadRequest(
+            f"{label}: parameters must be an object or a 'NAME = value;' string; " + PARAM_HINT,
+            'send parameters={"LEN": 8}, not a list or a number: ' + PARAM_HINT,
         )
 
     upper = [name.upper() for name, _ in pairs]
     duplicates = sorted({name for name in upper if upper.count(name) > 1})
     if duplicates:
-        raise ValueError(f"{label}: parameter(s) {duplicates} are given more than once")
-    if not declared:
-        raise ValueError(
-            f"{label}: the child model declares no parameters, so there is nothing to override"
+        raise BadRequest(
+            f"{label}: parameter(s) {duplicates} are given more than once",
+            "a dict cannot repeat a key, so this came from a string; keep one "
+            f'"NAME = value;" per parameter, e.g. ' + PARAM_HINT,
         )
-    unknown = [name for name, _ in pairs if name.upper() not in declared]
+    if not declared and not root:
+        raise BadRequest(
+            f"{label}: the child model declares no parameters, so there is nothing to override",
+            'drop "parameters" for this instance, or use a child that declares one '
+            '(create_robei_model(parameters={"LEN": 4}) in 1.5, or import_library_model)',
+        )
+    unknown = [name for name, _ in pairs if not root and name.upper() not in declared]
     if unknown:
-        raise ValueError(
+        raise BadRequest(
             f"{label}: parameter(s) {unknown} are not declared by the child model "
-            f"(declared: {sorted(declared.values())})"
+            f"(declared: {sorted(declared.values())})",
+            f"the child declares {_names(declared.values())}"
+            f"{_closest(unknown[0], declared.values())}; example: "
+            f'{{"{next(iter(declared.values()))}": <value>}}',
         )
     if isinstance(value, str):
         return text, warnings
-    body = "\n".join(f"{declared[name.upper()]} = {val};" for name, val in pairs)
+    body = "\n".join(f"{declared.get(name.upper(), name)} = {val};" for name, val in pairs)
     return body, warnings
 
 
@@ -2066,13 +2241,20 @@ def _canvas_endpoint(top: str, ref: str) -> str:
     """``u1.y`` -> ``top#u1>y``；``y`` -> ``top>y``."""
     ref = (ref or "").strip()
     if not ref:
-        raise ValueError("wire endpoint must not be empty")
+        raise BadRequest(
+            "wire endpoint must not be empty",
+            'a wire endpoint is "y" for a top-level port or "u1.a" for an instance port; '
+            'example: {"from": "u1.y", "to": "y"}',
+        )
     if "[" in ref or "]" in ref:
-        raise ValueError(WIRE_SELECT_HINT)
+        raise BadRequest(f"<Wire> endpoint {ref!r} carries a bit-select", WIRE_SELECT_HINT)
     if "." in ref:
         instance, _, port = ref.partition(".")
         if not port:
-            raise ValueError(f"wire endpoint {ref!r} is missing a port")
+            raise BadRequest(
+                f"wire endpoint {ref!r} is missing a port",
+                f'name the port after the dot, e.g. "{instance.strip()}.y"',
+            )
         return f"{top}#{instance.strip()}>{port.strip()}"
     return f"{top}>{ref}"
 
@@ -2134,11 +2316,13 @@ def create_robei_canvas_model(
             raise ValueError(f"invalid direction: {direction}")
         if not PORT_NAME_RE.match(str(port["name"])):
             raise ValueError(f"invalid port name: {port['name']!r}")
+        datasize = _width_text(port.get("width", 1), f"port {port['name']!r} width")
         cleaned_ports.append(
             {
                 "name": str(port["name"]),
                 "direction": direction,
-                "width": int(port.get("width", 1)),
+                "width": robei_width(datasize),
+                "datasize": datasize,
                 "datatype": str(port.get("datatype", "wire")).lower(),
                 "side": str(port.get("side") or ("left" if direction == "input" else "right")).lower(),
             }
@@ -2195,15 +2379,31 @@ def create_robei_canvas_model(
 
     def resolve(ref: str) -> dict[str, Any]:
         if "[" in ref or "]" in ref:
-            raise ValueError(UNRESOLVABLE_SELECT_HINT.format(ref=ref))
+            raise BadRequest(
+                f"cannot resolve the endpoint {ref!r}: only constant selects "
+                "(a[0], a[7:0]) are supported",
+                UNRESOLVABLE_SELECT_HINT.format(ref=ref),
+            )
         inst, separator, port = ref.partition(".")
         if separator:
             item = by_instance.get(inst.strip())
             if item is None:
-                raise ValueError(f"wire references unknown instance {inst!r}")
+                raise BadRequest(
+                    f"wire references unknown instance {inst!r}",
+                    f"`instances` must name placed instances; this model places "
+                    f"{_names(by_instance)}{_closest(inst, by_instance)}; "
+                    f'example: {{"name": "{inst.strip()}", "model": "<existing model>"}}',
+                )
             found = next((p for p in item["ports"] if p["name"] == port.strip()), None)
             if found is None:
-                raise ValueError(f"instance {inst!r} has no port {port!r}")
+                known = [p["name"] for p in item["ports"]]
+                hint = (
+                    f"{inst} (model {item['model']}) has ports {_names(known)}"
+                    f"{_closest(port, known)}; example: '{inst.strip()}.{known[0]}'"
+                    if known
+                    else f"{inst} has no ports"
+                )
+                raise BadRequest(f"instance {inst!r} has no port {port!r}", hint)
             return {
                 "instance": inst.strip(),
                 "port": port.strip(),
@@ -2212,7 +2412,12 @@ def create_robei_canvas_model(
             }
         port_item = top_ports.get(ref)
         if port_item is None:
-            raise ValueError(f"wire references unknown top-level port {ref!r}")
+            raise BadRequest(
+                f"wire references unknown top-level port {ref!r}",
+                f"`ports` declares {_names(top_ports)}{_closest(ref, top_ports)}; a "
+                'bit-select goes in the endpoint ({"from": "a[0]", "to": "u1.x"}), '
+                "not as a separate port",
+            )
         return {
             "instance": None,
             "port": ref,
@@ -2234,9 +2439,11 @@ def create_robei_canvas_model(
             instance, _, port = inst_ref.partition(".")
             key = (instance.strip(), port.strip())
             if key in connects or key in wired_ports:
-                raise ValueError(
+                raise BadRequest(
                     f"instance port {instance}.{port} is connected twice; a bit-select and a "
-                    "<Wire> cannot both drive the same instance port"
+                    "<Wire> cannot both drive the same instance port",
+                    f"give {instance}.{port} exactly one connection: either a bit-select "
+                    '({"from": "a[0]", "to": f"{instance}.{port}"}) or a plain wire',
                 )
             connects[key] = f"{parent_ref}[{selector}]"
             continue
@@ -2250,7 +2457,9 @@ def create_robei_canvas_model(
                 "net": str(wire.get("net") or f"{name}_n{index}"),
                 "from": frm,
                 "to": to,
-                "datasize": str(wire.get("datasize") or 1),
+                "datasize": _width_text(
+                    wire.get("datasize") or 1, f"wires[{index}].datasize"
+                ),
                 "datatype": "wire",
             }
         )
@@ -2264,7 +2473,7 @@ def create_robei_canvas_model(
                 "name": port["name"],
                 "direction": port["direction"],
                 "width": port["width"],
-                "datasize": str(port["width"]),
+                "datasize": port["datasize"],
                 "datatype": port["datatype"],
                 "side": port["side"],
             }
@@ -2306,7 +2515,7 @@ def create_robei_canvas_model(
     target.write_text(xml_text, encoding="utf-8", newline="\n")
     registration = _register_model_in_project(proj, name)
     parsed = parse_robei_model(target)
-    return {
+    return _result_widths({
         "ok": True,
         "model": name,
         "path": str(target),
@@ -2321,7 +2530,7 @@ def create_robei_canvas_model(
         "wires": parsed["wires"],
         "netlist": parsed["netlist"],
         "warnings": warnings,
-    }
+    })
 
 
 OP_KINDS = (
@@ -2334,6 +2543,103 @@ OP_KINDS = (
     "set_parameters",
     "rename_wire",
 )
+
+
+WIDTH_EXPR_RE = re.compile(r"^[A-Za-z0-9_$+\-*/() ]+$")
+WIDTH_RANGE_RE = re.compile(r"^[A-Za-z0-9_$+\-*/() ]+:[A-Za-z0-9_$+\-*/() ]+$")
+
+
+def _width_text(value: Any, field: str = "width") -> str:
+    r"""Normalise a width argument to the text Robei keeps in ``Datasize``.
+
+    Accepts ``8``, ``"8"``, a literal range (``"3:0"``) and a parameterised
+    width (``"LEN"`` -> ``"LEN-1:0"``).  The last form is not a guess: the 24
+    models Robei 5.0 installs under ``C:\ProgramData\Robei`` spell parameterised
+    widths 35 times as ``Datasize="LEN-1:0"`` (plus ``DATA_WIDTH-1:0``,
+    ``LENA+LENB-1:0``) and never as a bare ``LEN``.
+    """
+    if isinstance(value, bool):
+        raise BadRequest(
+            f"{field} must be a bit count, not a boolean",
+            f"pass {field}=8 or {field}='LEN', not true/false",
+        )
+    if isinstance(value, int):
+        if not 1 <= value <= 1024:
+            raise BadRequest(
+                f"{field} must be 1..1024 bit(s), got {value}",
+                f"a port or wire is 1 to 1024 bits wide: {field}=8, or {field}='LEN'",
+            )
+        return str(value)
+    if isinstance(value, float):
+        if value.is_integer():
+            return _width_text(int(value), field)
+        raise BadRequest(
+            f"{field} must be a whole number of bits, got {value}",
+            f"pass {field}=8 or {field}='LEN'",
+        )
+    text = str(value if value is not None else "").strip()
+    if not text:
+        raise BadRequest(f"{field} must not be empty", f"pass {field}=8 or {field}='LEN'")
+    if text.isdigit():
+        return _width_text(int(text), field)
+    if ":" in text:
+        if not WIDTH_RANGE_RE.match(text):
+            raise BadRequest(
+                f"{field} {text!r} is not a range Robei can store",
+                'a range is MSB:LSB built from identifiers, integers, + - * / and '
+                'parentheses, e.g. "LEN-1:0"',
+            )
+        return text
+    if not WIDTH_EXPR_RE.match(text):
+        raise BadRequest(
+            f"{field} {text!r} uses an operator this tool will not guess at",
+            "only identifiers, integers, + - * / and parentheses are accepted - Robei "
+            "has no saved sample for anything else; pass the range form directly "
+            'instead, e.g. width="MSB:LSB" or width="15:0"',
+        )
+    # ``2*LEN`` -> ``2*LEN-1:0``: * and / bind tighter than -, so appending the
+    # range is safe; no extra parentheses (Robei has no such sample).
+    return f"{text}-1:0"
+
+
+def _width_value(raw: Any) -> Any:
+    """Numeric ``Datasize`` -> int; a parameterised expression stays a string."""
+    if isinstance(raw, int):
+        return raw
+    text = str(raw if raw is not None else "").strip()
+    if not text:
+        return 1
+    return int(text) if text.isdigit() else text
+
+
+def _result_widths(result: dict[str, Any]) -> dict[str, Any]:
+    """Return widths as ints where they are numbers (see tool-reference)."""
+    def rows(values: Any) -> list[dict[str, Any]]:
+        out = []
+        for row in values or []:
+            item = dict(row)
+            if "datasize" in item:
+                item["datasize"] = _width_value(item["datasize"])
+            if "port" in row or "direction" in row or "inout" in row:
+                # Ports also carry the resolved bit count; None means the width
+                # is a parameter expression and cannot be resolved statically.
+                item.setdefault("width", robei_width(item.get("datasize")))
+            out.append(item)
+        return out
+
+    if "ports" in result:
+        result["ports"] = rows(result["ports"])
+    if "wires" in result:
+        result["wires"] = rows(result["wires"])
+    if "instances" in result:
+        instances = []
+        for instance in result["instances"] or []:
+            item = dict(instance)
+            if "ports" in item:
+                item["ports"] = rows(item["ports"])
+            instances.append(item)
+        result["instances"] = instances
+    return result
 
 
 def _canvas_int(value: Any, default: int) -> int:
@@ -2460,20 +2766,38 @@ def _endpoint_info(state: dict[str, Any], ref: str) -> dict[str, Any]:
         raise ValueError("endpoint must not be empty")
     instances, ports = _canvas_lookup(state)
     if "[" in ref or "]" in ref:
-        raise ValueError(UNRESOLVABLE_SELECT_HINT.format(ref=ref))
+        raise BadRequest(
+            f"cannot resolve the endpoint {ref!r}: only constant selects "
+            "(a[0], a[7:0]) are supported",
+            UNRESOLVABLE_SELECT_HINT.format(ref=ref),
+        )
     instance_name, separator, port_name = ref.partition(".")
     if separator:
         instance = instances.get(instance_name)
         if instance is None:
-            raise ValueError(f"unknown instance {instance_name!r} in endpoint {ref!r}")
+            raise BadRequest(
+                f"unknown instance {instance_name!r} in endpoint {ref!r}",
+                f"endpoints must start with a placed instance: {_names(instances)}"
+                f"{_closest(instance_name, instances)}; example: \"u1.a\"",
+            )
         port = next((item for item in instance["ports"] if item["name"] == port_name), None)
         if port is None:
             known = [item["name"] for item in instance["ports"]]
-            raise ValueError(f"instance {instance_name!r} has no port {port_name!r} (has {known})")
+            hint = (
+                f"{instance_name} has ports {_names(known)}{_closest(port_name, known)}; "
+                f'example: "{instance_name}.{known[0]}"'
+                if known
+                else f"{instance_name} has no ports"
+            )
+            raise BadRequest(f"instance {instance_name!r} has no port {port_name!r}", hint)
     else:
         port = ports.get(ref)
         if port is None:
-            raise ValueError(f"unknown top-level port {ref!r}")
+            raise BadRequest(
+                f"unknown top-level port {ref!r}",
+                f"this model declares {_names(ports)}{_closest(ref, ports)}; a top-level "
+                f'endpoint is the bare port name, e.g. "y"',
+            )
     return {
         "width": port["width"],
         "datasize": port.get("datasize") or "",
@@ -2527,11 +2851,14 @@ def _apply_canvas_op(state: dict[str, Any], op: Any, model_dir: Path) -> dict[st
         if direction not in PORT_DIRECTIONS:
             raise ValueError(f"invalid direction {direction!r}; expected one of {list(PORT_DIRECTIONS)}")
         raw_width = op.get("width", op.get("datasize", 1))
-        width = _canvas_int(raw_width, 1) if raw_width not in (None, "") else 1
-        if not 1 <= width <= 1024:
-            raise ValueError("port width must be 1..1024")
+        datasize = _width_text(raw_width, "add_port.width")
+        width = robei_width(datasize)
         if any(port["name"] == name for port in state["ports"]):
-            raise ValueError(f"duplicate port name: {name!r}")
+            raise BadRequest(
+                f"duplicate port name: {name!r}",
+                f"this model already declares {_names(port['name'] for port in state['ports'])}; "
+                'rename the new port or use {"op": "remove_port", "name": ...} first',
+            )
         side = str(op.get("side") or ("left" if direction == "input" else "right")).strip().lower()
         if side not in {"left", "right", "top", "bottom"}:
             raise ValueError(f"invalid side {side!r}; expected left/right/top/bottom")
@@ -2540,7 +2867,7 @@ def _apply_canvas_op(state: dict[str, Any], op: Any, model_dir: Path) -> dict[st
                 "name": name,
                 "direction": direction,
                 "width": width,
-                "datasize": str(width),
+                "datasize": datasize,
                 "datatype": str(op.get("datatype") or "wire").strip().lower(),
                 "side": side,
             }
@@ -2551,7 +2878,11 @@ def _apply_canvas_op(state: dict[str, Any], op: Any, model_dir: Path) -> dict[st
         name = str(op.get("name") or "").strip()
         if not any(port["name"] == name for port in state["ports"]):
             available = [port["name"] for port in state["ports"]]
-            raise ValueError(f"unknown port {name!r}; model has {available}")
+            raise BadRequest(
+                f"unknown port {name!r}; model has {available}",
+                f"remove_port needs the exact top-level name: {_names(available)}"
+                f"{_closest(name, available)}",
+            )
         dropped = [
             wire for wire in state["wires"] if wire["from"] == name or wire["to"] == name
         ]
@@ -2572,7 +2903,11 @@ def _apply_canvas_op(state: dict[str, Any], op: Any, model_dir: Path) -> dict[st
         if not MODEL_NAME_RE.match(module):
             raise ValueError(f"invalid model reference: {module!r}")
         if any(item["instance"] == instance for item in state["instances"]):
-            raise ValueError(f"duplicate instance name: {instance!r}")
+            raise BadRequest(
+                f"duplicate instance name: {instance!r}",
+                f"this model already places {_names(item['instance'] for item in state['instances'])}; "
+                f'pick another name, e.g. "u{len(state["instances"]) + 1}"',
+            )
         source = model_dir / f"{module}.model"
         if not source.is_file():
             available = sorted(path.stem for path in model_dir.glob("*.model"))
@@ -2601,7 +2936,12 @@ def _apply_canvas_op(state: dict[str, Any], op: Any, model_dir: Path) -> dict[st
     if kind == "remove_instance":
         instance = str(op.get("name") or "").strip()
         if not any(item["instance"] == instance for item in state["instances"]):
-            raise ValueError(f"unknown instance {instance!r}")
+            placed = [item["instance"] for item in state["instances"]]
+            raise BadRequest(
+                f"unknown instance {instance!r}",
+                f"remove_instance needs a placed instance: {_names(placed)}"
+                f"{_closest(instance, placed)}",
+            )
         prefix = f"{instance}."
         dropped = [
             wire for wire in state["wires"]
@@ -2657,7 +2997,7 @@ def _apply_canvas_op(state: dict[str, Any], op: Any, model_dir: Path) -> dict[st
             net = re.sub(r"[^A-Za-z0-9_$]", "_", f"{state['name']}_{frm}_{to}")
         if not MODEL_NAME_RE.match(net):
             raise ValueError(f"invalid net name: {net!r}")
-        datasize = str(op.get("datasize") or width_from or 1)
+        datasize = _width_text(op.get("datasize") or width_from or 1, "connect.datasize")
         for wire in state["wires"]:
             if wire["from"] == frm and wire["to"] == to:
                 wire.update({"net": net, "datasize": datasize})
@@ -2703,7 +3043,13 @@ def _apply_canvas_op(state: dict[str, Any], op: Any, model_dir: Path) -> dict[st
                         port["connect"] = ""
                         cleared.append(endpoint)
         if not removed and not cleared:
-            raise ValueError(f"no wire matched disconnect(net={net!r}, from={frm!r}, to={to!r})")
+            nets = [wire["net"] for wire in state["wires"]]
+            raise BadRequest(
+                f"no wire matched disconnect(net={net!r}, from={frm!r}, to={to!r})",
+                f"disconnect matches a net name or an endpoint; this model has "
+                f"{_names(nets)}{_closest(net or frm or to, nets)}; example: "
+                '{"op": "disconnect", "net": "<name from wires[].net>"}',
+            )
         state["wires"] = [wire for wire in state["wires"] if not matches(wire)]
         return {
             "op": kind,
@@ -2738,13 +3084,22 @@ def _apply_canvas_op(state: dict[str, Any], op: Any, model_dir: Path) -> dict[st
     if not MODEL_NAME_RE.match(new_name):
         raise ValueError(f"invalid net name: {new_name!r}")
     if any(wire["net"] == new_name for wire in state["wires"]):
-        raise ValueError(f"duplicate net name: {new_name!r}")
+        raise BadRequest(
+            f"duplicate net name: {new_name!r}",
+            f"nets already in use: {_names(wire['net'] for wire in state['wires'])}; "
+            f'pick a free name, e.g. "{new_name}_2"',
+        )
     target = [
         wire for wire in state["wires"]
         if (net and wire["net"] == net) or (frm and (wire["from"] == frm or wire["to"] == frm))
     ]
     if not target:
-        raise ValueError(f"no wire matched rename_wire(net={net!r}, from={frm!r})")
+        nets = [wire["net"] for wire in state["wires"]]
+        raise BadRequest(
+            f"no wire matched rename_wire(net={net!r}, from={frm!r})",
+            f"rename_wire matches a net name or an endpoint; this model has "
+            f"{_names(nets)}{_closest(net or frm, nets)}",
+        )
     for wire in target:
         wire["net"] = new_name
     return {"op": kind, "from_name": net or frm, "new_name": new_name, "wires_renamed": len(target)}
@@ -2820,7 +3175,7 @@ def edit_robei_canvas(
 
     text = _render_canvas(working)
     preview_model = parse_robei_model_text(text, path)
-    result: dict[str, Any] = {
+    result: dict[str, Any] = _result_widths({
         "ok": True,
         "dry_run": bool(dry_run),
         "model": model["name"],
@@ -2834,7 +3189,7 @@ def edit_robei_canvas(
         "wires": working["wires"],
         "netlist": preview_model["netlist"],
         "verilog_preview": model_to_verilog(preview_model),
-    }
+    })
     if dry_run:
         return result
 
@@ -3124,8 +3479,15 @@ def create_robei_model(
     code: str = "",
     comment: str = "",
     overwrite: bool = False,
+    parameters: dict[str, Any] | str | None = None,
 ) -> dict[str, Any]:
-    """Create a .model with ports + Code inside an existing project and register it."""
+    """Create a .model with root parameters, ports and Code, and register it.
+
+    ``parameters`` uses the same object form as an instance override
+    (``{"LEN": 4}``) and is written to the root ``<Module Parameters>``, so
+    another model can override it and a port width may reference it
+    (``width: "LEN"`` -> ``Datasize="LEN-1:0"``).
+    """
     proj = resolve_project_path(proj_path)
     if not is_within(proj, SETTINGS.workspace):
         raise ValueError("refusing to modify a project outside the workspace")
@@ -3138,12 +3500,19 @@ def create_robei_model(
     if target.exists() and not overwrite:
         raise FileExistsError(f"model already exists: {target}")
 
+    parameters_text, param_warnings = _normalise_instance_parameters(
+        name, parameters, None, root=True
+    )
+    declared = {
+        item["name"].upper() for item in parse_parameter_text_checked(parameters_text)[0]
+    }
+
     cleaned: list[dict[str, Any]] = []
     for port in ports or []:
         entry = {
             "name": str(port["name"]),
             "direction": str(port.get("direction", "input")).lower(),
-            "width": int(port.get("width", 1)),
+            "width": _width_text(port.get("width", 1), f"port {port.get('name')!r} width"),
             "datatype": str(port.get("datatype", "wire")).lower(),
             "side": (str(port["side"]).lower() if port.get("side") else None),
         }
@@ -3153,11 +3522,17 @@ def create_robei_model(
             raise ValueError(f"invalid direction: {entry['direction']}")
         if entry["datatype"] not in PORT_DATATYPES:
             raise ValueError(f"invalid datatype: {entry['datatype']}")
-        if not 1 <= entry["width"] <= 1024:
-            raise ValueError("port width must be 1..1024")
+        for token in re.findall(r"[A-Za-z_][A-Za-z0-9_$]*", entry["width"]):
+            if token.upper() not in declared:
+                raise BadRequest(
+                    f"port {entry['name']!r} width {entry['width']!r} uses {token!r}, "
+                    "which this model does not declare",
+                    f"declare it first (parameters={{\"{token}\": 4}}) or use a literal "
+                    f"width such as width=4 (declared: {_names(declared)})",
+                )
         cleaned.append(entry)
 
-    xml_text = _model_xml(name, cleaned, code, comment)
+    xml_text = _model_xml(name, cleaned, code, comment, parameters_text)
     ET.fromstring(xml_text)
     backup = None
     if target.exists():
@@ -3166,7 +3541,7 @@ def create_robei_model(
     registration = _register_model_in_project(proj, name)
 
     parsed = parse_robei_model(target)
-    return {
+    return _result_widths({
         "ok": True,
         "model": name,
         "path": str(target),
@@ -3176,9 +3551,12 @@ def create_robei_model(
         "registration": registration,
         "backup": str(backup) if backup else None,
         "sha256": _sha256(target),
+        "parameters": parsed.get("parameter_list"),
+        "parameters_text": parsed.get("parameters"),
         "ports": parsed.get("ports"),
         "code": parsed.get("code"),
-    }
+        "warnings": param_warnings,
+    })
 
 
 # ---------------------------------------------------------------------------

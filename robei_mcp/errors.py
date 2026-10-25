@@ -14,8 +14,27 @@ class LogPathEscape(PathEscape):
     """read_run_log was pointed at a file outside workspace/logs and workspace/build."""
 
 
+class BadRequest(ValueError):
+    """A semantically invalid argument; carries a concrete ``hint``.
+
+    Still a ``ValueError``, so the code stays ``invalid_argument`` for clients
+    that branch on it - only the hint becomes specific ("port a is 4 bit(s)
+    wide, use a[0]..a[3]") instead of the generic "check the argument names and
+    types", which belongs to genuine type/missing-argument failures.
+    """
+
+    def __init__(self, message: str, hint: str, code: str | None = None) -> None:
+        super().__init__(message)
+        self.hint = hint
+        self.code_override = code
+
+
 class WidthMismatch(ValueError):
     """Two wire endpoints do not carry the same number of bits."""
+
+    def __init__(self, message: str, hint: str | None = None) -> None:
+        super().__init__(message)
+        self.hint = hint
 
 
 class NotBehavioral(ValueError):
@@ -136,6 +155,8 @@ HINTS = {
 
 
 def code_for(exc: BaseException) -> str:
+    if isinstance(exc, BadRequest) and exc.code_override:
+        return exc.code_override
     if isinstance(exc, GuiForeignInstance):
         return "gui_foreign_instance"
     if isinstance(exc, GuiNeedsActiveDesktop):
@@ -183,7 +204,9 @@ def payload(exc: BaseException, **extra: Any) -> dict[str, Any]:
         "ok": False,
         "code": code,
         "error": f"{type(exc).__name__}: {exc}",
-        "hint": HINTS.get(code),
+        # A semantic error names the offending field itself; the table is the
+        # fallback for failures we cannot classify any further.
+        "hint": getattr(exc, "hint", None) or HINTS.get(code),
     }
     stage = getattr(exc, "stage", None)
     if stage:

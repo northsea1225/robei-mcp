@@ -28,6 +28,41 @@ mcp = MCPServer(
 )
 
 
+def _stale_wrapped(fn):
+    """Same callable as ``fn``, with the stale-source note applied to the result.
+
+    An ``async def`` tool must stay a coroutine function: the MCP server awaits
+    coroutine tools, and wrapping one in a plain function made every async tool
+    fail with "Error executing tool" (stage2/11 caught it).
+    """
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def async_wrapper(*args: Any, **any_kwargs: Any):
+            return tools._with_stale_note(await fn(*args, **any_kwargs))
+
+        return async_wrapper
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **any_kwargs: Any):
+        return tools._with_stale_note(fn(*args, **any_kwargs))
+
+    return wrapper
+
+
+def tool(**kwargs: Any):
+    """``@mcp.tool`` plus the stale-source note, applied to every result.
+
+    ``functools.wraps`` keeps ``__wrapped__``/``__annotations__``, so the JSON
+    schema the client sees is byte-identical to a plain ``@mcp.tool``.
+    """
+
+    def decorate(fn):
+        return mcp.tool(**kwargs)(_stale_wrapped(fn))
+
+    return decorate
+
+
 # Tool annotations: MCP clients use these to decide what is safe to call without
 # a human in the loop and what can be retried.
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
@@ -129,7 +164,7 @@ async def _invoke(fn, ctx: Context | None, label: str, **kwargs):
     return result
 
 
-@mcp.tool(annotations=READ)
+@tool(annotations=READ)
 def runtime_status() -> dict[str, Any]:
     """Check Robei, iverilog, vvp, yosys and verilator paths and versions."""
     try:
@@ -138,7 +173,7 @@ def runtime_status() -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 async def lint_verilog(files: list[str], top: str | None = None, timeout_s: int = 30, ctx: Context | None = None) -> dict[str, Any]:
     """Lint with iverilog -Wall, Verilator --lint-only -Wall and Yosys (synth + unused-wire pass)."""
     try:
@@ -147,7 +182,7 @@ async def lint_verilog(files: list[str], top: str | None = None, timeout_s: int 
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 async def simulate(files: list[str], top: str, timeout_s: int = 30, ctx: Context | None = None) -> dict[str, Any]:
     """Compile and run a Verilog testbench with iverilog/vvp; return output and VCD paths."""
     try:
@@ -156,7 +191,7 @@ async def simulate(files: list[str], top: str, timeout_s: int = 30, ctx: Context
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 async def simulate_project(
     proj_path: str,
     test_name: str,
@@ -188,7 +223,7 @@ async def simulate_project(
     return _image_or_payload(payload, plot.get("inline"), holder=plot)
 
 
-@mcp.tool(annotations=READ)
+@tool(annotations=READ)
 def read_waveform(
     vcd_path: str,
     signals: list[str] | None = None,
@@ -201,7 +236,7 @@ def read_waveform(
         return _error(exc)
 
 
-@mcp.tool(annotations=READ)
+@tool(annotations=READ)
 def compare_waveforms(
     golden_vcd: str,
     dut_vcd: str,
@@ -225,7 +260,7 @@ def compare_waveforms(
         return _error(exc)
 
 
-@mcp.tool(annotations=READ)
+@tool(annotations=READ)
 def find_events(
     vcd_path: str,
     signal: str,
@@ -239,7 +274,7 @@ def find_events(
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 def render_waveform(
     vcd_path: str,
     signals: list[str],
@@ -266,7 +301,7 @@ def render_waveform(
     return _image_or_payload(payload, payload.get("inline"))
 
 
-@mcp.tool(annotations=READ)
+@tool(annotations=READ)
 def read_run_log(path: str, tail: int = 200, max_bytes: int = 500_000) -> dict[str, Any]:
     """Read a run log under workspace/logs or workspace/build (size-capped, tail lines).
 
@@ -278,7 +313,7 @@ def read_run_log(path: str, tail: int = 200, max_bytes: int = 500_000) -> dict[s
         return _error(exc)
 
 
-@mcp.tool(annotations=READ)
+@tool(annotations=READ)
 def read_robei_model(path: str) -> dict[str, Any]:
     """Read a Robei .model XML file and return metadata, ports, parameters and Verilog code."""
     try:
@@ -287,7 +322,7 @@ def read_robei_model(path: str) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool(annotations=ANALYZE)
+@tool(annotations=ANALYZE)
 def robei_doctor(deep: bool = False) -> dict[str, Any]:
     """Self-check the whole stack: python/venv, mcp+matplotlib, workspace, Robei, iverilog/vvp/yosys, GUI task.
 
@@ -299,7 +334,7 @@ def robei_doctor(deep: bool = False) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool(annotations=READ)
+@tool(annotations=READ)
 def list_projects(limit: int = 200, include_qa: bool = False) -> dict[str, Any]:
     """List every Robei project in the workspace with its models, tests, verilog and VCDs.
 
@@ -312,7 +347,7 @@ def list_projects(limit: int = 200, include_qa: bool = False) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool(annotations=READ)
+@tool(annotations=READ)
 def read_robei_project(proj_path: str) -> dict[str, Any]:
     """Read a Robei .proj project (read-only): folders, files and every model."""
     try:
@@ -321,7 +356,7 @@ def read_robei_project(proj_path: str) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool(annotations=READ)
+@tool(annotations=READ)
 def list_library_models(
     filter: str | None = None,
     include_lint: bool = True,
@@ -335,7 +370,7 @@ def list_library_models(
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 def import_library_model(
     name: str,
     project: str | None = None,
@@ -363,7 +398,7 @@ def import_library_model(
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 def create_robei_project(
     name: str,
     models: list[str] | None = None,
@@ -376,7 +411,7 @@ def create_robei_project(
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 def create_robei_model(
     proj_path: str,
     name: str,
@@ -384,8 +419,14 @@ def create_robei_model(
     code: str = "",
     comment: str = "",
     overwrite: bool = False,
+    parameters: dict[str, Any] | str | None = None,
 ) -> dict[str, Any]:
-    """Create a .model with ports and Code inside a project and register it in the .proj."""
+    """Create a .model with root parameters, ports and Code, and register it.
+
+    ``parameters`` uses the instance-override object form (``{"LEN": 4}``) and is
+    written to the root ``<Module Parameters>``; a port width may then reference it
+    (``width: "LEN"`` becomes ``Datasize="LEN-1:0"``).
+    """
     try:
         return tools.create_robei_model(
             proj_path=proj_path,
@@ -394,17 +435,18 @@ def create_robei_model(
             code=code,
             comment=comment,
             overwrite=overwrite,
+            parameters=parameters,
         )
     except Exception as exc:
         return _error(exc)
 
 
-@mcp.tool(annotations=DESTRUCTIVE)
+@tool(annotations=DESTRUCTIVE)
 def set_robei_port(
     model_path: str,
     name: str,
     direction: str = "input",
-    width: int = 1,
+    width: int | str = 1,
     datatype: str = "wire",
     side: str | None = None,
 ) -> dict[str, Any]:
@@ -422,7 +464,7 @@ def set_robei_port(
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 def export_robei_verilog(
     model_path: str,
     out_name: str | None = None,
@@ -439,7 +481,7 @@ def export_robei_verilog(
         return _error(exc)
 
 
-@mcp.tool(annotations=DESTRUCTIVE)
+@tool(annotations=DESTRUCTIVE)
 def sync_robei_verilog(proj_path: str, overwrite: bool = True) -> dict[str, Any]:
     """Export every model of a project to <proj>/verilog/<model>.v (Robei's iverilog -y library dir)."""
     try:
@@ -448,7 +490,7 @@ def sync_robei_verilog(proj_path: str, overwrite: bool = True) -> dict[str, Any]
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 def create_robei_test(
     proj_path: str,
     name: str,
@@ -475,13 +517,13 @@ def create_robei_test(
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 def create_robei_canvas_model(
     proj_path: str,
     name: str,
     ports: list[dict[str, Any]],
     instances: list[dict[str, Any]],
-    wires: list[dict[str, str]],
+    wires: list[dict[str, Any]],
     comment: str = "",
     overwrite: bool = False,
 ) -> dict[str, Any]:
@@ -506,7 +548,7 @@ def create_robei_canvas_model(
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 def edit_robei_canvas(
     model_path: str,
     ops: list[dict[str, Any]],
@@ -525,7 +567,7 @@ def edit_robei_canvas(
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 def set_robei_code(model_path: str, code: str, dry_run: bool = False) -> dict[str, Any]:
     """Replace the Code body of a behavioural model (models with instances/wires are refused)."""
     try:
@@ -534,7 +576,7 @@ def set_robei_code(model_path: str, code: str, dry_run: bool = False) -> dict[st
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 def set_robei_parameter(
     model_path: str,
     name: str,
@@ -550,7 +592,7 @@ def set_robei_parameter(
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 def generate_testbench(
     verilog_path: str,
     top: str,
@@ -573,7 +615,7 @@ def generate_testbench(
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 def import_verilog_canvas(
     proj_path: str,
     verilog_path: str,
@@ -593,7 +635,7 @@ def import_verilog_canvas(
         return _error(exc)
 
 
-@mcp.tool(annotations=READ)
+@tool(annotations=READ)
 def check_connectivity(
     files: list[str] | None = None,
     top: str | None = None,
@@ -606,7 +648,7 @@ def check_connectivity(
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 def truth_table(
     verilog_path: str,
     top: str,
@@ -623,7 +665,7 @@ def truth_table(
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 def create_robei_const(
     proj_path: str,
     name: str,
@@ -650,7 +692,7 @@ def create_robei_const(
         return _error(exc)
 
 
-@mcp.tool(annotations=READ)
+@tool(annotations=READ)
 def read_robei_const(path: str) -> dict[str, Any]:
     """Read a .const: kind, instance model, and the port -> bit -> FPGA pin map."""
     try:
@@ -659,7 +701,7 @@ def read_robei_const(path: str) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 def export_robei_xdc(
     proj_path: str,
     const_name: str | None = None,
@@ -683,7 +725,7 @@ def export_robei_xdc(
         return _error(exc)
 
 
-@mcp.tool(annotations=READ)
+@tool(annotations=READ)
 def expect_waveform(vcd_path: str, checks: list[dict[str, Any]]) -> dict[str, Any]:
     """Assert VCD values: [{"signal":"y","value":"1","at":45}] or {"from":30,"to":100} (held)."""
     try:
@@ -692,7 +734,7 @@ def expect_waveform(vcd_path: str, checks: list[dict[str, Any]]) -> dict[str, An
         return _error(exc)
 
 
-@mcp.tool(annotations=READ)
+@tool(annotations=READ)
 def waveform_stats(vcd_path: str, max_signals: int = 64) -> dict[str, Any]:
     """Toggle counts, level coverage, X/Z flags and a clock period/frequency estimate."""
     try:
@@ -701,7 +743,7 @@ def waveform_stats(vcd_path: str, max_signals: int = 64) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool(annotations=READ)
+@tool(annotations=READ)
 def list_fpga_devices(part: str | None = None) -> dict[str, Any]:
     """List FPGA parts with their chipdb/part.yaml pair and whether a .bit can be built."""
     try:
@@ -710,7 +752,7 @@ def list_fpga_devices(part: str | None = None) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool(annotations=ANALYZE)
+@tool(annotations=ANALYZE)
 async def synthesize_project(
     proj_path: str,
     top: str | None = None,
@@ -733,7 +775,7 @@ async def synthesize_project(
         return _error(exc)
 
 
-@mcp.tool(annotations=WRITE)
+@tool(annotations=WRITE)
 async def build_bitstream(
     proj_path: str,
     part: str,
@@ -761,7 +803,7 @@ async def build_bitstream(
         return _error(exc)
 
 
-@mcp.tool(annotations=ANALYZE)
+@tool(annotations=ANALYZE)
 async def run_all_tests(
     proj_path: str,
     timeout_s: int = 60,
@@ -919,4 +961,4 @@ GUI_TOOLS: tuple[tuple[Any, Any], ...] = (
 GUI_ENABLED = gui.available()
 if GUI_ENABLED:
     for _fn, _ann in GUI_TOOLS:
-        mcp.add_tool(_fn, annotations=_ann)
+        mcp.add_tool(_stale_wrapped(_fn), annotations=_ann)
