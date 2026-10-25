@@ -3558,12 +3558,19 @@ def _h2_core(model_path, name, value, dry_run, action, new_name, rename_in_paren
         raise BadRequest(f"cannot delete {changed}: parent overrides exist", "remove overrides first: " + names)
     parent_updates, parent_texts = [], []
     if action == "rename":
+        # Build one replacement text per parent so multiple instances in the same
+        # parent are applied cumulatively instead of overwriting one another.
+        parent_text_by_path: dict[Path, str] = {}
         for parent_path, instance, _ in parent_scan:
             if not rename_in_parents:
                 raise BadRequest(f"cannot rename {changed}: parent overrides exist", "pass rename_in_parents=true; affected: " + f"{parent_path.stem}.{instance['instance']}")
             replacement = _replace_parameter_token(instance.get("parameters") or "", changed, effective_name)
             parent_updates.append({"parent_model": parent_path.stem, "parent_path": str(parent_path), "instance": instance["instance"], "old_parameters": instance.get("parameters") or "", "new_parameters": replacement})
-            parent_texts.append((parent_path, _rewrite_instance_parameters(parent_path.read_text(encoding="utf-8"), instance["instance"], replacement)))
+            base_text = parent_text_by_path.get(parent_path)
+            if base_text is None:
+                base_text = parent_path.read_text(encoding="utf-8")
+            parent_text_by_path[parent_path] = _rewrite_instance_parameters(base_text, instance["instance"], replacement)
+        parent_texts = list(parent_text_by_path.items())
     new_values = _parameter_values(updated_model["parameter_list"])
     width_rows = []
     affected_ports = []
