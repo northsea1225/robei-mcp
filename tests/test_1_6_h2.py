@@ -85,3 +85,21 @@ def test_rename_parent_preview_and_commit(proj):
     assert result["parent_backups"]
     assert "WIDTH" in parent.read_text(encoding="utf-8")
 
+def test_rename_parent_transaction_rolls_back(monkeypatch, proj):
+    make_sub(proj)
+    make_top(proj, override={"LEN": 4})
+    target = model(proj, "sub")
+    parent = model(proj, "top")
+    before = {target: hashlib.sha256(target.read_bytes()).hexdigest(), parent: hashlib.sha256(parent.read_bytes()).hexdigest()}
+    original = Path.write_text
+    calls = {"n": 0}
+    def fail_on_parent(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("injected parent write failure")
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "write_text", fail_on_parent)
+    with pytest.raises(OSError):
+        tools.set_robei_parameter(str(target), "LEN", action="rename", new_name="WIDTH", rename_in_parents=True)
+    assert {target: hashlib.sha256(target.read_bytes()).hexdigest(), parent: hashlib.sha256(parent.read_bytes()).hexdigest()} == before
+
