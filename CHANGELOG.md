@@ -2,6 +2,54 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.5.0 — Unreleased
+
+**模型能声明根参数，宽度字段统一成一种写法，语义错误会指路，服务知道自己是否过期。**
+工具面仍是 49 个（文件级 38 + GUI 11），`ROBEI_MCP_GUI=0` 时 38 个。
+
+### G1 `create_robei_model` 支持根级参数
+
+- `parameters={"LEN": 4}` 写进模型自身 `<Module Parameters="LEN = 4;">`；多个按 key 排序、
+  用 `&#xa;` 拼接。与实例覆盖共用同一个规范化函数，没有第二份格式代码。
+- 端口宽度可以引用参数：`width: "LEN"` → `Datasize="LEN-1:0"`。依据是 Robei 5.0 自带的 24 个
+  `.model`：参数化宽度 35 处全是 `LEN-1:0` / `DATA_WIDTH-1:0` / `LENA+LENB-1:0` 这类范围写法，
+  没有一处裸 `LEN`。带 `:` 的原样保留，数字（含 `"8"`）写 `"8"`。
+- 宽度表达式只接受 标识符 / 整数 / `+ - * /` / 括号；`<< >> ? : & | ~ %` 一律拒绝并提示改用
+  `"MSB:LSB"`。`2*LEN` 直接拼成 `2*LEN-1:0`（`*` 优先级高于 `-`，不自动加括号）。
+- 端口宽度里的标识符必须在本模型 `parameters` 里声明，否则报错。
+- 新模型声明的参数立刻能被实例覆盖识别（`{"LEN": 8}` → `#(.LEN(8))`），1.4 的"未声明参数"
+  检查因此覆盖到新建模型。
+
+### G2 宽度字段类型统一
+
+- `ports[].width`、`wires[].datasize`、`add_port` / `connect` 的 datasize、`set_robei_port.width`
+  都接受 **整数、数字字符串或参数表达式**；旧写法（字符串 `"8"`）照常工作。
+- 返回值里数字一律是 int，参数化表达式保持字符串；端口额外给 `width`（int，参数化时 null）。
+- `create_robei_canvas_model.wires` 的 schema 从 `list[dict[str, str]]` 放宽到
+  `list[dict[str, Any]]`——这是本版唯一的 schema 变化（49 个工具的其余 schema 与 1.4 逐字节相同）。
+
+### G3 语义错误给具体 hint
+
+- 新增 `errors.BadRequest`（仍是 `ValueError`，`code` 仍是 `invalid_argument`），`payload()`
+  优先使用异常自带的 hint。
+- 越界位选、未知端口/实例/参数（difflib 最近 3 个候选 + 正确写法）、重复实例/端口/net、
+  无匹配 wire、非法参数名/值、`<Wire>` 端点带 `[` 都给了具体 hint；`width_mismatch` 说明切片
+  必须正好 N 位。
+- 兜底 `"check the argument names and types in the tool schema"` 只留给真正的类型/缺参错误。
+
+### G4 服务自检与过期提示
+
+- `runtime_status` 新增 `package_version`、`git_commit`、`source_dir`、`process_started_at`、
+  `process_age_s`、`newest_source_mtime`、`stale`、`stale_warning`。
+- `stale=true` 时每个工具结果都带一条 `warnings`（失败结果也带），提示重启服务 / 重开 Codex。
+- **不自动重启子进程**：stdio 下重启后客户端握手状态丢失，实测 `tools/list` 和 `call_tool` 直接
+  超时（见 verification-log 的守护实验）。所以只做自检 + 提示，文档写明"改了代码要重开 Codex"。
+
+### 未做
+
+- Robei 侧的 GUI 闭环这一版只验证到"生成 .v + 保存后属性不变"；`pp_p1` 的语义 diff 见
+  verification-log（1.5 段）。
+
 ## 1.4.0 — 2026-10-25
 
 **画布能画位选，实例能带参数覆盖。** 工具面仍是 49 个（文件级 38 + GUI 11），

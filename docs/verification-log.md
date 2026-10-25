@@ -12,6 +12,72 @@
 
 ## 交付状态
 
+### 1.5.0：根级参数、宽度统一、具体 hint、服务自检（未发布，2026-10-25）
+
+工具面仍是 **49 个（文件级 38 + GUI 11）**，`ROBEI_MCP_GUI=0` 时 38 个。
+
+**取证：Robei 怎么存参数化宽度**（只读 `C:\ProgramData\Robei` 的 24 个自带 `.model`）
+
+| `Datasize` | 次数 |
+|---|---|
+| `1` | 44 |
+| `LEN-1:0` | 35 |
+| `DATA_WIDTH-1:0` | 6 |
+| `ADDR_WIDTH-1:0` | 3 |
+| `LENA-1:0` / `LENB-1:0` / `LENA+LENB-1:0` / `2` | 各 1 |
+
+没有一处裸 `LEN` → `width: "LEN"` 写成 `Datasize="LEN-1:0"`。
+
+**pp_p1 复刻（真实 IDE，Session 1）**
+
+工程 `workspace/_qa_runs/lab15p1`：`sub(LEN=4, x/y)` + `top(a[3:0], u1:sub, {"LEN":8}, u1.x←a[0])`。
+创建与读取走 MCP 工具（另起的 stdio 服务，49 个工具）；三个 GUI 动作走 `gui_agent.ui`
+——嵌套 stdio 服务里 UIA 调用报 `OSError: Invalid argument`，所以这一轮没能全部经 MCP。
+
+```text
+create_robei_model        -> parameters_text="LEN = 4;", ports [["x","1"],["y",1]]
+create_robei_canvas_model -> ok=true, warnings=[]
+open_project   -> ok, restarted=true, pid=66116
+open_model     -> ok, active=top
+compile        -> ok, marker="Compile done", generated top.v + sub.v
+save_project   -> ok
+build/top.v    -> sub #( .LEN(8) ) u1( .x(a[0]), .y(y) );   ← 没有 .x() 悬空
+iverilog -g2012 top.v sub.v -> rc=0
+保存后回读      -> top 实例 Parameters="LEN = 8;"、Connect x="a[0]"；sub 根 Parameters="LEN = 4;"
+语义 diff      -> top: IDENTICAL；sub: IDENTICAL
+                  （对比 D:\Temp\robei_samples\gui_probe\pp_p1：root Parameters / 每个端口的
+                   Datasize+Connect / 实例 Parameters / wire 端点与 Datasize / Code 全部相同）
+```
+
+**参数化 Datasize 过一遍 Robei 的保存**（同工程里的 `busp`）
+
+```text
+before(写盘)          ["LEN-1:0", "1"]
+after(compile+save)   ["LEN-1:0", "1"]
+Robei 自己生成的 build/busp.v：
+  module busp #(  parameter LEN = 4 ) ( input wire [LEN-1:0] a, output wire y );
+```
+
+**守护实验：自动重启子进程不可行**
+
+```text
+supervisor:  子进程退出后自动重启（60 s 内最多 3 次，日志 D:\Temp\m150_supervisor.log）
+client:      initialize -> tools/list = 49 -> taskkill 子进程 -> 等 3 s
+             新子进程已经起来（pid 64100）
+             tools/list -> TimeoutError(8 s)
+             call_tool  -> TimeoutError(8 s)
+结论:        stdio 下重启后客户端握手状态丢失，透明重启不可行 → 不做守护，
+             只做 stale 自检 + 每次调用带警告
+```
+
+**回归**：`pytest` → **260 passed**；`portable_core` 16/16；stage5/7/8/11/12/13/14 →
+10/10、12/12、10/10、13/13、18/18、18/18、9/9；stage16/17/18/19/20/21 →
+12/12、28/28、29/29、26/26、14/14、18/18；stage2/3/4/9/10 打印各自的 OK 标记。
+
+**顺手修掉的回归**：给 `@mcp.tool` 加过期提示的第一版包装器把 `async def` 工具包成了同步函数，
+stage2/3/4/11/14/16/18 立刻报 "Error executing tool"；改成保持协程函数后全绿
+（`server_app._stale_wrapped`）。
+
 ### 1.4.0：画布位选、实例参数覆盖（2026-10-25）
 
 工具面仍是 **49 个（文件级 38 + GUI 11）**，`ROBEI_MCP_GUI=0` 时 38 个。

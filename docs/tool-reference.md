@@ -24,6 +24,15 @@
 - `verilator_available`（可执行文件 + `VERILATOR_ROOT` 都在位）
 - `tools.verilator.version`（`5.036`）
 - `security.strict_path_scan`（当前严格路径扫描开关）
+- 自检块（1.5）：
+  - `package_version`（= `server_version`，两个名字都给，老客户端不用改）
+  - `git_commit`（源码目录的 HEAD 短 hash；不是 git 仓库或取不到时为 `null`，不报错）
+  - `source_dir`（**正在运行**的 `robei_mcp` 目录，用来确认服务加载的是哪份代码）
+  - `process_started_at` / `process_age_s`（进程加载本模块的时间）
+  - `newest_source_mtime`（`robei_mcp/*.py` 的最大 mtime）
+  - `stale` / `stale_warning`：源码比进程新时为 `true`，`stale_warning` 说明"要重启服务或重开
+    Codex"。`stale=true` 时**每个工具**的返回都会多一条 `warnings`（错误结果也带），不需要
+    额外轮询
 
 Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` 输出 `Synthesis complete`，因此 `version` 为 `null`，但路径和综合检查可用。
 
@@ -282,6 +291,34 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
   `relative_root`、`skeleton`。
 - 路径解析完还会再做一次 workspace 越界检查。
 
+### `create_robei_model`
+
+```json
+{"proj_path": "bus8/bus8.proj", "name": "bus8",
+ "ports": [{"name": "a", "direction": "input", "width": "LEN"},
+           {"name": "y", "direction": "output", "width": 1}],
+ "parameters": {"LEN": 4},
+ "code": "assign y = a[0];"}
+```
+
+在工程里建一个行为级 `.model`（根参数 + 端口 + Code），并登记进 `.proj`。
+
+- `parameters` 写进模型自己的 `<Module Parameters>`：对象按 key 排序、用 `&#xa;` 拼接；
+  字符串写法（`"LEN = 4; // width"`）原样保留。校验与实例覆盖同源（非法名、值里带 `;`/>
+  换行、重复、`#(...)`/`.LEN(...)`/`parameter` 一律拒绝，hint 指向 `{"LEN": 4}`）
+- 端口 `width` 接受整数、数字字符串或参数表达式：
+  - `4` / `"4"` → `Datasize="4"`
+  - `"LEN"` → `Datasize="LEN-1:0"`（Robei 5.0 自己就这么存：24 个自带模型里 35 处参数化
+    宽度全是范围写法，没有一处裸 `LEN`）
+  - `"LEN-1:0"` 原样写入
+  - 表达式只允许 标识符 / 整数 / `+ - * /` / 括号；`2*LEN` → `2*LEN-1:0`（`*` 优先级高于
+    `-`，不加括号）。`<< >> ? : & | ~ %` 等没有 Robei 样本，直接拒绝并提示改用 `"MSB:LSB"`
+- 端口宽度里出现的标识符必须在本模型 `parameters` 里声明，否则报错（hint 给出
+  `parameters={"LEN": 4}`）
+- 返回值：`parameters` / `parameters_text` / `ports`（`width` 是 int，参数化时为 null；
+  `datasize` 数字是 int、表达式是字符串）/ `warnings`
+- 新建模型声明的参数，别的画布实例可以直接覆盖（`{"LEN": 8}` → `#(.LEN(8))`）
+
 ### `create_robei_test`
 
 ```json
@@ -409,6 +446,16 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 - 其它参数的注释原样保留（`NAME = value; // comment`）；根级 `Parameters` 里有解析失败的
   chunk 时先拒绝，避免把坏内容一起重写掉
 - 返回 `old_value` / `new_value` / `parameters` / `parameters_text`；写盘前留备份
+
+### `set_robei_port`
+
+```json
+{"model_path": "proj/model/bus.model", "name": "a", "direction": "input", "width": "LEN"}
+```
+
+给一个 `.model` 加/改一个 `<Port>`（写盘前校验 XML，留 `.bak-<时间戳>`）。`width` 与
+`create_robei_model` 同一套规则：整数、数字字符串或参数表达式。返回 `port.width`（int，
+参数化时为 null）和 `port.datasize`（数字 int / 表达式字符串）。
 
 ### `generate_testbench`
 
@@ -844,6 +891,19 @@ Build → Synthesis 并等到 `Synthesis complete`（内部是 yosys 的 Xilinx 
  "error": "FileNotFoundError: file not found in workspace: C:\\...\\missing.v",
  "hint": "the path must exist and, for models/projects, sit under an allowed root"}
 ```
+
+语义错误（越界位选、未知端口/实例/参数、重复实例/端口/net、没有匹配的 wire、
+`<Wire>` 端点带 `[`、切片宽度与端口不等）在 `hint` 里直接说明**哪个字段错了**、合法范围或
+候选名（未知名字给 difflib 最近 3 个），并给一个正确写法：
+
+```json
+{"ok": false, "code": "invalid_argument",
+ "error": "BadRequest: a[9] is out of range: a is 4 bit(s) wide (valid indices 0..3)",
+ "hint": "a is 4 bit(s) wide: address a bit as a[0]..a[3], or the whole bus as a[3:0]"}
+```
+
+`code` 仍是 `invalid_argument` / `width_mismatch`，老客户端按 code 分支不用改。
+`"check the argument names and types in the tool schema"` 只留给真正的类型错误或缺参数。
 
 | `code` | 场景 |
 |---|---|
