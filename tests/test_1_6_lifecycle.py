@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -124,6 +125,9 @@ def test_launcher_records_real_child_exit_code(journal, monkeypatch, tmp_path, c
         pid = 4567
         def __init__(self, command, **kwargs):
             commands.append((command, kwargs))
+            lc.event("start", pid=self.pid,
+                     run_id=kwargs["env"]["ROBEI_MCP_LIFECYCLE_RUN_ID"],
+                     git_commit="f9f50a9", cwd=str(tmp_path), pid_source="server")
         def wait(self):
             return code
     monkeypatch.setattr(lc.subprocess, "Popen", Child)
@@ -134,7 +138,54 @@ def test_launcher_records_real_child_exit_code(journal, monkeypatch, tmp_path, c
     assert exit_row["duration_s"] >= 0
     assert start["run_id"] == exit_row["run_id"]
     assert commands[0][1]["env"]["ROBEI_MCP_LIFECYCLE_SUPERVISED"] == start["run_id"]
+    assert commands[0][0] == [sys.executable, "-u", "-m", "robei_mcp.server"]
     assert len(commands) == 1  # no automatic restart
+
+
+def test_real_supervised_package_entry_writes_ready_and_exits_cleanly(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    localappdata = tmp_path / "localappdata"
+    env = os.environ.copy()
+    env["LOCALAPPDATA"] = str(localappdata)
+    env.pop("ROBEI_MCP_LIFECYCLE_RUN_ID", None)
+    env.pop("ROBEI_MCP_LIFECYCLE_SUPERVISED", None)
+    proc = subprocess.Popen(
+        [sys.executable, "-u", "-m", "robei_mcp.lifecycle", "--supervise"],
+        cwd=root,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stdout, stderr = proc.communicate(timeout=30)
+    assert proc.returncode == 0, f"stdout={stdout!r} stderr={stderr!r}"
+    rows = lc.read_events(path=localappdata / "robei-mcp" / "lifecycle.log")
+    run_id = next(row["run_id"] for row in rows if row["event"] == "start")
+    group = [row for row in rows if row.get("run_id") == run_id]
+    assert [row["event"] for row in group] == ["start", "ready", "stdin_closed", "clean_exit", "exit"]
+    assert group[0]["pid_source"] == "server"
+    assert group[0]["pid"] == group[-1]["pid"] and group[-1]["exit_code"] == 0
+
+
+@pytest.mark.parametrize(
+    "command_line",
+    [
+        "python -u C:/dev/robei-mcp/robei_mcp/server.py",
+        r"python -u C:\dev\robei-mcp\robei_mcp\server.py",
+        "python -u -m robei_mcp.server",
+    ],
+)
+def test_health_accepts_all_server_command_spellings(journal, monkeypatch, capsys, command_line):
+    lc.event("start", pid=4567, run_id="probe")
+    payload = json.dumps([{
+        "ProcessId": 4567,
+        "ExecutablePath": r"C:\dev\robei-mcp\.venv\Scripts\python.exe",
+        "CommandLine": command_line,
+    }])
+    monkeypatch.setattr(lc.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, payload, ""))
+    assert lc.health() == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "alive"
 
 
 def test_status_reports_last_five_and_previous_exit(journal):

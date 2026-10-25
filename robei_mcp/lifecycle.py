@@ -213,7 +213,7 @@ def install() -> Session:
     _ACTIVE = Session(run_id)
     # A Windows venv executable may be a redirector: Popen.pid is not always the
     # interpreter actually serving JSON-RPC. The child is the authority for PID.
-    _ACTIVE.write("start", git_commit=_commit(Path(__file__).resolve().parents[1]), cwd=os.getcwd())
+    _ACTIVE.write("start", git_commit=_commit(Path(__file__).resolve().parents[1]), cwd=os.getcwd(), pid_source="server")
     old_hook = sys.excepthook
 
     def hook(exc_type, exc, tb):
@@ -282,16 +282,18 @@ def supervise(root: Path, *, entry: Path | None = None) -> int:
            "ROBEI_MCP_LIFECYCLE_SUPERVISED": run_id}
     commit = _commit(root)
     started = time.monotonic()
-    proc = subprocess.Popen([sys.executable, "-u", str(entry or root / "robei_mcp" / "server.py")], cwd=root, env=env)
+    # Always start the package module: running robei_mcp/server.py as a script
+    # breaks its relative import ("from .lifecycle import run_server").
+    command = [sys.executable, "-u", "-m", "robei_mcp.server"]
+    proc = subprocess.Popen(command, cwd=root, env=env)
     code = proc.wait()
     try:
         starts = [r for r in read_events() if r.get("run_id") == run_id and r["event"] == "start"]
     except OSError:
         starts = []
+    # The server is authoritative for its own PID.  If it failed before
+    # install(), record only the exit; never fabricate a launcher start event.
     server_pid = starts[-1]["pid"] if starts else proc.pid
-    if not starts:
-        event("start", pid=server_pid, run_id=run_id, git_commit=commit, cwd=str(root),
-              pid_source="launcher_fallback")
     event("exit", pid=server_pid, run_id=run_id, exit_code=code,
           duration_s=round(time.monotonic() - started, 3), launcher_pid=os.getpid(), spawn_pid=proc.pid)
     return code
@@ -339,7 +341,7 @@ def health() -> int:
         normalized = command.replace("\\", "/").lower()
         valid = executable.replace("/", "\\").lower().startswith(venv_prefix) and \
             executable.replace("/", "\\").lower().endswith("\\python.exe") and \
-            "robei_mcp/server" in normalized
+            ("robei_mcp/server" in normalized or "robei_mcp.server" in normalized)
         if valid:
             alive.append(pid)
         else:
