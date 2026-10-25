@@ -131,9 +131,10 @@ def test_bit_select_out_of_range_is_rejected(proj: Path, select: str) -> None:
 def test_wire_endpoint_with_a_select_is_refused() -> None:
     with pytest.raises(ValueError) as excinfo:
         tools._canvas_endpoint("top", "a[0]")
-    message = str(excinfo.value)
-    assert "silently deletes" in message
-    assert 'Connect="a[0]"' in message
+    assert "bit-select" in str(excinfo.value)
+    hint = excinfo.value.hint
+    assert "silently deletes" in hint
+    assert 'Connect="a[0]"' in hint
 
 
 def test_both_ends_sliced_is_refused(proj: Path) -> None:
@@ -382,9 +383,8 @@ def test_non_constant_select_is_reported_clearly(proj: Path) -> None:
     _add_child(proj, "sub", "LEN = 4;", [("x", "input", "1"), ("y", "output", "1")])
     with pytest.raises(ValueError) as excinfo:
         _canvas(proj, wires=[{"from": "a[LEN-1]", "to": "u1.x"}])
-    message = str(excinfo.value)
-    assert "only constant selects" in message
-    assert '{"from": "a[0]", "to": "u1.x"}' in message
+    assert "only constant selects" in str(excinfo.value)
+    assert '{"from": "a[0]", "to": "u1.x"}' in excinfo.value.hint
 
 
 def test_unknown_instance_in_a_wire_is_still_rejected(proj: Path) -> None:

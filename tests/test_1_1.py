@@ -277,7 +277,8 @@ def test_edit_canvas_builds_the_four_bit_chain(project: Path) -> None:
     assert out["ok"] is True and out["dry_run"] is False
     assert out["diff"]["instances_added"] == ["u1", "u2"]
     assert [w["net"] for w in out["wires"]] == ["a_n", "mid", "y_n"]
-    assert [w["datasize"] for w in out["wires"]] == ["4", "4", "4"]
+    # 1.5 returns numeric widths as ints (a parameterised one stays a string).
+    assert [w["datasize"] for w in out["wires"]] == [4, 4, 4]
     assert [i["instance"] for i in out["instances"]] == ["u1", "u2"]
     preview = out["verilog_preview"]
     assert "wire [3:0] mid;" in preview
