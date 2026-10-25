@@ -235,6 +235,25 @@ python C:\dev\robei-mcp\tools\gui\register_task.py --remove   # 删除
 
 完整清单（含每条限制的原因和实测证据）见 [docs/verification-log.md](docs/verification-log.md)。
 
+## 常见问题
+
+**改了代码，为什么工具还是旧行为？**
+
+常驻的 MCP 服务是客户端启动会话时拉起来的，**不会自动重载**：改完 `robei_mcp/*.py`
+要重开 Codex（或重启这个服务）才会生效。不重开也能确认自己用的是哪份代码——调
+`runtime_status` 看 `git_commit`（当前进程加载的提交）和 `stale`：`stale=true` 表示
+源码比进程新，这时每次工具调用的返回里都会多一条 `warnings` 提醒你重启。
+
+**为什么 GUI 工具在嵌套的 stdio 服务里报 `OSError: Invalid argument`（Errno 22）？**
+
+GUI 工具必须落在登录用户的交互桌面上，正式路径是
+「stdio 服务 → 计划任务 `RobeiMCP_GuiAgent` → Session 1」，返回里的 `transport` 是 `"schtasks"`。
+如果自己再套一层 stdio 服务（比如调试脚本里用 `mcp.ClientSession` 启动 `server.py` 之后再调
+GUI 工具），UIA 拿不到桌面就会报 `Errno 22`。**不要在嵌套 stdio 服务里驱动 GUI 工具**：
+要么用正常配置的 MCP 客户端直连，要么在 Session 1 里跑。
+
+任务侧的注册与删除见上面「GUI 部分的前提」。
+
 ## 文档
 
 | 文件 | 内容 |

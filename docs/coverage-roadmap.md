@@ -203,6 +203,23 @@ JTAG Configure 建议不碰 GUI，改为自己的 `device/board/cable` 参数。
 12. 工程 zip 导入导出、模板工程。
 13. 覆盖率汇总、形式验证（需外部 solver）。
 
+### 1.6 backlog（1.5 审阅时确认，本版不做）
+
+14. **根级参数的「先建后补」**：端口宽度引用未声明的参数时，`create_robei_model` 现在直接报错，
+    这是有意的严格行为（1.5 明确不加 `allow_undeclared_width` 开关）。缺的是「改建根级
+    `Parameters` 并重算端口位宽」这个能力；现在只能带 `overwrite=true` 一次性重建：
+
+    ```text
+    create_robei_model(latep, width="LEN")            -> invalid_argument
+        hint: declare it first (parameters={"LEN": 4}) or use a literal width such as width=4
+    create_robei_model(latep, parameters={"LEN": 4}, overwrite=true)
+                                                     -> ok, parameters_text="LEN = 4;"
+    回读：Parameters="LEN = 4;"、a Datasize="LEN-1:0"、Code 未变
+    ```
+
+    要补的是 `set_robei_parameters(model, {...})`（改根参数 → 重算端口位宽 → 保住 Code/画布），
+    这样不用重建模型。
+
 ## 5. 明确做不到 / 不建议做
 
 - **csg324 教学板的 Route**：随附 chipdb 没有这个封装；除非用户自备 chipdb，否则无法本地布线。
