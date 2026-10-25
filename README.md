@@ -26,6 +26,46 @@
 - **画布可增量改**：`edit_robei_canvas` 用 `add_instance` / `connect` / `rename_wire` 这组
   操作改画布，整批校验通过才落盘；`set_robei_code` / `set_robei_parameter` 改行为与参数。
 
+## 1.6 根参数与服务生命周期
+
+### 根参数与位宽联动
+
+`set_robei_parameter` 仍是同一个工具，`action` 默认为 `set`，支持 `set`、`add`、
+`rename`、`delete`；`rename_in_parents=true` 只对 `rename` 生效，并把同工程直接父模型
+（不递归祖父模型）的实例覆盖同步改名。参数名必须是合法 Verilog 标识符，参数值可以是
+整数或引用本模型已声明参数的白名单表达式。
+
+lab16 的最小顺序示例：
+
+```text
+1. set_robei_parameter(action="add", name="LEN", value=4)
+2. set_robei_port(name="a", direction="input", width="LEN")
+3. set_robei_parameter(name="LEN", value=8, dry_run=true)
+   -> affected_ports[].effective_width=8
+   -> warnings[].code=parent_width_conflict, instance=top.u1, overridden=false
+4. edit_robei_canvas(op="set_parameters", instance="u1", parameters={"LEN": 4})
+   -> 再次评估时 warning.overridden=true
+5. set_robei_parameter(action="rename", name="LEN", new_name="WIDTH",
+   rename_in_parents=true, dry_run=true)
+   -> 先看 parent_updates，再提交事务
+```
+
+改名会同步本模型端口/wire 的 `Datasize` 和参数表达式；删除前会检查本模型与父实例覆盖的
+引用。dry-run 不写盘，真正的跨文件改名逐文件留 `.bak`，失败会回滚。
+
+### H1 lifecycle / health
+
+服务生命周期日志写入 `%LOCALAPPDATA%\robei-mcp\lifecycle.log`，不污染 stdout。
+`mcp_health.sh` 的 server 身份需同时满足命令行含 `robei_mcp/server`（也认 `\` 和
+`robei_mcp.server`，大小写不敏感），并满足以下任一身份规则：
+
+1. server 的 `ExecutablePath` 位于 `C:\dev\robei-mcp\.venv`；
+2. 父进程的 `ExecutablePath` 是 `.venv\Scripts\python.exe`，且 server 命令行含 server 标记；
+3. server 的 `start.sys_prefix` 指向 `.venv`，且命令行含 server 标记。
+
+已接受的边界：正常退出和 SSH 断开都记为 `stdin_closed`，health 统一显示“客户端断开”；
+外层 cmd 与 Python 同时被强杀且没有 `exit` 事件时，health 显示“未观察到终止”。
+
 ## 快速开始
 
 ### 1. 前置条件

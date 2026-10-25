@@ -2,6 +2,20 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.6.0 — Unreleased
+
+**服务生命周期可观测性 + 根参数编辑与位宽联动。** 版本号仍保持 `1.5.0`，本段记录未发布
+的工作内容。
+
+- H1：`lifecycle.log` JSON Lines、1 MB 轮转、`ready`/`clean_exit`/`crash`/`stdin_closed`，
+  `runtime_status.lifecycle` 和只读 `tools/mcp_health.sh`；CIM 身份校验支持 venv 转发器的父进程
+  与 `sys_prefix` 规则，不自动重启服务。
+- H2：`set_robei_parameter` 默认 `action=set`，支持 `add`/`set`/`rename`/`delete`，
+  `effective_width`、父模型冲突 warnings、`parents_skipped`、dry-run 预览和跨文件事务回滚；
+  `edit_robei_canvas` 复用 `set_parameters` 做实例覆盖。
+- lab16 闭环覆盖先建后补、LEN=8 冲突告警、覆盖值 `overridden=true`、父模型改名和删除拒绝。
+- portable_core 16/16；stage2–21 脚本与全量 pytest 回归通过。
+
 ## 1.5.0 — 2026-10-25
 
 **模型能声明根参数，宽度字段统一成一种写法，语义错误会指路，服务知道自己是否过期。**

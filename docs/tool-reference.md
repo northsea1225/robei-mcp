@@ -35,7 +35,14 @@
     额外轮询
 - 生命周期块（H1）：`path`、`pid`、`recent_events`（最近 5 条）、`previous_exit`；日志不可读时返回 `available=false`，不影响其它运行态字段。
 - `recent_events` 中 `stdin_closed` 表示客户端断开：正常关闭与 SSH 断开不做服务端来源区分，health 统一显示“客户端断开”。外层 cmd 与 Python 同时被强杀且没有 `exit` 时，health 显示“未观察到终止”。
-- `tools/mcp_health.sh` 是 Mac 侧只读检查：通过 CIM 核对 PID 的 `ExecutablePath` 位于 `C:\dev\robei-mcp\.venv` 且 `CommandLine` 含 `robei_mcp/server`；PID 复用或身份不匹配显示 `stale_pid`，不会仅凭 PID 存活判定 `alive`。
+- `tools/mcp_health.sh` 是 Mac 侧只读检查。命令行 server 标记认 `robei_mcp/server`、`robei_mcp\server`、
+  `robei_mcp.server`，大小写不敏感；身份满足以下任一规则才算 `alive`：
+  1. server 的 `ExecutablePath` 在 `C:\dev\robei-mcp\.venv`；
+  2. 父进程是 `.venv\Scripts\python.exe` 且命令行含 server 标记；
+  3. `start.sys_prefix` 指向 `.venv` 且命令行含 server 标记。
+  PID 复用或身份不匹配显示 `stale_pid`，不会仅凭 PID 存活判定 `alive`。正常退出与 SSH 断开
+  都是 `stdin_closed`（health 统一“客户端断开”）；外层 cmd 与 Python 同时被强杀且没有 `exit`
+  时显示“未观察到终止”。
 
 Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` 输出 `Synthesis complete`，因此 `version` 为 `null`，但路径和综合检查可用。
 
@@ -438,17 +445,37 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 ### `set_robei_parameter`
 
 ```json
-{"model_path": "myproj/model/pw.model", "name": "LEN", "value": 8, "dry_run": true}
+{"model_path": "myproj/model/sub.model", "name": "LEN", "value": 8, "action": "set", "dry_run": true}
 ```
 
-改一个根级参数的默认值，名字大小写不敏感。
+编辑模型自身的根参数。`action` 默认是 `set`，保持旧调用兼容；可选动作如下：
 
-- 参数不存在 → `code=unknown_parameter`，并列出已声明的名字
-- 改完按新值重算 `width_info`：每个引用该参数的端口给出 `datasize`（原表达式）、
-  `expression`（代入后）、`width`、`resolved`、`range`
-- 其它参数的注释原样保留（`NAME = value; // comment`）；根级 `Parameters` 里有解析失败的
-  chunk 时先拒绝，避免把坏内容一起重写掉
-- 返回 `old_value` / `new_value` / `parameters` / `parameters_text`；写盘前留备份
+- `set`：改已有参数默认值；整数或引用本模型已声明参数的白名单表达式均可用。
+- `add`：新增参数；随后可用 `set_robei_port(width="LEN")` 建立参数化 Datasize。
+- `rename`：改名并按标识符 token 同步本模型端口/wire 的 Datasize 与参数表达式。
+- `delete`：删除未被本模型 Datasize、其它参数表达式或父实例覆盖引用的参数。
+
+`rename_in_parents=true` 只对 `rename` 有效：扫描同工程的直接父模型，不递归祖父模型；
+dry-run 返回完整 `parent_updates` 但不写盘，提交时每个文件先留 `.bak`，事务失败会回滚。
+参数名必须是合法 Verilog 标识符，不能是关键字、端口名或已有参数名；错误 hint 会给
+`difflib` 候选。
+
+lab16 示例：
+
+```text
+set_robei_parameter(action="add", name="LEN", value=4)
+set_robei_port(name="a", direction="input", width="LEN")
+set_robei_parameter(name="LEN", value=8, dry_run=true)
+# affected_ports[0].effective_width == 8
+# warnings: top.u1.a / parent_width_conflict / overridden=false
+edit_robei_canvas([{"op":"set_parameters", "instance":"u1", "parameters":{"LEN":4}}])
+set_robei_parameter(action="rename", name="LEN", new_name="WIDTH",
+                    rename_in_parents=true, dry_run=true)
+# 先检查 parent_updates，再提交 rename
+```
+
+返回 `old_value` / `new_value` / `parameters` / `parameters_text`、`affected_ports`（含
+`effective_width`）、`warnings`、`parents_skipped` 和 `parent_updates`；写盘前留备份。
 
 ### `set_robei_port`
 
