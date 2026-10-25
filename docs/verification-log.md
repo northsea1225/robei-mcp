@@ -123,8 +123,12 @@ Session 1 子进程里另起 stdio 服务再直接调 UIA：minimal_env / inheri
 Session 1 进程内嵌 stdio + robei_gui_open_project / open_model：均 ok
    （旧 IDE 实例没清理时除外，那种情况先关掉再开）
 正式路径（stdio 服务 -> schtasks）：open_project / open_model / compile / save 全部 ok
-结论：Errno 22 只出现在「Session-1 内嵌 stdio + 极简 env + 直接 UIA」这套临时探针里，
-      正式路径没有复现，不构成阻断；README 常见问题里写明要走计划任务投递。
+
+Session 0 里直接摸 UI（ssh 里跑）：driver.session_id() = 0、list_windows() 返回 0 个窗口
+   -> 非交互会话根本看不到 Robei 的窗口，任何直接 attach 的 UIA 调用只能失败（EINVAL / Errno 22）
+
+结论：Errno 22 出现在「在服务进程里直接调 UIA」的临时探针里；换成 gui.call 走计划任务投递后
+      没有再出现，正式路径不经过这一步，不构成阻断。README 常见问题里写明要走计划任务投递。
 ```
 
 **回归**：`pytest` → **261 passed**；`portable_core` 16/16；stage5/7/8/11/12/13/14 →
