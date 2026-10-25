@@ -2,7 +2,7 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
-## 1.5.0 — Unreleased
+## 1.5.0 — 2026-10-25
 
 **模型能声明根参数，宽度字段统一成一种写法，语义错误会指路，服务知道自己是否过期。**
 工具面仍是 49 个（文件级 38 + GUI 11），`ROBEI_MCP_GUI=0` 时 38 个。
@@ -44,6 +44,12 @@
 - `stale=true` 时每个工具结果都带一条 `warnings`（失败结果也带），提示重启服务 / 重开 Codex。
 - **不自动重启子进程**：stdio 下重启后客户端握手状态丢失，实测 `tools/list` 和 `call_tool` 直接
   超时（见 verification-log 的守护实验）。所以只做自检 + 提示，文档写明"改了代码要重开 Codex"。
+
+### Notes（类型变化）
+
+- 返回的 `datasize` 为数字时改为 `int`；参数表达式仍为字符串，调用方不要再假定一律为字符串。
+- 返回的 `ports[]` 新增 `width`：可解析的具体位宽为 `int`，参数化位宽为 `null`。
+- `create_robei_canvas_model.wires` 接受非字符串值（`dict[str, Any]`），例如 `datasize: 8`。
 
 ### 未做
 
