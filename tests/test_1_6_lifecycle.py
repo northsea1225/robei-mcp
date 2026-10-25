@@ -188,6 +188,19 @@ def test_health_accepts_all_server_command_spellings(journal, monkeypatch, capsy
     assert capsys.readouterr().out.splitlines()[-1] == "alive"
 
 
+def test_health_accepts_host_python_when_logged_prefix_is_venv(journal, monkeypatch, capsys):
+    lc.event("start", pid=4567, run_id="probe", sys_prefix=r"C:\dev\robei-mcp\.venv")
+    payload = json.dumps([{
+        "ProcessId": 4567,
+        "ParentProcessId": 9999,
+        "ExecutablePath": r"C:\Users\15635\AppData\Local\Programs\Python\Python312\python.exe",
+        "CommandLine": "python -u -m robei_mcp.server",
+    }])
+    monkeypatch.setattr(lc.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, payload, ""))
+    assert lc.health() == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "alive"
+
+
 def test_status_reports_last_five_and_previous_exit(journal):
     for kind in ("start", "ready", "stdin_closed", "clean_exit"):
         lc.event(kind, pid=1234, run_id="previous")

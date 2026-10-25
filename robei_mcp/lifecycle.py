@@ -213,7 +213,7 @@ def install() -> Session:
     _ACTIVE = Session(run_id)
     # A Windows venv executable may be a redirector: Popen.pid is not always the
     # interpreter actually serving JSON-RPC. The child is the authority for PID.
-    _ACTIVE.write("start", git_commit=_commit(Path(__file__).resolve().parents[1]), cwd=os.getcwd(), pid_source="server")
+    _ACTIVE.write("start", git_commit=_commit(Path(__file__).resolve().parents[1]), cwd=os.getcwd(), pid_source="server", sys_prefix=str(Path(sys.prefix).resolve()))
     old_hook = sys.excepthook
 
     def hook(exc_type, exc, tb):
@@ -308,7 +308,7 @@ def health() -> int:
         "$ProgressPreference='SilentlyContinue'; "
         "Get-CimInstance Win32_Process | "
         "Where-Object { $_.Name -eq 'python.exe' } | "
-        "Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress"
+        "Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress"
     )
     encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
     powershell = os.environ.get("SystemRoot", r"C:\Windows") + r"\System32\WindowsPowerShell\v1.0\powershell.exe"
@@ -331,17 +331,36 @@ def health() -> int:
               if isinstance(row, dict) and str(row.get("ProcessId", "")).isdigit()}
     services = [r for r in rows if r["event"] in {"start", "ready"}]
     exited_runs = {r.get("run_id") for r in rows if r["event"] == "exit"}
-    known = {r["pid"] for r in services if r.get("run_id") not in exited_runs}
-    venv_prefix = "c:\\dev\\robei-mcp\\.venv\\"
+    active_services = [r for r in services if r.get("run_id") not in exited_runs]
+    known = {r["pid"] for r in active_services}
+    start_by_pid = {r["pid"]: r for r in active_services if r["event"] == "start"}
+    venv_root = "c:/dev/robei-mcp/.venv"
+    venv_prefix = venv_root + "/"
+
+    def is_venv_python(value: str) -> bool:
+        normalized = value.replace("\\", "/").lower()
+        return normalized.startswith(venv_prefix) and normalized.endswith("/python.exe")
+
+    def is_venv_prefix(value: str) -> bool:
+        normalized = value.replace("\\", "/").rstrip("/").lower()
+        return normalized == venv_root or normalized.startswith(venv_root + "/")
+
     alive, stale = [], []
     for pid in sorted(known):
         row = by_pid.get(pid) or {}
         executable = str(row.get("ExecutablePath") or "")
         command = str(row.get("CommandLine") or "")
         normalized = command.replace("\\", "/").lower()
-        valid = executable.replace("/", "\\").lower().startswith(venv_prefix) and \
-            executable.replace("/", "\\").lower().endswith("\\python.exe") and \
-            ("robei_mcp/server" in normalized or "robei_mcp.server" in normalized)
+        has_server_marker = "robei_mcp/server" in normalized or "robei_mcp.server" in normalized
+        parent_pid = row.get("ParentProcessId")
+        parent = (by_pid.get(int(parent_pid)) or {}) if str(parent_pid or "").isdigit() else {}
+        parent_executable = str(parent.get("ExecutablePath") or "")
+        start = start_by_pid.get(pid) or {}
+        valid = has_server_marker and (
+            is_venv_python(executable)
+            or is_venv_python(parent_executable)
+            or is_venv_prefix(str(start.get("sys_prefix") or ""))
+        )
         if valid:
             alive.append(pid)
         else:
