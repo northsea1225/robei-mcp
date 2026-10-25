@@ -2,9 +2,9 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
-## 1.6.0 — Unreleased
+## 1.6.0 — 2026-10-25
 
-**服务生命周期可观测性 + 根参数编辑与位宽联动。** 版本号仍保持 `1.5.0`，本段记录未发布
+**服务生命周期可观测性 + 根参数编辑与位宽联动。** 版本号已提升为 `1.6.0`，本段记录正式发布
 的工作内容。
 
 - H1：`lifecycle.log` JSON Lines、1 MB 轮转、`ready`/`clean_exit`/`crash`/`stdin_closed`，
