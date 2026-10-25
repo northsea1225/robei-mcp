@@ -33,6 +33,7 @@
 工程 `workspace/_qa_runs/lab15p1`：`sub(LEN=4, x/y)` + `top(a[3:0], u1:sub, {"LEN":8}, u1.x←a[0])`。
 创建与读取走 MCP 工具（另起的 stdio 服务，49 个工具）；三个 GUI 动作走 `gui_agent.ui`
 ——嵌套 stdio 服务里 UIA 调用报 `OSError: Invalid argument`，所以这一轮没能全部经 MCP。
+第二轮改走正式拓扑后全部经 MCP 跑通，见下面的「M3 补证」。
 
 ```text
 create_robei_model        -> parameters_text="LEN = 4;", ports [["x","1"],["y",1]]
@@ -70,7 +71,63 @@ client:      initialize -> tools/list = 49 -> taskkill 子进程 -> 等 3 s
              只做 stale 自检 + 每次调用带警告
 ```
 
-**回归**：`pytest` → **260 passed**；`portable_core` 16/16；stage5/7/8/11/12/13/14 →
+**M3 补证：全链路经 MCP 跑通**（`D:\Temp\m150_m3.py`、`m150_m3b.py`，工程 `workspace/_qa_runs/lab15m2`）
+
+第一轮 M3 的 GUI 动作是直接调 `gui_agent.ui` 的（嵌套 stdio 里 UIA 报 `OSError: Invalid argument`）。
+这一轮改成正式拓扑——stdio 服务（Session 0）→ `gui.call` → 计划任务 `RobeiMCP_GuiAgent` →
+Session 1 桌面，返回里的 `transport` 就是 `"schtasks"`——所有步骤都是 MCP 工具调用。
+
+```text
+runtime_status   -> package_version=1.4.0, git_commit=6b6e916, stale=false, stale_warning=null
+                    source_dir=C:\dev\robei-mcp\robei_mcp
+tools/list       -> 49
+
+create_robei_project     _qa_runs/lab15m2, models=[], skeleton=false
+create_robei_model       sub   {"LEN": 4}                  -> parameters_text="LEN = 4;"
+create_robei_canvas_model top  u1:sub {"LEN": 8}, a[0]     -> ok, warnings=[]
+create_robei_model       dm    {"A": 4, "B": 2}, width "A+B"
+                                                           -> Datasize="A+B-1:0", Parameters="A = 4;\nB = 2;"
+create_robei_canvas_model top2 u2:dm {"A": 8, "B": 3}, a[5:0] -> ok, warnings=[]
+create_robei_model       badp  parameters="LEN = ;"        -> ok=true, warnings=[
+                                 "badp: cannot parse Parameters 'LEN = ;'; written verbatim and the
+                                  export will warn about it"]
+GUI（每个工程一轮）: open_project(restarted) -> open_model -> compile("Compile done") -> save_project
+                    transport=schtasks
+```
+
+```text
+保存后回读（read_robei_model）
+  sub  root Parameters="LEN = 4;"
+  top  u1.Parameters="LEN = 8;"                u1.x Connect="a[0]"
+  dm   root Parameters="A = 4;&#xa;B = 2;"     bus Datasize="A+B-1:0"
+  top2 u2.Parameters="A = 8;&#xa;B = 3;"       u2.bus Connect="a[5:0]"
+
+Robei 自己写出的 build/top.v（单独 open_model top + compile 后取）
+  sub #(
+  .LEN(8)
+  )
+  u1(
+      .x(a[0]),
+      .y(y)
+  );
+  has_len8=true, has_x_select=true, 没有空端口 .x()，iverilog -g2012 rc=0
+build/top2.v：.A(8) 和 .B(3) 都在，没有空端口，iverilog rc=0
+语义 diff vs D:\Temp\robei_samples\gui_probe\pp_p1：top={}（无差异）、sub={}（无差异）
+```
+
+**嵌套 stdio 里 `Errno 22` 的复核**
+
+```text
+Session 1 子进程里另起 stdio 服务再直接调 UIA：minimal_env / inherited_env 都返回正常
+   （ok=false "model 'top' not found"，不是 OSError）
+Session 1 进程内嵌 stdio + robei_gui_open_project / open_model：均 ok
+   （旧 IDE 实例没清理时除外，那种情况先关掉再开）
+正式路径（stdio 服务 -> schtasks）：open_project / open_model / compile / save 全部 ok
+结论：Errno 22 只出现在「Session-1 内嵌 stdio + 极简 env + 直接 UIA」这套临时探针里，
+      正式路径没有复现，不构成阻断；README 常见问题里写明要走计划任务投递。
+```
+
+**回归**：`pytest` → **261 passed**；`portable_core` 16/16；stage5/7/8/11/12/13/14 →
 10/10、12/12、10/10、13/13、18/18、18/18、9/9；stage16/17/18/19/20/21 →
 12/12、28/28、29/29、26/26、14/14、18/18；stage2/3/4/9/10 打印各自的 OK 标记。
 
