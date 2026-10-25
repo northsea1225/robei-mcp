@@ -1,4 +1,4 @@
-from robei_mcp.server_app import mcp
+from robei_mcp.lifecycle import run_server
 
 if __name__ == "__main__":
-    mcp.run()
+    run_server()

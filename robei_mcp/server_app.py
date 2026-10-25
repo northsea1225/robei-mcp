@@ -12,9 +12,15 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 
 from . import __version__
-from . import constraints, doctor, errors, fpga, gui, p1, runstate, tools
+from . import constraints, doctor, errors, fpga, gui, lifecycle, p1, runstate, tools
 
-mcp = MCPServer(
+
+class LifecycleMCPServer(MCPServer):
+    async def run_stdio_async(self) -> None:
+        await lifecycle.run_stdio(self)
+
+
+mcp = LifecycleMCPServer(
     name="robei-mcp",
     version=__version__,
     instructions=(
@@ -962,3 +968,5 @@ GUI_ENABLED = gui.available()
 if GUI_ENABLED:
     for _fn, _ann in GUI_TOOLS:
         mcp.add_tool(_stale_wrapped(_fn), annotations=_ann)
+
+lifecycle.ready()

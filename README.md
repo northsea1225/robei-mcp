@@ -104,8 +104,8 @@ startup_timeout_sec = 30
 tool_timeout_sec = 120
 ```
 
-`run-mcp.cmd` 只做三件事：切 UTF-8、`cd` 到仓库、用 venv 的 python 起 `server.py`。
-已验证 stdout 只有 JSON-RPC，没有 banner 污染。
+`run-mcp.cmd` 切 UTF-8、`cd` 到仓库，由轻量等待进程启动 `server.py` 并记录开始/退出。
+等待进程不自动重启服务，生命周期日志只写文件，stdout 仍只留给 JSON-RPC。
 
 > Codex 的 app-server 是长驻进程，改完配置要重启会话/应用；`codex mcp list` 只说明配置存在。
 
@@ -236,6 +236,15 @@ python C:\dev\robei-mcp\tools\gui\register_task.py --remove   # 删除
 完整清单（含每条限制的原因和实测证据）见 [docs/verification-log.md](docs/verification-log.md)。
 
 ## 常见问题
+
+**看到 `Transport closed`，先查什么？**
+
+Mac 上先运行 `bash tools/mcp_health.sh`：通过 `ssh my-win` 只读显示最近 20 条生命周期事件、
+`tasklist` 中的已记录服务 PID，最后给出 `alive` / `exited:<原因>` / `never_started`。
+日志为 `%LOCALAPPDATA%\robei-mcp\lifecycle.log`（JSON Lines，UTC 时间），超过 1 MB 轮转，
+只保留 `.1` 一份；`.lock` 是写入互斥锁文件。`runtime_status.lifecycle` 返回日志路径、最近 5 条、
+本进程 PID 和上一个进程的已观测退出信息。强杀不会运行 Python 的 `atexit`；若连等待进程也被杀，
+只能报告 `unobserved_termination`，不能从缺失记录推断确切退出时间或操作者。不会自动重启。
 
 **改了代码，为什么工具还是旧行为？**
 

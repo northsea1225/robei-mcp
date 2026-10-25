@@ -37,7 +37,7 @@ from .errors import (
     UnknownParameter,
     WidthMismatch,
 )
-from . import runstate, xmlsafe
+from . import lifecycle, runstate, xmlsafe
 from .security import (
     is_within,
     resolve_model_path,
@@ -465,6 +465,7 @@ def runtime_status() -> dict[str, Any]:
         "newest_source_mtime": check["newest_source_mtime"],
         "stale": check["stale"],
         "stale_warning": stale_warning(),
+        "lifecycle": lifecycle.status(),
         "server_version": server_version,
         "mcp_version": mcp_version,
         "python_executable": sys.executable,
