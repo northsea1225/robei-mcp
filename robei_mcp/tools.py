@@ -52,6 +52,7 @@ from .vcd import match_signals, parse_vcd, query_vcd, render_waveform_png, times
 from .verilog import generate_testbench as build_testbench
 from .verilog import parse_module_ports, classify_control
 from .verilog import robei_width, width_info
+from .verilog_ast import KEYWORDS as VERILOG_KEYWORDS
 
 # Wall clock at the moment this module was imported, i.e. a few milliseconds
 # after the interpreter started.  File mtimes are compared against it, so
@@ -2014,6 +2015,9 @@ WIRE_SELECT_HINT = (
 )
 PARAM_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 PARAM_HINT = 'pass parameters as an object, e.g. {"LEN": 8}'
+PARAM_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_$])([A-Za-z_][A-Za-z0-9_$]*)(?![A-Za-z0-9_$])")
+PARAM_EXPR_RE = re.compile(r"^[A-Za-z0-9_$+\-*/%() ]+$")
+PARAM_ACTIONS = {"set", "add", "rename", "delete"}
 def _closest(name: Any, candidates: Any, limit: int = 3) -> str:
     """`` (closest: a, b)`` for an unknown name; empty when nothing is near."""
     pool = [str(item) for item in candidates if str(item)]
@@ -2027,6 +2031,207 @@ def _names(values: Any, limit: int = 12) -> str:
         return "(none)"
     shown = ", ".join(pool[:limit])
     return shown + (f", ... ({len(pool)} total)" if len(pool) > limit else "")
+
+
+def _parameter_hint(name: str, candidates: Any) -> str:
+    pool = [str(item) for item in candidates if str(item)]
+    close = difflib.get_close_matches(name, pool, n=3, cutoff=0.35)
+    suffix = f" closest: {', '.join(close)}." if close else ""
+    return (
+        "parameter names must be legal Verilog identifiers and must not be keywords; "
+        f"available names: {_names(pool)}.{suffix}"
+    )
+
+
+def _validate_parameter_name(name: str, parameters: list[dict[str, str]], ports: list[dict[str, Any]], *, allow_existing: bool = False) -> str:
+    wanted = str(name or "").strip()
+    if not PARAM_NAME_RE.fullmatch(wanted) or wanted in VERILOG_KEYWORDS:
+        raise BadRequest(f"invalid parameter name {wanted!r}", _parameter_hint(wanted, [p["name"] for p in parameters]))
+    existing = {p["name"].upper() for p in parameters}
+    port_names = {str(p.get("name", "")).upper() for p in ports}
+    if wanted.upper() in port_names:
+        raise BadRequest(
+            f"parameter {wanted!r} conflicts with a port",
+            f"choose a name different from port(s) {_names(port_names)}; {_parameter_hint(wanted, port_names)}",
+        )
+    if not allow_existing and wanted.upper() in existing:
+        raise BadRequest(
+            f"parameter {wanted!r} already exists",
+            f"choose a new name; declared parameters: {_names(existing)}; {_parameter_hint(wanted, existing)}",
+        )
+    return wanted
+
+
+def _replace_parameter_token(text: str, old: str, new: str) -> str:
+    pattern = re.compile(rf"(?<![A-Za-z0-9_$]){re.escape(old)}(?![A-Za-z0-9_$])")
+    return pattern.sub(new, text)
+
+
+def _parameter_values(parameters: list[dict[str, str]]) -> dict[str, int | None]:
+    values: dict[str, int | None] = {}
+    expressions = {p["name"]: str(p.get("default", "")).strip() for p in parameters}
+    states: dict[str, int] = {}
+
+    def resolve(name: str) -> int | None:
+        if name in values:
+            return values[name]
+        if states.get(name) == 1:
+            raise BadRequest(
+                f"parameter expression cycle includes {name}",
+                "parameter defaults must not refer to one another cyclically; "
+                f"check {', '.join(expressions)}",
+            )
+        states[name] = 1
+        expr = expressions[name]
+        if not expr or not PARAM_EXPR_RE.fullmatch(expr):
+            values[name] = None
+            states[name] = 2
+            return None
+        names = PARAM_TOKEN_RE.findall(expr)
+        unknown = [item for item in names if item not in expressions]
+        if unknown:
+            raise BadRequest(
+                f"parameter {name} refers to undeclared identifier(s) {unknown}",
+                f"declare {unknown[0]!r} first; declared parameters: {_names(expressions)}",
+            )
+        rendered = expr
+        for ref in sorted(set(names), key=len, reverse=True):
+            value = resolve(ref)
+            if value is None:
+                values[name] = None
+                states[name] = 2
+                return None
+            rendered = _replace_parameter_token(rendered, ref, str(value))
+        from .verilog import const_eval
+        values[name] = const_eval(rendered)
+        states[name] = 2
+        return values[name]
+
+    for key in expressions:
+        resolve(key)
+    return values
+
+
+def _effective_width_for_datasize(datasize: Any, values: dict[str, int | None]) -> int | None:
+    text = str(datasize or "").strip()
+    if not text:
+        return 1
+    rendered = text
+    for name, value in sorted(values.items(), key=lambda item: len(item[0]), reverse=True):
+        if value is None:
+            return None
+        rendered = _replace_parameter_token(rendered, name, str(value))
+    return robei_width(rendered)
+
+
+def _instance_model_matches(instance: dict[str, Any], target: str) -> bool:
+    target = target.lower()
+    candidates = [instance.get("model_file"), instance.get("class"), instance.get("module")]
+    return any(Path(str(item)).stem.lower() == target for item in candidates if item)
+
+
+def _parse_override_values(text: str, child: dict[str, Any]) -> dict[str, str]:
+    if not text:
+        return {}
+    parsed, bad = parse_parameter_text_checked(text)
+    if bad:
+        raise ValueError(f"cannot parse Parameters {text!r}: {bad}")
+    declared = {p["name"].upper(): p["name"] for p in child.get("parameter_list") or []}
+    result: dict[str, str] = {}
+    for item in parsed:
+        if item["name"].upper() not in declared:
+            raise ValueError(f"unknown override parameter {item['name']!r}")
+        result[declared[item["name"].upper()]] = item["default"].strip()
+    return result
+
+
+def _direct_parent_scan(target_path: Path, target_model: dict[str, Any], old_params: list[dict[str, str]], new_params: list[dict[str, str]], changed: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[tuple[Path, dict[str, Any], dict[str, str]]], int]:
+    model_dir = target_path.parent
+    warnings: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    updates: list[tuple[Path, dict[str, Any], dict[str, str]]] = []
+    scanned = 0
+    old_defaults = {p["name"]: p["default"] for p in old_params}
+    new_defaults = {p["name"]: p["default"] for p in new_params}
+    for parent_path in sorted(model_dir.glob("*.model")):
+        if parent_path.resolve() == target_path.resolve():
+            continue
+        try:
+            parent = parse_robei_model(parent_path)
+        except Exception as exc:
+            skipped.append({"parent_model": parent_path.stem, "path": str(parent_path), "reason": f"{type(exc).__name__}: {exc}"})
+            continue
+        for instance in parent.get("instances") or []:
+            if not _instance_model_matches(instance, target_model["name"]):
+                continue
+            scanned += 1
+            try:
+                overrides = _parse_override_values(instance.get("parameters") or "", target_model)
+                overridden = changed in overrides
+                old_effective = dict(old_defaults)
+                new_effective = dict(new_defaults)
+                old_effective.update(overrides)
+                new_effective.update(overrides)
+                old_values = _parameter_values([{"name": k, "default": v} for k, v in old_effective.items()])
+                new_values = _parameter_values([{"name": k, "default": v} for k, v in new_effective.items()])
+            except Exception as exc:
+                skipped.append({"parent_model": parent["name"], "path": str(parent_path), "instance": instance.get("instance"), "reason": f"{type(exc).__name__}: {exc}"})
+                continue
+            if changed in overrides:
+                updates.append((parent_path, instance, overrides))
+            ports = {p["name"]: p for p in instance.get("ports") or []}
+            for port in target_model.get("ports") or []:
+                port_name = port["name"]
+                new_width = _effective_width_for_datasize(port.get("datasize"), new_values)
+                old_width = _effective_width_for_datasize(port.get("datasize"), old_values)
+                connect = str((ports.get(port_name) or {}).get("connect") or "")
+                match = re.search(r"\[(\d+)(?::(\d+))?\]$", connect)
+                if match:
+                    high, low = int(match.group(1)), int(match.group(2) or match.group(1))
+                    slice_width = abs(high - low) + 1
+                    if new_width != slice_width:
+                        warnings.append({
+                            "code": "parent_width_conflict", "parent_model": parent["name"],
+                            "parent_path": str(parent_path), "instance": instance["instance"],
+                            "child_model": target_model["name"], "port": port_name,
+                            "kind": "connect_slice", "endpoint": connect,
+                            "old_width": old_width, "new_width": new_width,
+                            "overridden": overridden,
+                            "suggestion": f"change {parent['name']}.{instance['instance']}.{port_name} Connect to an {new_width}-bit slice",
+                        })
+            for wire in parent.get("wires") or []:
+                endpoints = [wire.get("from") or {}, wire.get("to") or {}]
+                hit = any(ep.get("instance") == instance.get("instance") and ep.get("port") in ports for ep in endpoints if isinstance(ep, dict))
+                if not hit:
+                    continue
+                wire_width = robei_width(wire.get("datasize"))
+                port_name = next((ep.get("port") for ep in endpoints if isinstance(ep, dict) and ep.get("instance") == instance.get("instance")), None)
+                target_port = next((p for p in target_model.get("ports") or [] if p["name"] == port_name), None)
+                old_width = _effective_width_for_datasize(target_port.get("datasize") if target_port else None, old_values)
+                new_width = _effective_width_for_datasize(target_port.get("datasize") if target_port else None, new_values)
+                if wire_width is not None and new_width is not None and wire_width != new_width:
+                    warnings.append({
+                        "code": "parent_width_conflict", "parent_model": parent["name"],
+                        "parent_path": str(parent_path), "instance": instance["instance"],
+                        "child_model": target_model["name"], "port": port_name,
+                        "kind": "wire_datasize", "endpoint": wire.get("net"),
+                        "old_width": old_width, "new_width": new_width,
+                        "overridden": overridden,
+                        "suggestion": f"change wire {wire.get('net')} Datasize to {new_width}",
+                    })
+    return warnings, skipped, updates, scanned
+
+
+def _rewrite_instance_parameters(text: str, instance: str, replacement: str) -> str:
+    tag_re = re.compile(r"<Module\b[^>]*>", re.IGNORECASE)
+    attr_re = re.compile(r'(\bParameters=")([^"]*)(")')
+    def replace_tag(match):
+        tag = match.group(0)
+        name = re.search(r'\bName="([^"]+)"', tag, re.IGNORECASE)
+        if not name or name.group(1) != instance:
+            return tag
+        return attr_re.sub(lambda m: m.group(1) + replacement.replace('"', "&quot;") + m.group(3), tag, count=1)
+    return tag_re.sub(replace_tag, text)
 
 
 UNRESOLVABLE_SELECT_HINT = (
@@ -3272,10 +3477,139 @@ def _param_width_report(model: dict[str, Any], name: str, value: str) -> list[di
 def set_robei_parameter(
     model_path: str,
     name: str,
-    value: str | int,
+    value: str | int | None = None,
     dry_run: bool = False,
+    action: str = "set",
+    new_name: str | None = None,
+    rename_in_parents: bool = False,
 ) -> dict[str, Any]:
-    """Change one root ``Parameters`` default and re-resolve the port widths."""
+    """Edit one root parameter; the default action preserves the 1.5 contract."""
+    return _set_robei_parameter_h2(
+        model_path, name, value, dry_run, action, new_name, rename_in_parents
+    )
+
+
+def _h2_core(model_path, name, value, dry_run, action, new_name, rename_in_parents):
+    path = resolve_model_path(model_path)
+    if not dry_run and not is_within(path, SETTINGS.workspace):
+        raise PermissionError(f"refusing to modify a model outside the workspace: {path}")
+    model = parse_robei_model(path)
+    if model["parameter_bad"]:
+        raise ValueError(f"{model['name']}: root Parameters contain unparsable chunks {model['parameter_bad']}")
+    action = str(action or "set").lower()
+    if action not in PARAM_ACTIONS:
+        raise BadRequest(f"unknown parameter action {action!r}", 'action must be one of "set", "add", "rename", "delete"')
+    if rename_in_parents and action != "rename":
+        raise BadRequest("rename_in_parents is only valid for action=rename", 'use action="rename" with rename_in_parents=true')
+    params = [dict(p) for p in model.get("parameter_list") or []]
+    ports = model.get("ports") or []
+    wanted = str(name or "").strip()
+    match = next((p for p in params if p["name"].lower() == wanted.lower()), None)
+    if action == "add":
+        _validate_parameter_name(wanted, params, ports)
+    elif match is None:
+        raise UnknownParameter(f"{model['name']}: unknown parameter {wanted!r}; declared: {[p['name'] for p in params]}")
+    else:
+        _validate_parameter_name(match["name"], params, ports, allow_existing=True)
+    if action in {"set", "add"}:
+        if value is None:
+            raise BadRequest(f"parameter {wanted!r} needs a value", 'pass value=8 or a declared-parameter expression such as "BASE+1"')
+        new_value = str(value).strip()
+        if not new_value or not PARAM_EXPR_RE.fullmatch(new_value):
+            raise BadRequest(f"invalid parameter value: {value!r}", "value must be an integer or a + - * / % expression using declared parameters")
+        updated = [dict(p) for p in params]
+        if action == "add":
+            updated.append({"name": wanted, "default": new_value, "comment": ""})
+            changed = wanted
+        else:
+            changed = match["name"]
+            updated = [{**p, "default": new_value if p["name"] == changed else p["default"]} for p in updated]
+        _parameter_values(updated)
+        effective_name = changed
+    elif action == "rename":
+        if value is not None or not new_name:
+            raise BadRequest("rename needs new_name and no value", 'use action="rename", name="LEN", new_name="WIDTH"')
+        effective_name = _validate_parameter_name(new_name, params, ports)
+        changed = match["name"]
+        updated = [{**p, "name": effective_name if p["name"] == changed else p["name"],
+                    "default": _replace_parameter_token(p["default"], changed, effective_name)} for p in params]
+        _parameter_values(updated)
+        new_value = match["default"]
+    else:
+        if value is not None or new_name is not None:
+            raise BadRequest("delete does not accept value or new_name", 'use action="delete", name="LEN"')
+        changed = match["name"]
+        refs = [f"{model['name']}.{p['name']} Datasize" for p in ports if changed in PARAM_TOKEN_RE.findall(str(p.get("datasize") or ""))]
+        refs += [f"{model['name']}.{p['name']} default" for p in params if p['name'] != changed and changed in PARAM_TOKEN_RE.findall(p.get('default', ''))]
+        if refs:
+            raise BadRequest(f"cannot delete {changed}: it is still referenced", "remove references first: " + ", ".join(refs))
+        updated = [p for p in params if p["name"] != changed]
+        _parameter_values(updated)
+        effective_name = None
+        new_value = None
+    original_text = path.read_text(encoding="utf-8")
+    new_text = _rewrite_root_attr(original_text, "Parameters", _parameter_text(updated))
+    if action == "rename":
+        new_text = re.sub(r'(\bDatasize=")([^"]*)(")', lambda m: m.group(1) + _replace_parameter_token(m.group(2), changed, effective_name) + m.group(3), new_text)
+    updated_model = parse_robei_model_text(new_text, path)
+    warnings, skipped, parent_scan, parents_scanned = _direct_parent_scan(path, model, params, updated_model["parameter_list"], changed)
+    if action == "delete" and parent_scan:
+        names = ", ".join(f"{p.stem}.{i['instance']}" for p, i, _ in parent_scan)
+        raise BadRequest(f"cannot delete {changed}: parent overrides exist", "remove overrides first: " + names)
+    parent_updates, parent_texts = [], []
+    if action == "rename":
+        for parent_path, instance, _ in parent_scan:
+            if not rename_in_parents:
+                raise BadRequest(f"cannot rename {changed}: parent overrides exist", "pass rename_in_parents=true; affected: " + f"{parent_path.stem}.{instance['instance']}")
+            replacement = _replace_parameter_token(instance.get("parameters") or "", changed, effective_name)
+            parent_updates.append({"parent_model": parent_path.stem, "parent_path": str(parent_path), "instance": instance["instance"], "old_parameters": instance.get("parameters") or "", "new_parameters": replacement})
+            parent_texts.append((parent_path, _rewrite_instance_parameters(parent_path.read_text(encoding="utf-8"), instance["instance"], replacement)))
+    new_values = _parameter_values(updated_model["parameter_list"])
+    width_rows = []
+    affected_ports = []
+    for port in updated_model.get("ports") or []:
+        expr = str(port.get("datasize") or "")
+        rendered = expr
+        for key, val in sorted(new_values.items(), key=lambda item: len(item[0]), reverse=True):
+            if val is not None:
+                rendered = _replace_parameter_token(rendered, key, str(val))
+        info = width_info(rendered)
+        width_rows.append({"port": port["name"], "datasize": expr, "expression": rendered, "width": info.get("width"), "resolved": info.get("resolved"), "range": info.get("range")})
+        affected_ports.append({"port": port["name"], "datasize": expr, "expression": rendered, "effective_width": info.get("width"), "resolved": info.get("resolved"), "range": info.get("range")})
+    result = {"ok": True, "dry_run": bool(dry_run), "action": action, "model": updated_model["name"], "path": str(path), "relative_path": _rel(path),
+              "parameter": effective_name if action != "rename" else changed, "old_value": match["default"] if match else None, "new_value": new_value,
+              "parameters": updated_model["parameter_list"], "parameters_text": updated_model["parameters"], "width_info": width_rows, "affected_ports": affected_ports,
+              "parents_scanned": parents_scanned, "parent_updates": parent_updates, "parents_skipped": skipped, "warnings": warnings, "sha256_before": _sha256(path)}
+    if dry_run:
+        result["sha256"] = None
+        return result
+    originals = {path: path.read_bytes(), **{p: p.read_bytes() for p, _ in parent_texts}}
+    backups = {}
+    try:
+        backups[path] = _backup_file(path)
+        for parent, _ in parent_texts:
+            backups[parent] = _backup_file(parent)
+        path.write_text(new_text, encoding="utf-8", newline="\n")
+        for parent, text_value in parent_texts:
+            parent.write_text(text_value, encoding="utf-8", newline="\n")
+    except Exception:
+        for target, data in originals.items():
+            target.write_bytes(data)
+        raise
+    result.update({"backup": str(backups[path]) if backups[path] else None, "parent_backups": {str(p): str(b) for p, b in backups.items() if p != path and b}, "sha256": _sha256(path)})
+    return result
+
+
+def _set_robei_parameter_h2(
+    model_path: str,
+    name: str,
+    value: str | int | None,
+    dry_run: bool,
+    action: str,
+    new_name: str | None,
+    rename_in_parents: bool,
+) -> dict[str, Any]:
+    return _h2_core(model_path, name, value, dry_run, action, new_name, rename_in_parents)
     path = resolve_model_path(model_path)
     if not dry_run and not is_within(path, SETTINGS.workspace):
         raise PermissionError(f"refusing to modify a model outside the workspace: {path}")

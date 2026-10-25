@@ -586,13 +586,17 @@ def set_robei_code(model_path: str, code: str, dry_run: bool = False) -> dict[st
 def set_robei_parameter(
     model_path: str,
     name: str,
-    value: str | int,
+    value: str | int | None = None,
     dry_run: bool = False,
+    action: Literal["set", "add", "rename", "delete"] = "set",
+    new_name: str | None = None,
+    rename_in_parents: bool = False,
 ) -> dict[str, Any]:
     """Change one root parameter default and re-resolve the port widths it feeds."""
     try:
         return tools.set_robei_parameter(
-            model_path=model_path, name=name, value=value, dry_run=dry_run
+            model_path=model_path, name=name, value=value, dry_run=dry_run, action=action,
+            new_name=new_name, rename_in_parents=rename_in_parents
         )
     except Exception as exc:
         return _error(exc)
