@@ -1,8 +1,10 @@
 """1.5: root parameters, unified width types, and specific error hints."""
 from __future__ import annotations
 
+import asyncio
 import shutil
 import subprocess
+import time
 import uuid
 from pathlib import Path
 
@@ -521,3 +523,25 @@ def test_error_payloads_also_carry_the_stale_note(monkeypatch) -> None:
     payload = server_app.read_robei_model("does/not/exist.model")
     assert payload["ok"] is False
     assert payload["warnings"] and "restart" in payload["warnings"][0]
+
+
+def test_gui_tools_carry_the_stale_note(monkeypatch) -> None:
+    """Both GUI registration shapes (sync and async) get the warning."""
+    from robei_mcp import server_app
+
+    monkeypatch.setattr(tools, "PROCESS_STARTED", 1.0)
+    monkeypatch.setattr(server_app.gui, "status", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(server_app.gui, "compile_model", lambda **kwargs: {"ok": True})
+
+    sync_payload = server_app._stale_wrapped(server_app.robei_gui_status)()
+    assert sync_payload["ok"] is True
+    assert sync_payload["warnings"] and "restart" in sync_payload["warnings"][0]
+
+    async_payload = asyncio.run(server_app._stale_wrapped(server_app.robei_gui_compile)())
+    assert async_payload["ok"] is True
+    assert async_payload["warnings"] and "restart" in async_payload["warnings"][0]
+
+    # and the wrapper must not invent a warning when the process is current
+    monkeypatch.setattr(tools, "PROCESS_STARTED", time.time())
+    fresh = server_app._stale_wrapped(server_app.robei_gui_status)()
+    assert fresh == {"ok": True}
