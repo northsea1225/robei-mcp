@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import atexit
+import base64
 from contextlib import contextmanager
 import csv
 from datetime import datetime, timezone
@@ -20,6 +21,11 @@ import uuid
 MAX_BYTES = 1_000_000
 _LOCK = threading.RLock()
 _ACTIVE = None
+
+
+def _redact_command(value: str) -> str:
+    value = re.sub(r"(https?://)[^\s/]*@", r"\1***@", value)
+    return re.sub(r"gh[pousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+", "***", value)
 
 
 def log_path() -> Path:
@@ -276,7 +282,7 @@ def supervise(root: Path, *, entry: Path | None = None) -> int:
            "ROBEI_MCP_LIFECYCLE_SUPERVISED": run_id}
     commit = _commit(root)
     started = time.monotonic()
-    proc = subprocess.Popen([sys.executable, "-u", str(entry or root / "server.py")], cwd=root, env=env)
+    proc = subprocess.Popen([sys.executable, "-u", str(entry or root / "robei_mcp" / "server.py")], cwd=root, env=env)
     code = proc.wait()
     try:
         starts = [r for r in read_events() if r.get("run_id") == run_id and r["event"] == "start"]
@@ -292,29 +298,66 @@ def supervise(root: Path, *, entry: Path | None = None) -> int:
 
 
 def health() -> int:
-    """Read-only probe: journal first, tasklist second, one final conclusion line."""
+    """Read-only probe: journal, CIM process identity, then one conclusion line."""
     rows = read_events()
     for row in rows[-20:]:
         print(json.dumps(row, ensure_ascii=False))
-    proc = subprocess.run(["tasklist", "/FI", "IMAGENAME eq python.exe", "/FO", "CSV", "/NH"],
+    script = (
+        "$ProgressPreference='SilentlyContinue'; "
+        "Get-CimInstance Win32_Process | "
+        "Where-Object { $_.Name -eq 'python.exe' } | "
+        "Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress"
+    )
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    powershell = os.environ.get("SystemRoot", r"C:\Windows") + r"\System32\WindowsPowerShell\v1.0\powershell.exe"
+    proc = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
                           capture_output=True, text=True, errors="replace", timeout=15)
     if proc.returncode:
-        raise RuntimeError("tasklist failed")
-    pids = {int(row[1]) for row in csv.reader(io.StringIO(proc.stdout))
-            if len(row) > 1 and row[0].lower() == "python.exe" and row[1].isdigit()}
+        raise RuntimeError("CIM process query failed")
+    raw = proc.stdout
+    start = min((i for i in (raw.find("["), raw.find("{")) if i >= 0), default=-1)
+    if start < 0:
+        processes = []
+    else:
+        try:
+            processes = json.JSONDecoder().raw_decode(raw[start:])[0]
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("CIM process query returned invalid JSON") from exc
+    if isinstance(processes, dict):
+        processes = [processes]
+    by_pid = {int(row["ProcessId"]): row for row in processes
+              if isinstance(row, dict) and str(row.get("ProcessId", "")).isdigit()}
     services = [r for r in rows if r["event"] in {"start", "ready"}]
     exited_runs = {r.get("run_id") for r in rows if r["event"] == "exit"}
     known = {r["pid"] for r in services if r.get("run_id") not in exited_runs}
-    alive = sorted(known & pids)
-    print("tasklist robei-mcp python pids: " + (",".join(map(str, alive)) or "none"))
+    venv_prefix = "c:\\dev\\robei-mcp\\.venv\\"
+    alive, stale = [], []
+    for pid in sorted(known):
+        row = by_pid.get(pid) or {}
+        executable = str(row.get("ExecutablePath") or "")
+        command = str(row.get("CommandLine") or "")
+        normalized = command.replace("\\", "/").lower()
+        valid = executable.replace("/", "\\").lower().startswith(venv_prefix) and \
+            executable.replace("/", "\\").lower().endswith("\\python.exe") and \
+            "robei_mcp/server" in normalized
+        if valid:
+            alive.append(pid)
+        else:
+            stale.append({"pid": pid, "executable": executable, "command": _redact_command(command)})
+    for row in stale:
+        print("stale_pid " + json.dumps(row, ensure_ascii=False))
+    print("CIM robei-mcp python pids: " + (",".join(map(str, alive)) or "none"))
     if alive:
         print("alive")
+    elif stale:
+        print("stale_pid")
     elif not services:
         print("never_started")
     else:
         latest = services[-1]
         group = [r for r in rows if r.get("run_id") == latest.get("run_id")]
-        print("exited:" + (_reason(group)["reason"] or "unobserved_termination"))
+        reason = _reason(group)["reason"]
+        print("exited:" + ("客户端断开" if reason == "stdin_closed" else reason or "未观察到终止"))
     return 0
 
 

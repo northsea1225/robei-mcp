@@ -33,6 +33,9 @@
   - `stale` / `stale_warning`：源码比进程新时为 `true`，`stale_warning` 说明"要重启服务或重开
     Codex"。`stale=true` 时**每个工具**的返回都会多一条 `warnings`（错误结果也带），不需要
     额外轮询
+- 生命周期块（H1）：`path`、`pid`、`recent_events`（最近 5 条）、`previous_exit`；日志不可读时返回 `available=false`，不影响其它运行态字段。
+- `recent_events` 中 `stdin_closed` 表示客户端断开：正常关闭与 SSH 断开不做服务端来源区分，health 统一显示“客户端断开”。外层 cmd 与 Python 同时被强杀且没有 `exit` 时，health 显示“未观察到终止”。
+- `tools/mcp_health.sh` 是 Mac 侧只读检查：通过 CIM 核对 PID 的 `ExecutablePath` 位于 `C:\dev\robei-mcp\.venv` 且 `CommandLine` 含 `robei_mcp/server`；PID 复用或身份不匹配显示 `stale_pid`，不会仅凭 PID 存活判定 `alive`。
 
 Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` 输出 `Synthesis complete`，因此 `version` 为 `null`，但路径和综合检查可用。
 

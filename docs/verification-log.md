@@ -1087,3 +1087,10 @@ schtasks /Run /TN RobeiMCP_GuiAgent
 
 回归补充：`tests\stage9_native_run.py`、`tests\stage10_counter_native.py`（Robei
 原生闭环）、`tests\stage11_mcp_native.py`（29 个工具的 stdio 端到端，14/14 PASS）。
+
+
+## 1.6 M2 边界记录（仅文档）
+
+- 生命周期日志中 `stdin_closed` 只表示客户端输入流关闭；正常退出和 SSH 断开统一报告为“客户端断开”，服务端不声称能区分来源。
+- 如果外层 cmd 与 Python 同时被强杀，进程没有机会写 `exit`；health 只能报告“未观察到终止”。
+- `mcp_health.sh` 使用 CIM 校验记录 PID 的 `ExecutablePath` 与 `CommandLine`，PID 数字本身不构成 alive 证据；身份不匹配为 `stale_pid`。

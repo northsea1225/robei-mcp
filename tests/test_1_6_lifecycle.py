@@ -174,12 +174,13 @@ def test_health_uses_tasklist_without_starting_service(journal, monkeypatch, cap
     seen = []
     def run(args, **kwargs):
         seen.append(args)
-        stdout = '"python.exe","4567","Console","1","100 K"\n' if alive else ""
+        stdout = ('[{"ProcessId":4567,"ExecutablePath":"C:\\\\dev\\\\robei-mcp\\\\.venv\\\\Scripts\\\\python.exe",'
+                  '"CommandLine":"python -u C:/dev/robei-mcp/robei_mcp/server.py"}]') if alive else "[]"
         return subprocess.CompletedProcess(args, 0, stdout, "")
     monkeypatch.setattr(lc.subprocess, "run", run)
     assert lc.health() == 0
     assert capsys.readouterr().out.splitlines()[-1] == reason
-    assert len(seen) == 1 and seen[0][0] == "tasklist"
+    assert len(seen) == 1 and "-EncodedCommand" in seen[0]
 
 
 def test_health_never_started_is_read_only(journal, monkeypatch, capsys):
@@ -187,6 +188,16 @@ def test_health_never_started_is_read_only(journal, monkeypatch, capsys):
     lc.health()
     assert capsys.readouterr().out.splitlines()[-1] == "never_started"
     assert not journal.parent.exists()
+
+
+def test_health_marks_pid_reuse_or_wrong_command_stale(journal, monkeypatch, capsys):
+    lc.event("start", pid=4567, run_id="probe")
+    monkeypatch.setattr(lc.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+        a, 0, '[{"ProcessId":4567,"ExecutablePath":"C:\\\\dev\\\\robei-mcp\\\\.venv\\\\Scripts\\\\python.exe",'
+        '"CommandLine":"python -u C:/dev/robei-mcp/server.py"}]', ""))
+    assert lc.health() == 0
+    output = capsys.readouterr().out
+    assert '"pid": 4567' in output and output.splitlines()[-1] == "stale_pid"
 
 
 def test_production_never_reads_test_crash_env(monkeypatch):

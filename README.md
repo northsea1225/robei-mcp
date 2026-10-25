@@ -240,11 +240,11 @@ python C:\dev\robei-mcp\tools\gui\register_task.py --remove   # 删除
 **看到 `Transport closed`，先查什么？**
 
 Mac 上先运行 `bash tools/mcp_health.sh`：通过 `ssh my-win` 只读显示最近 20 条生命周期事件、
-`tasklist` 中的已记录服务 PID，最后给出 `alive` / `exited:<原因>` / `never_started`。
+`CIM` 读取进程身份（ExecutablePath + CommandLine），最后给出 `alive` / `stale_pid` / `exited:<原因>` / `never_started`。
 日志为 `%LOCALAPPDATA%\robei-mcp\lifecycle.log`（JSON Lines，UTC 时间），超过 1 MB 轮转，
 只保留 `.1` 一份；`.lock` 是写入互斥锁文件。`runtime_status.lifecycle` 返回日志路径、最近 5 条、
 本进程 PID 和上一个进程的已观测退出信息。强杀不会运行 Python 的 `atexit`；若连等待进程也被杀，
-只能报告 `unobserved_termination`，不能从缺失记录推断确切退出时间或操作者。不会自动重启。
+正常退出和 SSH 断开都统一记为 `stdin_closed`，health 显示“客户端断开”；若外层 cmd 与 Python 同时被强杀而没有 `exit`，health 显示“未观察到终止”。不能从缺失记录推断确切退出时间或操作者。不会自动重启。
 
 **改了代码，为什么工具还是旧行为？**
 
