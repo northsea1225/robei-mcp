@@ -2,6 +2,13 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.6.1 — Unreleased
+
+**生命周期 previous-run 选择与 GUI tag 推送修复。**
+
+- `runtime_status.lifecycle.previous_exit` 现在按当前 `run_id` 排除正在运行的服务；没有 `run_id` 时回退到当前 PID，正确报告上一轮的 `clean_exit`/异常退出，并容忍损坏或缺字段日志。
+- `tools/gui/probe_push.py` 接受经过校验的 `refs/tags/v*` 推送引用；新增 mock 回归测试，确认不会执行未校验的 tag。
+
 ## 1.6.0 — 2026-10-25
 
 **服务生命周期可观测性 + 根参数编辑与位宽联动。** 版本号已提升为 `1.6.0`，本段记录正式发布
