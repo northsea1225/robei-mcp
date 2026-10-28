@@ -160,9 +160,31 @@ def status() -> dict:
         rows = read_events()
     except (OSError, ValueError) as exc:
         return {**base, "available": False, "error_type": type(exc).__name__}
-    previous = next((r for r in reversed(rows) if r["pid"] != os.getpid()
-                     and r["event"] in {"start", "ready"}), None)
-    group = [r for r in rows if previous and r.get("run_id") == previous.get("run_id")]
+
+    # A run_id is the authoritative identity.  PID is only the fallback for
+    # legacy records or an uninstalled/current process without a run_id.
+    current_run_id = (_ACTIVE.run_id if _ACTIVE is not None else
+                      os.environ.get("ROBEI_MCP_LIFECYCLE_RUN_ID"))
+    candidates = [r for r in rows if r["event"] in {"start", "ready"}]
+    if current_run_id:
+        candidates = [
+            r for r in candidates
+            if r.get("run_id") != current_run_id
+            and not (r.get("run_id") is None and r["pid"] == os.getpid())
+        ]
+    else:
+        candidates = [r for r in candidates if r["pid"] != os.getpid()]
+    previous = candidates[-1] if candidates else None
+
+    if previous:
+        previous_run_id = previous.get("run_id")
+        if previous_run_id:
+            group = [r for r in rows if r.get("run_id") == previous_run_id]
+        else:
+            # Legacy entries without a run_id must be grouped by PID only.
+            group = [r for r in rows if not r.get("run_id") and r["pid"] == previous["pid"]]
+    else:
+        group = []
     previous_exit = _reason(group) if group else None
     if previous_exit is not None:
         previous_exit["state"] = "exit_observed" if previous_exit["reason"] else "exit_not_observed"

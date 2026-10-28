@@ -281,3 +281,65 @@ def test_runtime_status_includes_lifecycle(journal):
     result = tools.runtime_status()["lifecycle"]
     assert result["path"] == str(journal)
     assert result["recent_events"] == [] and result["previous_exit"] is None
+
+
+def test_status_returns_none_when_only_current_run_exists(journal, monkeypatch):
+    monkeypatch.setattr(lc, "_ACTIVE", lc.Session("current"))
+    lc.event("start", pid=os.getpid(), run_id="current")
+    lc.event("ready", pid=os.getpid(), run_id="current")
+    assert lc.status()["previous_exit"] is None
+
+
+def test_status_selects_previous_clean_exit_excluding_current_run(journal, monkeypatch):
+    monkeypatch.setattr(lc, "_ACTIVE", lc.Session("current"))
+    for kind in ("start", "ready", "clean_exit"):
+        lc.event(kind, pid=1111, run_id="previous")
+    lc.event("start", pid=os.getpid(), run_id="current")
+    lc.event("ready", pid=os.getpid(), run_id="current")
+    previous = lc.status()["previous_exit"]
+    assert previous["run_id"] == "previous"
+    assert previous["reason"] == "clean_exit"
+    assert previous["state"] == "exit_observed"
+
+
+def test_status_reports_previous_crash_excluding_current_run(journal, monkeypatch):
+    monkeypatch.setattr(lc, "_ACTIVE", lc.Session("current"))
+    lc.event("start", pid=2222, run_id="previous")
+    lc.event("crash", pid=2222, run_id="previous", exception_type="ValueError",
+             last_frame={"file": "x.py", "line": 1, "function": "f"})
+    lc.event("start", pid=os.getpid(), run_id="current")
+    lc.event("ready", pid=os.getpid(), run_id="current")
+    previous = lc.status()["previous_exit"]
+    assert previous["run_id"] == "previous"
+    assert previous["reason"] == "crash:ValueError"
+    assert previous["state"] == "exit_observed"
+
+
+def test_status_uses_run_id_when_pid_is_reused(journal, monkeypatch):
+    pid = os.getpid()
+    monkeypatch.setattr(lc, "_ACTIVE", lc.Session("current"))
+    lc.event("start", pid=pid, run_id="previous")
+    lc.event("clean_exit", pid=pid, run_id="previous")
+    lc.event("start", pid=pid, run_id="current")
+    lc.event("ready", pid=pid, run_id="current")
+    previous = lc.status()["previous_exit"]
+    assert previous["run_id"] == "previous"
+    assert previous["reason"] == "clean_exit"
+
+
+def test_status_tolerates_corrupt_and_missing_fields(journal, monkeypatch):
+    monkeypatch.setattr(lc, "_ACTIVE", lc.Session("current"))
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    journal.write_text(
+        "not-json\n"
+        + json.dumps({"event": "start", "pid": os.getpid(), "run_id": "current"})
+        + "\n"
+        + json.dumps({"event": "ready", "pid": os.getpid()})
+        + "\n"
+        + json.dumps({"event": "start", "run_id": "missing-pid"})
+        + "\n",
+        encoding="utf-8",
+    )
+    result = lc.status()
+    assert result["available"] is True
+    assert result["previous_exit"] is None
