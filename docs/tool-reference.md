@@ -968,3 +968,29 @@ Build → Synthesis 并等到 `Synthesis complete`（内部是 yosys 的 Xilinx 
 `robei_gui_*` 走的是计划任务桥，不是这批子进程：取消会让调用立刻返回，但桥任务会按它
 自己的超时跑完（结果丢弃）。已知副作用：被取消的调用可能留下半个 `workspace/build/sim-*/` 目录。
 
+
+
+## build_report (1.7 M2 draft)
+
+```text
+build_report(proj_path, tests=None, out=None, include=None,
+             truth_map=None, overwrite=False, timeout_s=60,
+             reuse_existing_runs=False)
+```
+
+Writes a fact-only Markdown report and `<name>.evidence.jsonl` under
+`<project>/report/`. Source models/tests/VCDs are read-only; all paths stay inside
+`workspace/`. Existing reports are rejected unless `overwrite=true`. Missing data is
+reported as `未提供`; no inferred correctness conclusion is generated.
+
+## export_vcd_window (1.7 M2 draft)
+
+```text
+export_vcd_window(vcd, signals, t_start, t_end, format="csv",
+                  step="edges", out=None, overwrite=False,
+                  include_initial=True)
+```
+
+Exports a bounded VCD window to `<project>/build/vcd_windows/` using raw VCD ticks.
+Signal matching reuses exact/simple/suffix matching; ambiguous names are rejected.
+The source VCD is never modified and the existing VCD size limit applies.

@@ -281,6 +281,29 @@ def find_events(
 
 
 @tool(annotations=WRITE)
+def export_vcd_window(
+    vcd: str,
+    signals: list[str] | None,
+    t_start: int,
+    t_end: int,
+    format: str = "csv",
+    step: str | int = "edges",
+    out: str | None = None,
+    overwrite: bool = False,
+    include_initial: bool = True,
+) -> dict[str, Any]:
+    """Export a bounded VCD window as CSV or Markdown using raw VCD ticks."""
+    try:
+        return tools.export_vcd_window(
+            vcd=vcd, signals=signals, t_start=t_start, t_end=t_end,
+            format=format, step=step, out=out, overwrite=overwrite,
+            include_initial=include_initial,
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@tool(annotations=WRITE)
 def render_waveform(
     vcd_path: str,
     signals: list[str],
@@ -808,6 +831,37 @@ async def build_bitstream(
             fpga.build_bitstream, ctx, "build_bitstream",
             proj_path=proj_path, part=part, const_name=const_name,
             steps=steps, timeout_s=timeout_s,
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@tool(annotations=WRITE)
+async def build_report(
+    proj_path: str,
+    tests: list[str] | None = None,
+    out: str | None = None,
+    include: list[str] | None = None,
+    truth_map: dict[str, Any] | None = None,
+    overwrite: bool = False,
+    timeout_s: int = 60,
+    reuse_existing_runs: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Build a fact-only Markdown report plus a line-addressable evidence ledger."""
+    try:
+        return await _invoke(
+            tools.build_report,
+            ctx,
+            "build_report",
+            proj_path=proj_path,
+            tests=tests,
+            out=out,
+            include=include,
+            truth_map=truth_map,
+            overwrite=overwrite,
+            timeout_s=timeout_s,
+            reuse_existing_runs=reuse_existing_runs,
         )
     except Exception as exc:
         return _error(exc)

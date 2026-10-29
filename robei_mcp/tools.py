@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 import bisect
 import copy
+import csv
 import difflib
 import hashlib
+import io
 import json
 import os
 import re
@@ -48,7 +50,7 @@ from .security import (
     scan_source_paths,
 )
 from .vcd import find_events as vcd_find_events
-from .vcd import match_signals, parse_vcd, query_vcd, render_waveform_png, timescale_fs
+from .vcd import match_signals, parse_vcd, query_vcd, render_waveform_png, timescale_fs, value_at
 from .verilog import generate_testbench as build_testbench
 from .verilog import parse_module_ports, classify_control
 from .verilog import robei_width, width_info
@@ -1044,6 +1046,384 @@ def run_all_tests(
         "failed": len(rows) - passed,
         "tests": rows,
         "vcd_paths": [path for row in rows for path in row["vcd_paths"]],
+    }
+
+
+
+def _window_output_path(source: Path, out: str | None, suffix: str) -> tuple[Path, Path | None]:
+    project = _project_for(source)
+    base = project / "build" / "vcd_windows" if project is not None else SETTINGS.workspace / "build" / "vcd_windows"
+    if out:
+        if not FILE_RE.match(out) or not out.lower().endswith(suffix):
+            raise ValueError(f"out must be a simple {suffix} file name")
+        target = base / out
+    else:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = base / f"{source.stem}-window-{stamp}-{uuid.uuid4().hex[:8]}{suffix}"
+    target = target.resolve()
+    if not is_within(target, SETTINGS.workspace):
+        raise PathEscape(f"output path escapes workspace: {target}")
+    return target, project
+
+
+def export_vcd_window(
+    vcd: str,
+    signals: list[str] | None,
+    t_start: int,
+    t_end: int,
+    format: str = "csv",
+    step: str | int = "edges",
+    out: str | None = None,
+    overwrite: bool = False,
+    include_initial: bool = True,
+) -> dict[str, Any]:
+    """Export a bounded VCD window without changing the source VCD."""
+    path = resolve_vcd_path(vcd)
+    data = parse_vcd(path)
+    if format not in {"csv", "md"}:
+        raise ValueError("format must be csv or md")
+    if not isinstance(t_start, int) or not isinstance(t_end, int) or t_start < 0 or t_end < t_start:
+        raise ValueError("t_start/t_end must be non-negative integers with t_start <= t_end")
+    if data.max_time is not None and t_end > data.max_time:
+        raise ValueError(f"t_end {t_end} exceeds VCD max_time {data.max_time}")
+    if step != "edges":
+        if not isinstance(step, int) or step <= 0:
+            raise ValueError("step must be 'edges' or a positive integer VCD tick")
+    selected = list(data.signals.values()) if signals is None else match_signals(data, signals)
+    if not selected:
+        raise ValueError("signals must not be empty")
+    dedup: dict[str, Any] = {signal.full_name: signal for signal in selected}
+    selected = list(dedup.values())
+    times: set[int] = {t_start, t_end}
+    if step == "edges":
+        for signal in selected:
+            times.update(
+                t for t, _ in data.changes.get(signal.identifier, []) if t_start <= t <= t_end
+            )
+    else:
+        times.update(range(t_start, t_end + 1, step))
+    ordered_times = sorted(times)
+    rows: list[dict[str, Any]] = []
+    initial_missing: list[str] = []
+    for tick in ordered_times:
+        row: dict[str, Any] = {"time": tick}
+        for signal in selected:
+            value = value_at(data, signal, tick)
+            if not value.get("found"):
+                if tick == t_start and include_initial:
+                    initial_missing.append(signal.full_name)
+                row[signal.full_name] = None
+            else:
+                row[signal.full_name] = value.get("value")
+        rows.append(row)
+    suffix = ".csv" if format == "csv" else ".md"
+    target, project = _window_output_path(path, out, suffix)
+    if target.exists() and not overwrite:
+        raise FileExistsError(f"refusing to overwrite existing file: {target}")
+    if format == "csv":
+        stream = io.StringIO(newline="")
+        writer = csv.writer(stream)
+        names = [signal.full_name for signal in selected]
+        writer.writerow(["time", *names])
+        for row in rows:
+            writer.writerow([row["time"], *["" if row[name] is None else row[name] for name in names]])
+        text = stream.getvalue()
+    else:
+        names = [signal.full_name for signal in selected]
+        lines = [
+            f"# VCD window: `{_rel(path)}`",
+            f"- timescale: `{data.timescale}`",
+            f"- window: `{t_start}`..`{t_end}` ticks",
+            f"- step: `{step}`",
+            "",
+            "| time | " + " | ".join(names) + " |",
+            "| ---: | " + " | ".join("---" for _ in names) + " |",
+        ]
+        for row in rows:
+            lines.append("| " + str(row["time"]) + " | " + " | ".join(
+                "未定义" if row[name] is None else str(row[name]) for name in names
+            ) + " |")
+        text = "\n".join(lines) + "\n"
+    encoded_size = len(text.encode("utf-8"))
+    if encoded_size > SETTINGS.max_vcd_bytes:
+        raise ValueError(f"export exceeds size limit: {encoded_size} > {SETTINGS.max_vcd_bytes}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8", newline="\n")
+    return {
+        "ok": True,
+        "source_vcd": str(path),
+        "source_relative_path": _rel(path),
+        "path": str(target),
+        "relative_path": _rel(target),
+        "format": format,
+        "timescale": data.timescale,
+        "timescale_fs": timescale_fs(data.timescale),
+        "window": {"start": t_start, "end": t_end, "step": step, "include_initial": include_initial},
+        "signals": [_signal_descriptor(signal) for signal in selected],
+        "rows": len(rows),
+        "change_count": max(0, len(rows) - 1),
+        "initial_missing": sorted(set(initial_missing)),
+        "size_bytes": encoded_size,
+        "project": _rel(project) if project is not None else None,
+    }
+
+
+def _signal_descriptor(signal) -> dict[str, Any]:
+    return {
+        "name": signal.full_name,
+        "simple_name": signal.name,
+        "scope": ".".join(signal.scope),
+        "width": signal.width,
+        "type": signal.var_type,
+        "range": signal.bit_range,
+        "id": signal.identifier,
+    }
+
+
+def _find_reusable_vcd(project_dir: Path, stem: str) -> Path | None:
+    candidates = sorted(
+        (project_dir / "build").glob(f"sim-*/{stem}.vcd"),
+        key=lambda item: item.stat().st_mtime_ns,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+def _report_source_line(path: Path | None, needle: str) -> int | None:
+    if path is None or not path.is_file() or not needle:
+        return None
+    try:
+        for lineno, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            if needle in line:
+                return lineno
+    except OSError:
+        return None
+    return None
+
+
+def build_report(
+    proj_path: str,
+    tests: list[str] | None = None,
+    out: str | None = None,
+    include: list[str] | None = None,
+    truth_map: dict[str, Any] | None = None,
+    overwrite: bool = False,
+    timeout_s: int = 60,
+    reuse_existing_runs: bool = False,
+) -> dict[str, Any]:
+    """Build a fact-only Markdown report and a line-addressable evidence ledger."""
+    allowed = {"simulation", "truth_table", "display", "assertions", "waveform", "synthesis"}
+    sections = set(include or allowed)
+    unknown = sorted(sections - allowed)
+    if unknown:
+        raise ValueError(f"unknown include section(s): {unknown}; expected {sorted(allowed)}")
+    proj = resolve_project_path(proj_path)
+    if not is_within(proj, SETTINGS.workspace):
+        raise PathEscape(f"refusing to report a project outside the workspace: {proj}")
+    project_dir = proj.parent
+    stems = [str(item).removesuffix(".test") for item in (tests or [])]
+    if tests is None:
+        stems = sorted(path.stem for path in (project_dir / "test").glob("*.test"))
+    for stem in stems:
+        if not MODEL_NAME_RE.match(stem):
+            raise ValueError(f"invalid test name: {stem!r}")
+        if not (project_dir / "test" / f"{stem}.test").is_file():
+            raise FileNotFoundError(f"test model not found: {project_dir / 'test' / (stem + '.test')}")
+    report_dir = project_dir / "report"
+    report_name = out or f"{project_dir.name}.md"
+    requested = Path(report_name)
+    target = requested if requested.is_absolute() else report_dir / requested
+    target = target.resolve()
+    if target.suffix.lower() != ".md" or not is_within(target, report_dir.resolve()):
+        raise PathEscape("out must be a Markdown file inside workspace/<project>/report")
+    evidence_path = target.with_suffix(".evidence.jsonl")
+    if (target.exists() or evidence_path.exists()) and not overwrite:
+        raise FileExistsError(f"refusing to overwrite report or evidence: {target}")
+
+    evidence: list[dict[str, Any]] = []
+    def fact(section: str, field: str, value: Any, source: str | None = None, source_line: int | None = None) -> int:
+        evidence.append({"section": section, "field": field, "value": value, "source": source, "source_line": source_line})
+        return len(evidence)
+
+    rows: list[dict[str, Any]] = []
+    missing: list[dict[str, str]] = []
+    for stem in stems:
+        reused = False
+        vcd = _find_reusable_vcd(project_dir, stem) if reuse_existing_runs else None
+        if vcd:
+            reused = True
+            result = {"ok": True, "code": "reused_existing_run", "vcd_paths": [str(vcd)], "display_output": "", "headless": {"reused": True}}
+        else:
+            result = simulate_project(str(proj), stem, timeout_s=timeout_s, render=False)
+        vcds = result.get("vcd_paths") or []
+        test_row = {
+            "test": stem,
+            "ok": bool(result.get("ok")),
+            "returncode": (result.get("simulation") or {}).get("returncode") if isinstance(result.get("simulation"), dict) else None,
+            "duration_ms": (result.get("simulation") or {}).get("duration_ms") if isinstance(result.get("simulation"), dict) else None,
+            "vcd_paths": vcds,
+            "reused": reused,
+            "display_output": result.get("display_output") or "",
+            "headless": result.get("headless") or {},
+        }
+        rows.append(test_row)
+        for field in ("returncode", "duration_ms"):
+            fact_line = fact("simulation", f"{stem}.{field}", test_row[field], str((result.get("headless") or {}).get("tb_source_rel") or proj), None)
+            test_row[f"{field}_evidence"] = fact_line
+        vcd_fact = fact("simulation", f"{stem}.vcd_paths", vcds, str(proj), None)
+        test_row["vcd_evidence"] = vcd_fact
+
+    if "truth_table" in sections:
+        truth_rows: list[dict[str, Any]] = []
+        for stem in stems:
+            mapping = (truth_map or {}).get(stem)
+            if mapping is None:
+                top = stem[3:] if stem.startswith("tb_") else None
+                mapping = {"top": top} if top else None
+            elif isinstance(mapping, str):
+                mapping = {"top": mapping}
+            if not mapping or not mapping.get("top"):
+                missing.append({"section": "truth_table", "test": stem, "reason": "未提供"})
+                continue
+            top = str(mapping["top"])
+            verilog = mapping.get("verilog_path")
+            if verilog is None:
+                candidates = [project_dir / "verilog" / f"{top}.v", project_dir / "build" / f"{top}.v"]
+                verilog = next((str(item) for item in candidates if item.is_file()), None)
+            if verilog is None:
+                missing.append({"section": "truth_table", "test": stem, "reason": "未提供"})
+                continue
+            from . import p1
+            table = p1.truth_table(verilog_path=str(verilog), top=top, deps=mapping.get("deps"))
+            row_count_evidence = fact("truth_table", f"{stem}.row_count", table.get("row_count"), table.get("testbench"), None)
+            expected_evidence = fact("truth_table", f"{stem}.expected_rows", table.get("expected_rows"), table.get("testbench"), None)
+            row_evidence = [
+                fact("truth_table", f"{stem}.row[{index}]", item, table.get("testbench"), None)
+                for index, item in enumerate(table.get("rows", []))
+            ]
+            truth_rows.append({
+                "test": stem,
+                **table,
+                "_row_count_evidence": row_count_evidence,
+                "_expected_evidence": expected_evidence,
+                "_row_evidence": row_evidence,
+            })
+        truth_result = truth_rows
+    else:
+        truth_result = []
+
+    if "waveform" in sections:
+        for row in rows:
+            if not row["vcd_paths"]:
+                missing.append({"section": "waveform", "test": row["test"], "reason": "未提供"})
+                continue
+            try:
+                listing = read_waveform(row["vcd_paths"][0])
+                names = [item["name"] for item in listing.get("signals", [])][:16]
+                row["plot"] = render_waveform(row["vcd_paths"][0], names, title=f"{row['test']} (report)")
+                fact("waveform", f"{row['test']}.signal_count", len(names), row["vcd_paths"][0], None)
+            except Exception as exc:
+                row["plot"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+                missing.append({"section": "waveform", "test": row["test"], "reason": "未提供"})
+    else:
+        for row in rows:
+            row.pop("plot", None)
+
+    display_lines: list[dict[str, Any]] = []
+    if "display" in sections or "assertions" in sections:
+        for row in rows:
+            tb_source = Path((row.get("headless") or {}).get("tb_source", "")) if (row.get("headless") or {}).get("tb_source") else None
+            for line in row["display_output"].splitlines():
+                item = {"test": row["test"], "line": line, "source": (row.get("headless") or {}).get("tb_source_rel"), "source_line": _report_source_line(tb_source, line)}
+                display_lines.append(item)
+                fact("display", f"{row['test']}.display", line, item["source"], item["source_line"])
+    if "display" not in sections:
+        display_lines = []
+    if "assertions" in sections and not any(re.search(r"(?i)pass|fail|assert|mismatch|selftest", item["line"]) for item in display_lines):
+        missing.append({"section": "assertions", "test": "*", "reason": "未提供"})
+
+    synthesis = None
+    if "synthesis" in sections:
+        from . import fpga
+        try:
+            synthesis = fpga.synthesize_project(str(proj), timeout_s=timeout_s)
+            synthesis_evidence = {}
+            for key in ("utilization", "utilization_capacity", "utilization_percent"):
+                synthesis_evidence[key] = fact("synthesis", key, synthesis.get(key), synthesis.get("summary_path"), None)
+            synthesis["_evidence"] = synthesis_evidence
+        except Exception as exc:
+            synthesis = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            missing.append({"section": "synthesis", "test": "project", "reason": "未提供"})
+
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    evidence_path.write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in evidence), encoding="utf-8", newline="\n")
+    lines = [f"# Robei MCP report: {project_dir.name}", "", f"- project: `{_rel(proj)}`", ""]
+    if "simulation" in sections:
+        lines += ["## Simulation facts", "", "| test | ok | rc | duration_ms | VCD | source |", "| --- | ---: | ---: | ---: | --- | --- |"]
+        for row in rows:
+            lines.append(f"| `{row['test']}` | `{row['ok']}` | `{row['returncode']}` ([evidence:{row['returncode_evidence']}]) | `{row['duration_ms']}` ([evidence:{row['duration_ms_evidence']}]) | `{', '.join(_rel(Path(p)) for p in row['vcd_paths']) or '未提供'}` ([evidence:{row['vcd_evidence']}]) | {'reused' if row['reused'] else 'simulate_project'} |")
+        lines.append("")
+    if "display" in sections:
+        lines += ["## Raw $display facts", ""]
+        for item in display_lines:
+            lines.append(f"- `{item['test']}`: `{item['line']}` ([source:{item['source']}:{item['source_line'] or '?'}])")
+        if not display_lines:
+            lines.append("未提供")
+        lines.append("")
+    if "assertions" in sections:
+        lines += ["## Assertion facts", ""]
+        assertion_lines = [item for item in display_lines if re.search(r"(?i)pass|fail|assert|mismatch|selftest", item["line"])]
+        lines.extend(f"- `{item['test']}`: `{item['line']}` ([source:{item['source']}:{item['source_line'] or '?'}])" for item in assertion_lines)
+        if not assertion_lines:
+            lines.append("未提供")
+        lines.append("")
+    if "truth_table" in sections:
+        lines += ["## Truth-table facts", ""]
+        for table in truth_result:
+            lines.append(
+                f"- `{table['test']}`: `row_count={table.get('row_count')}` "
+                f"([evidence:{table.get('_row_count_evidence')}]), "
+                f"`expected_rows={table.get('expected_rows')}` "
+                f"([evidence:{table.get('_expected_evidence')}])"
+            )
+            for index, item in enumerate(table.get("rows", [])):
+                evidence_id = (table.get("_row_evidence") or [None] * len(table.get("rows", [])))[index]
+                lines.append(f"  - `{json.dumps(item, ensure_ascii=False)}` ([evidence:{evidence_id}])")
+        if not truth_result:
+            lines.append("未提供")
+        lines.append("")
+    if "waveform" in sections:
+        lines += ["## Waveform facts", ""]
+        for row in rows:
+            plot = row.get("plot") or {}
+            lines.append(f"- `{row['test']}`: `{plot.get('relative_path') or '未提供'}`")
+        lines.append("")
+    if "synthesis" in sections:
+        lines += ["## Synthesis facts", "", "| field | value | evidence |", "| --- | --- | --- |"]
+        if synthesis:
+            for key in ("utilization", "utilization_capacity", "utilization_percent"):
+                lines.append(f"| `{key}` | `{json.dumps(synthesis.get(key), ensure_ascii=False)}` | [evidence:{(synthesis.get('_evidence') or {}).get(key)}] |")
+        else:
+            lines.append("| synthesis | 未提供 | - |")
+        lines.append("")
+    lines += ["## Missing", ""]
+    lines.extend(f"- `{item['section']}` / `{item['test']}`: {item['reason']}" for item in missing) or lines.append("无")
+    lines += ["", f"Evidence: `{_rel(evidence_path)}`"]
+    report_text = "\n".join(lines) + "\n"
+    target.write_text(report_text, encoding="utf-8", newline="\n")
+    return {
+        "ok": True,
+        "project": str(proj),
+        "project_relative": _rel(proj),
+        "report_path": str(target),
+        "report_relative_path": _rel(target),
+        "evidence_path": str(evidence_path),
+        "evidence_relative_path": _rel(evidence_path),
+        "tests": rows,
+        "sections": sorted(sections),
+        "missing": missing,
+        "size_bytes": target.stat().st_size,
+        "sha256": _sha256(target),
     }
 
 

@@ -66,7 +66,7 @@ async def main() -> int:
     off = await tool_names({"ROBEI_MCP_GUI": "0"})
     gui_off = [n for n in off if n.startswith("robei_gui_")]
     check("GUI=0 hides every robei_gui_* tool", not gui_off, gui_off)
-    check("GUI=0 keeps 38 tools", len(off) == 38, len(off))
+    check("GUI=0 keeps 40 tools", len(off) == 40, len(off))
     check("GUI=0 keeps the engine", "simulate_project" in off and "read_waveform" in off)
     for name in (
         "list_library_models",
@@ -81,7 +81,7 @@ async def main() -> int:
     gui_on = [n for n in on if n.startswith("robei_gui_")]
     if pkg_dir.parent.name == "robei_mcp" and os.name == "nt":
         check("default advertises 11 gui tools", len(gui_on) == 11, gui_on)
-        check("default total 49", len(on) == 49, len(on))
+        check("default total 51", len(on) == 51, len(on))
     else:
         print("skip  default GUI count (not Windows)")
 
