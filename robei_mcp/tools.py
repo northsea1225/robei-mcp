@@ -1054,6 +1054,9 @@ def _window_output_path(source: Path, out: str | None, suffix: str) -> tuple[Pat
     project = _project_for(source)
     base = project / "build" / "vcd_windows" if project is not None else SETTINGS.workspace / "build" / "vcd_windows"
     if out:
+        requested = Path(out)
+        if requested.is_absolute() or ".." in requested.parts:
+            raise PathEscape(f"output path escapes workspace: {out}")
         if not FILE_RE.match(out) or not out.lower().endswith(suffix):
             raise ValueError(f"out must be a simple {suffix} file name")
         target = base / out
@@ -1256,6 +1259,8 @@ def build_report(
         else:
             result = simulate_project(str(proj), stem, timeout_s=timeout_s, render=False)
         vcds = result.get("vcd_paths") or []
+        display_output = result.get("display_output") or ""
+        display_truncated = bool(result.get("display_truncated")) or len(display_output) >= SETTINGS.max_output_chars
         test_row = {
             "test": stem,
             "ok": bool(result.get("ok")),
@@ -1263,7 +1268,8 @@ def build_report(
             "duration_ms": (result.get("simulation") or {}).get("duration_ms") if isinstance(result.get("simulation"), dict) else None,
             "vcd_paths": vcds,
             "reused": reused,
-            "display_output": result.get("display_output") or "",
+            "display_output": display_output,
+            "display_truncated": display_truncated,
             "headless": result.get("headless") or {},
         }
         rows.append(test_row)
@@ -1337,6 +1343,7 @@ def build_report(
                 item = {"test": row["test"], "line": line, "source": (row.get("headless") or {}).get("tb_source_rel"), "source_line": _report_source_line(tb_source, line)}
                 display_lines.append(item)
                 fact("display", f"{row['test']}.display", line, item["source"], item["source_line"])
+            row["display_truncated_evidence"] = fact("display", f"{row['test']}.display_truncated", row["display_truncated"], (row.get("headless") or {}).get("tb_source_rel"), None)
     if "display" not in sections:
         display_lines = []
     if "assertions" in sections and not any(re.search(r"(?i)pass|fail|assert|mismatch|selftest", item["line"]) for item in display_lines):
@@ -1367,7 +1374,9 @@ def build_report(
         lines += ["## Raw $display facts", ""]
         for item in display_lines:
             lines.append(f"- `{item['test']}`: `{item['line']}` ([source:{item['source']}:{item['source_line'] or '?'}])")
-        if not display_lines:
+        for row in rows:
+            lines.append(f"- `{row['test']}` display_truncated=`{row['display_truncated']}` ([evidence:{row.get('display_truncated_evidence')}])")
+        if not display_lines and not rows:
             lines.append("未提供")
         lines.append("")
     if "assertions" in sections:
