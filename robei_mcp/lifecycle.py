@@ -155,7 +155,15 @@ def _reason(rows: list[dict]) -> dict:
 
 
 def status() -> dict:
-    base = {"path": str(log_path()), "pid": os.getpid(), "recent_events": [], "previous_exit": None}
+    current_run_id = (_ACTIVE.run_id if _ACTIVE is not None else
+                      os.environ.get("ROBEI_MCP_LIFECYCLE_RUN_ID"))
+    base = {
+        "path": str(log_path()),
+        "pid": os.getpid(),
+        "current_run_id": current_run_id,
+        "recent_events": [],
+        "previous_exit": None,
+    }
     try:
         rows = read_events()
     except (OSError, ValueError) as exc:
@@ -163,8 +171,6 @@ def status() -> dict:
 
     # A run_id is the authoritative identity.  PID is only the fallback for
     # legacy records or an uninstalled/current process without a run_id.
-    current_run_id = (_ACTIVE.run_id if _ACTIVE is not None else
-                      os.environ.get("ROBEI_MCP_LIFECYCLE_RUN_ID"))
     candidates = [r for r in rows if r["event"] in {"start", "ready"}]
     if current_run_id:
         candidates = [
