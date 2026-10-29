@@ -20,7 +20,7 @@ from .security import (
     resolve_vcd_path,
     resolve_workspace_path,
 )
-from .vcd import match_signals, parse_vcd, value_at
+from .vcd import match_signals, parse_vcd, timescale_fs, value_at
 from .verilog import width_info
 from .verilog_ast import is_plain_net, net_width, parse_module, parse_modules, port_map, width_of
 
@@ -435,12 +435,21 @@ def waveform_stats(vcd_path: str, max_signals: int = 64) -> dict[str, Any]:
         )
     clocks = sorted(_clock_candidates(data), key=lambda item: item["period"])
     clock = clocks[0] if clocks else None
+    tick_fs = timescale_fs(data.timescale)
     if clock:
-        clock = {**clock, "frequency_mhz": round(1000.0 / clock["period"], 3) if clock["period"] else None}
+        period_ticks = clock["period"]
+        period_fs = period_ticks * tick_fs if tick_fs is not None else None
+        clock = {
+            **clock,
+            "frequency_mhz": round(1_000_000_000 / period_fs, 3)
+            if period_fs
+            else None,
+        }
     return {
         "ok": True,
         "vcd_path": str(path),
         "timescale": data.timescale,
+        "timescale_fs": tick_fs,
         "duration": data.max_time,
         "signal_count": len(data.signals),
         "coverage": {
