@@ -48,6 +48,10 @@ class UnknownParameter(ValueError):
 class DeviceUnsupported(ValueError):
     """The requested FPGA part has no place-and-route model in the installed database."""
 
+    def __init__(self, message: str, available: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.available = available or []
+
 
 class UnconstrainedIO(ValueError):
     """A port bit has no package pin, so place-and-route cannot build a bitstream."""
@@ -214,6 +218,9 @@ def payload(exc: BaseException, **extra: Any) -> dict[str, Any]:
     missing = getattr(exc, "missing", None)
     if missing:
         data["missing"] = missing
+    available = getattr(exc, "available", None)
+    if available:
+        data["available_parts"] = available
     record = getattr(exc, "record", None)
     if record:
         data["record"] = record

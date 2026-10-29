@@ -177,12 +177,70 @@ def _device(part: str) -> dict[str, Any]:
         if row["part"] == clean:
             return row
     known = [row["part"] for row in device_table() if row["buildable"]]
-    raise DeviceUnsupported(f"unknown part {clean!r}; buildable parts: {known}")
+    raise DeviceUnsupported(f"unknown part {clean!r}; buildable parts: {known}", available=known)
 
 
 # ---------------------------------------------------------------------------
 # Project -> Verilog / XDC
 # ---------------------------------------------------------------------------
+_CAPACITY_ALIASES = {
+    "lut": "LUT",
+    "luts": "LUT",
+    "logiccells": "LUT",
+    "ff": "FF",
+    "ffs": "FF",
+    "flipflops": "FF",
+    "registers": "FF",
+    "bram18": "BRAM18",
+    "bram36": "BRAM36",
+    "dsp": "DSP",
+    "dsp48": "DSP",
+    "io": "IO",
+    "iob": "IO",
+}
+
+
+def _capacity_from_part_yaml(path: Path | None) -> tuple[dict[str, int] | None, dict[str, Any] | None, list[str]]:
+    """Read optional simple capacity keys without assuming a YAML dependency/schema."""
+    if path is None or not path.is_file():
+        return None, None, ["part.yaml is not available; capacity and percentages are unavailable"]
+    capacity: dict[str, int] = {}
+    source_lines: dict[str, int] = {}
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        return None, {"path": str(path), "lines": {}}, [f"could not read part.yaml: {type(exc).__name__}"]
+    for lineno, line in enumerate(lines, 1):
+        match = re.match(r"^\s*([A-Za-z][A-Za-z0-9_.-]*)\s*:\s*(\d+)\s*(?:#.*)?$", line)
+        if not match:
+            continue
+        key = _CAPACITY_ALIASES.get(re.sub(r"[^a-z0-9]", "", match.group(1).lower()))
+        if key is None:
+            continue
+        capacity[key] = int(match.group(2))
+        source_lines[key] = lineno
+    source = {"path": str(path), "lines": source_lines}
+    if not capacity:
+        return None, source, ["part.yaml contains no recognized resource-capacity keys"]
+    return capacity, source, []
+
+
+def _capacity_for_device(device: dict[str, Any] | None) -> tuple[dict[str, int] | None, dict[str, Any] | None, list[str]]:
+    if device is None:
+        return None, None, ["part is not provided; capacity and percentages are unavailable"]
+    path = Path(device["part_yaml"]) if device.get("part_yaml") else None
+    return _capacity_from_part_yaml(path)
+
+
+def _utilization_percent(used: dict[str, int], capacity: dict[str, int] | None) -> dict[str, float | None]:
+    return {
+        key: round(100.0 * value / capacity[key], 3)
+        if capacity and capacity.get(key, 0) > 0
+        else None
+        for key, value in used.items()
+    }
+
+
 def _project_paths(proj: Path) -> dict[str, Path]:
     return {
         "model": proj.parent / "model",
@@ -507,8 +565,7 @@ def synthesize_project(
     proj = resolve_project_path(proj_path)
     if not is_within(proj, SETTINGS.workspace):
         raise ValueError("refusing to synthesise a project outside the workspace")
-    if part:
-        _device(part)
+    device = _device(part) if part else None
     const = _const_path(proj, None)
     preferred = top or _const_model(const)
     exported = _export_build_verilog(proj)
@@ -542,6 +599,7 @@ def synthesize_project(
     )
     stat = _stat_pass(json_out, budget["effective_s"])
     utilization = _utilization(stat["counts"], _io_bits(chosen, resolved_top))
+    capacity, capacity_source, capacity_warnings = _capacity_for_device(device)
     info.update(
         {
             "ok": True,
@@ -551,6 +609,10 @@ def synthesize_project(
             "log_tail": stage["log_tail"],
             "cells": stat["counts"],
             "utilization": utilization,
+            "utilization_capacity": capacity,
+            "utilization_percent": _utilization_percent(utilization, capacity),
+            "capacity_source": capacity_source,
+            "utilization_warnings": capacity_warnings,
             "utilization_note": (
                 "LUT=LUT*/INV cells (one LUT site each), FF=FD*/SDFF*, CARRY=CARRY* cells, "
                 "BRAM36/BRAM18=RAM block counts, DSP=DSP48*, IO=top module port bits"
@@ -669,9 +731,11 @@ def build_bitstream(
         raise ValueError("refusing to build a project outside the workspace")
     device = _device(part)
     if not device["buildable"]:
+        available = [row["part"] for row in device_table() if row["buildable"]]
         raise DeviceUnsupported(
             f"{part} cannot be built: {device['reason']}; "
-            "call list_fpga_devices() for the parts that have both chipdb and part.yaml"
+            "call list_fpga_devices() for the parts that have both chipdb and part.yaml",
+            available=available,
         )
     wanted = _normalize_steps(steps)
     binaries = tool_paths()
@@ -806,6 +870,8 @@ def build_bitstream(
 
     stat = _stat_pass(json_out, budget["effective_s"]) if json_out.is_file() else {"counts": {}}
     bit_payload = _bit_payload(bit_out) if bit_out.is_file() else {"offset": None, "sha256": None}
+    utilization = _utilization(stat["counts"], _io_bits(sources, top))
+    capacity, capacity_source, capacity_warnings = _capacity_for_device(device)
     payload = _common(proj, part)
     payload.update(
         {
@@ -834,7 +900,11 @@ def build_bitstream(
             },
             "bit_payload_sha256": bit_payload["sha256"],
             "bit_payload_offset": bit_payload["offset"],
-            "utilization": _utilization(stat["counts"], _io_bits(sources, top)),
+            "utilization": utilization,
+            "utilization_capacity": capacity,
+            "utilization_percent": _utilization_percent(utilization, capacity),
+            "capacity_source": capacity_source,
+            "utilization_warnings": capacity_warnings,
             "fmax_reference": fmax,
             "timing_note": (
                 "Roplace's Fmax is a reference number only: this build is not timing-signed off "
