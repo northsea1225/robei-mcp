@@ -100,3 +100,71 @@ def test_report_marks_truncated_display_and_evidence_lines(monkeypatch, project:
     for token in markdown.split("[evidence:")[1:]:
         referenced.append(int(token.split("]", 1)[0]))
     assert referenced and all(1 <= number <= len(evidence_lines) for number in referenced)
+
+
+def test_report_missing_values_are_unprovided(monkeypatch, project: Path) -> None:
+    import re
+    from robei_mcp import fpga
+
+    monkeypatch.setattr(tools, "simulate_project", lambda *a, **k: {
+        "ok": True, "vcd_paths": [], "display_output": "SELFTEST PASS", "headless": {},
+        "simulation": {"returncode": None, "duration_ms": None},
+    })
+    monkeypatch.setattr(fpga, "synthesize_project", lambda *a, **k: {
+        "ok": True, "utilization": {"LUT": 0}, "utilization_capacity": {"LUT": None},
+        "utilization_percent": {"LUT": None, "FF": 0.0}, "summary_path": None,
+    })
+    result = tools.build_report(str(project), include=["simulation", "display", "synthesis"])
+    text = Path(result["report_path"]).read_text(encoding="utf-8")
+    assert not re.search(r"\b(?:None|null)\b", text)
+    assert '"LUT": "未提供"' in text
+    assert '"LUT": 0' in text and '"FF": 0.0' in text
+    assert result["tests"][0]["returncode"] is None  # JSON API keeps nullable data.
+
+
+def test_report_missing_synthesis_is_unprovided(monkeypatch, project: Path) -> None:
+    import re
+    from robei_mcp import fpga
+
+    monkeypatch.setattr(tools, "simulate_project", lambda *a, **k: {
+        "ok": True, "vcd_paths": [], "simulation": {"returncode": 0, "duration_ms": 1},
+    })
+
+    def unavailable(*args, **kwargs):
+        raise FileNotFoundError("constraint was not provided")
+
+    monkeypatch.setattr(fpga, "synthesize_project", unavailable)
+    result = tools.build_report(str(project), include=["simulation", "synthesis"])
+    text = Path(result["report_path"]).read_text(encoding="utf-8")
+    section = text.split("## Synthesis facts", 1)[1].split("\n## ", 1)[0]
+    assert "未提供" in section
+    assert not re.search(r"\b(?:None|null)\b", text)
+    assert any(item["section"] == "synthesis" for item in result["missing"])
+
+
+def test_report_preserves_real_simulation_zero_values(monkeypatch, project: Path) -> None:
+    monkeypatch.setattr(tools, "simulate_project", lambda *a, **k: {
+        "ok": True, "vcd_paths": [], "simulation": {"returncode": 0, "duration_ms": 0},
+    })
+    result = tools.build_report(str(project), include=["simulation"])
+    row = result["tests"][0]
+    text = Path(result["report_path"]).read_text(encoding="utf-8")
+    assert row["returncode"] == row["duration_ms"] == 0
+    assert f"`0` ([evidence:{row['returncode_evidence']}])" in text
+    assert f"`0` ([evidence:{row['duration_ms_evidence']}])" in text
+
+
+def test_report_reused_run_marks_timing_unprovided(monkeypatch, project: Path) -> None:
+    build = project.parent / "build" / "sim-existing"
+    build.mkdir(parents=True)
+    (build / "tb_missing.vcd").write_text("$timescale 1ps $end\n$enddefinitions $end\n#0\n", encoding="utf-8")
+
+    def no_simulation(*args, **kwargs):
+        pytest.fail("existing VCD must not trigger simulation")
+
+    monkeypatch.setattr(tools, "simulate_project", no_simulation)
+    result = tools.build_report(str(project), include=["simulation"], reuse_existing_runs=True)
+    text = Path(result["report_path"]).read_text(encoding="utf-8")
+    assert result["tests"][0]["reused"] is True
+    assert "`None`" not in text
+    assert text.count("`未提供`") >= 2

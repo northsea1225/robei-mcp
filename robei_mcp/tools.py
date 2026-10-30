@@ -1204,6 +1204,21 @@ def _report_source_line(path: Path | None, needle: str) -> int | None:
     return None
 
 
+def _report_value(value: Any) -> str:
+    """Render unavailable leaves without changing nullable API/evidence values."""
+    def clean(item: Any) -> Any:
+        if item is None:
+            return "未提供"
+        if isinstance(item, dict):
+            return {key: clean(val) for key, val in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [clean(val) for val in item]
+        return item
+
+    value = clean(value)
+    return json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value)
+
+
 def build_report(
     proj_path: str,
     tests: list[str] | None = None,
@@ -1273,6 +1288,9 @@ def build_report(
             "headless": result.get("headless") or {},
         }
         rows.append(test_row)
+        unavailable = [field for field in ("returncode", "duration_ms") if test_row[field] is None]
+        if unavailable:
+            missing.append({"section": "simulation", "test": stem, "reason": "未提供（" + ", ".join(unavailable) + "）"})
         for field in ("returncode", "duration_ms"):
             fact_line = fact("simulation", f"{stem}.{field}", test_row[field], str((result.get("headless") or {}).get("tb_source_rel") or proj), None)
             test_row[f"{field}_evidence"] = fact_line
@@ -1338,6 +1356,8 @@ def build_report(
     display_lines: list[dict[str, Any]] = []
     if "display" in sections or "assertions" in sections:
         for row in rows:
+            if "display" in sections and not row["display_output"]:
+                missing.append({"section": "display", "test": row["test"], "reason": "未提供"})
             tb_source = Path((row.get("headless") or {}).get("tb_source", "")) if (row.get("headless") or {}).get("tb_source") else None
             for line in row["display_output"].splitlines():
                 item = {"test": row["test"], "line": line, "source": (row.get("headless") or {}).get("tb_source_rel"), "source_line": _report_source_line(tb_source, line)}
@@ -1368,21 +1388,21 @@ def build_report(
     if "simulation" in sections:
         lines += ["## Simulation facts", "", "| test | ok | rc | duration_ms | VCD | source |", "| --- | ---: | ---: | ---: | --- | --- |"]
         for row in rows:
-            lines.append(f"| `{row['test']}` | `{row['ok']}` | `{row['returncode']}` ([evidence:{row['returncode_evidence']}]) | `{row['duration_ms']}` ([evidence:{row['duration_ms_evidence']}]) | `{', '.join(_rel(Path(p)) for p in row['vcd_paths']) or '未提供'}` ([evidence:{row['vcd_evidence']}]) | {'reused' if row['reused'] else 'simulate_project'} |")
+            lines.append(f"| `{row['test']}` | `{row['ok']}` | `{_report_value(row['returncode'])}` ([evidence:{row['returncode_evidence']}]) | `{_report_value(row['duration_ms'])}` ([evidence:{row['duration_ms_evidence']}]) | `{', '.join(_rel(Path(p)) for p in row['vcd_paths']) or '未提供'}` ([evidence:{row['vcd_evidence']}]) | {'reused' if row['reused'] else 'simulate_project'} |")
         lines.append("")
     if "display" in sections:
         lines += ["## Raw $display facts", ""]
         for item in display_lines:
-            lines.append(f"- `{item['test']}`: `{item['line']}` ([source:{item['source']}:{item['source_line'] or '?'}])")
+            lines.append(f"- `{item['test']}`: `{item['line']}` ([source:{_report_value(item['source'])}:{_report_value(item['source_line'])}])")
         for row in rows:
             lines.append(f"- `{row['test']}` display_truncated=`{row['display_truncated']}` ([evidence:{row.get('display_truncated_evidence')}])")
-        if not display_lines and not rows:
+        if not display_lines:
             lines.append("未提供")
         lines.append("")
     if "assertions" in sections:
         lines += ["## Assertion facts", ""]
         assertion_lines = [item for item in display_lines if re.search(r"(?i)pass|fail|assert|mismatch|selftest", item["line"])]
-        lines.extend(f"- `{item['test']}`: `{item['line']}` ([source:{item['source']}:{item['source_line'] or '?'}])" for item in assertion_lines)
+        lines.extend(f"- `{item['test']}`: `{item['line']}` ([source:{_report_value(item['source'])}:{_report_value(item['source_line'])}])" for item in assertion_lines)
         if not assertion_lines:
             lines.append("未提供")
         lines.append("")
@@ -1390,14 +1410,14 @@ def build_report(
         lines += ["## Truth-table facts", ""]
         for table in truth_result:
             lines.append(
-                f"- `{table['test']}`: `row_count={table.get('row_count')}` "
+                f"- `{table['test']}`: `row_count={_report_value(table.get('row_count'))}` "
                 f"([evidence:{table.get('_row_count_evidence')}]), "
-                f"`expected_rows={table.get('expected_rows')}` "
+                f"`expected_rows={_report_value(table.get('expected_rows'))}` "
                 f"([evidence:{table.get('_expected_evidence')}])"
             )
             for index, item in enumerate(table.get("rows", [])):
                 evidence_id = (table.get("_row_evidence") or [None] * len(table.get("rows", [])))[index]
-                lines.append(f"  - `{json.dumps(item, ensure_ascii=False)}` ([evidence:{evidence_id}])")
+                lines.append(f"  - `{_report_value(item)}` ([evidence:{evidence_id}])")
         if not truth_result:
             lines.append("未提供")
         lines.append("")
@@ -1409,9 +1429,9 @@ def build_report(
         lines.append("")
     if "synthesis" in sections:
         lines += ["## Synthesis facts", "", "| field | value | evidence |", "| --- | --- | --- |"]
-        if synthesis:
+        if synthesis and synthesis.get("ok"):
             for key in ("utilization", "utilization_capacity", "utilization_percent"):
-                lines.append(f"| `{key}` | `{json.dumps(synthesis.get(key), ensure_ascii=False)}` | [evidence:{(synthesis.get('_evidence') or {}).get(key)}] |")
+                lines.append(f"| `{key}` | `{_report_value(synthesis.get(key))}` | [evidence:{(synthesis.get('_evidence') or {}).get(key)}] |")
         else:
             lines.append("| synthesis | 未提供 | - |")
         lines.append("")
