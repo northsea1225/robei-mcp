@@ -4,6 +4,8 @@
 > 证据来自三处：本仓库源码、`D:\robei-lab\robei`（Robei 安装目录）、
 > `C:\ProgramData\Robei`（器件库/后端数据），以及 2026-10-24 在 Windows 实机上做的只读探查。
 > 文中所有"未验证"都明确标注；不要把它们当成已通过。
+> 2026-10-30 校正了增量画布描述（§3.3、P0#4、P2#11）；其余段落保留历史调研快照，
+> 不应据此推断当前工具不存在。1.7 的报告、VCD 导出和资源字段以 tool-reference 为准。
 
 ## 1. 一句话结论
 
@@ -14,15 +16,16 @@ Verilog 导出、iverilog/vvp/yosys/verilator 三路检查、VCD 全套分析、
 
 1. **硬件后端**：Synthesis → Route → Package → Download/Burn。四个后端可执行文件、1.1 GB 的
    chipdb 与 prjxray 数据库、53 个预编译 spiOverJtag bitstream 全都在机器上，但 MCP 一个工具都没接。
-2. **库模型（ToolBox）与画布增量编辑**：Robei 自带 24 个模型（andgate/counter/dff/ram/mux/...），
-   MCP 既不能列出、也不能拖进工程；已有画布只能整份重建，不能加一个实例、改一根线、删一个端口。
+2. **库模型与画布增量编辑（已补齐基础动作）**：已有 `list_library_models` / `import_library_model`；
+   `edit_robei_canvas` 可增删实例/端口、连线/断线、改线名和实例参数覆盖，剩余缺口是移动实例、
+   端口改名和模型级 CRUD，不再需要为日常加线/删实例整份重建。
 3. **交付型验证**：没有资源利用率、没有批量回归、没有"测试报告"产物，GUI 截图能力写好了却没暴露。
 
 ## 2. 覆盖矩阵
 
 | 功能域 | Robei 本体 | 现有工具 | 覆盖度 |
 | --- | --- | --- | --- |
-| 工程/模型 XML | 新建、打开、保存、画布编辑 | `create_robei_project/model/test/canvas_model`、`read_robei_*`、`set_robei_port`、`import_verilog_canvas`、`sync_robei_verilog` | 部分（只能整份生成，不能增量改） |
+| 工程/模型 XML | 新建、打开、保存、画布编辑 | `create_robei_project/model/test/canvas_model`、`read_robei_*`、`set_robei_port/parameter/code`、`edit_robei_canvas`、`import_verilog_canvas`、`sync_robei_verilog` | 支持增量；移动/端口改名/模型 CRUD 未实现 |
 | 模型库（ToolBox） | 24 个内置模型，拖拽实例化 | 无 | **缺失** |
 | 编译（当前模型） | Build→Compile | `robei_gui_compile`、`robei_gui_compile_all`、`export/sync_robei_verilog` | 完整（GUI 与被动手写两条路） |
 | 仿真 | Build→Run（当前 test） | `simulate`、`simulate_project` | 完整（而且不依赖桌面） |
@@ -117,24 +120,26 @@ single_port_ram xorgate`。
 
 风险：库模型是 Robei 安装目录里的数据，只读复制到用户 workspace 没问题，但不要写回安装目录。
 
-### 3.3 画布与模型的增量编辑
+### 3.3 画布与模型的增量编辑（2026-10-30 源码校正）
 
-现有能力只有"整份生成"：`create_robei_canvas_model`（新建）、`import_verilog_canvas`（Verilog→画布）、
-`set_robei_port`（加/改一个端口）。缺的是日常改图动作：
+`edit_robei_canvas(model_path, ops, dry_run=False)` 已提供以下 op；不是只能整份生成：
 
-| 缺的动作 | 影响 |
-| --- | --- |
-| `add_instance` / `remove_instance` | 加一个子模块、删一个实例，只能整份重建 |
-| `connect` / `disconnect` / `rename_net` | 改线必须重生成，容易丢其它连线 |
-| `move_instance`（X/Y） | 画布布局无法调整 |
-| `delete_port` / `rename_port` | 端口只能加不能删；改名会牵连 `Wire` 端点 |
-| `set_robei_code` | 改一行 Code 要 `create_robei_model(overwrite=True)` 并重给全部端口 |
-| `set_parameter` | 参数只能读、导出时覆盖，不能写回 `.model` |
-| `delete/rename/duplicate model` | 工程结构只能加不能减 |
+| 已支持 op | 作用 |
+|---|---|
+| `add_instance` / `remove_instance` | 增删实例；新增时可给 x/y，不等于支持移动已有实例 |
+| `add_port` / `remove_port` | 增删端口；删除端口时处理相关 Wire |
+| `connect` / `disconnect` | 连接/断开 Wire 或实例端口的 Connect 位选 |
+| `set_parameters` | 修改实例的参数覆盖，不修改本模型根参数 |
+| `rename_wire` | 重命名 wire；没有名为 rename_net 的 op |
 
-实现建议：都在 XML 层做（已有 `xmlsafe` + `_backup_file` + 写前 `ET.fromstring` 校验），
-并且**每次改完复用 `parse_robei_model` 的 `netlist` 做悬空端点检查**，把 `dangling_instance_ports`
-直接放进返回；`delete_port` 要顺带删掉引用它的 `Wire` 或明确拒绝。
+操作先整体校验再写入，沿用备份；`dry_run` 返回 diff/Verilog 预览而不落盘。
+独立工具 `set_robei_code` 只改行为模型 Code，拒绝含实例/wire 的结构模型；
+`set_robei_parameter(action="set|add|rename|delete")` 修改根参数并联动有效位宽，
+并非 `set_parameters` 的同义入口。1.6 已支持先 add 参数，再给端口设置 width="LEN"，无需 overwrite 重建。
+
+仍未支持：`move_instance`、`rename_port`，以及模型级删除/改名/复制；
+不要把 add_instance 的初始坐标或已有 remove_port 写成这些未实现动作。
+上述是源码能力说明，不等于本轮重新做过全部 GUI/电气验收。
 
 ### 3.4 工程级操作
 
@@ -185,7 +190,8 @@ JTAG Configure 建议不碰 GUI，改为自己的 `device/board/cable` 参数。
 1. `list_fpga_devices` + `create_robei_const` 的 device/family 校验（错误信息直接给可用 part 列表）。
 2. `list_library_models` + `import_library_model`。
 3. `set_robei_code`（只改 Code，保留端口/参数/画布）。
-4. `add_instance` / `remove_instance` / `connect` / `disconnect`（XML 层 + 悬空检查）。
+4. **已实现**：`edit_robei_canvas` 的 `add_instance` / `remove_instance` / `connect` / `disconnect`；
+   还包括 add_port/remove_port/set_parameters/rename_wire。剩余布局能力见 P2#11。
 5. `run_all_tests(proj_path)`（复用 `simulate_project`，汇总 PASS/FAIL/超时/耗时）。
 6. `synthesis_utilization`（`synth_xilinx` + `stat` 解析，按 part 容量算百分比）。
 
@@ -199,7 +205,8 @@ JTAG Configure 建议不碰 GUI，改为自己的 `device/board/cable` 参数。
 
 ### P2（按需）
 
-11. `move_instance` / `rename_port` / `delete_port` / `delete_model` / `duplicate_model`。
+11. `move_instance` / `rename_port` / `delete_model` / `rename_model` / `duplicate_model`；
+    删端口已由 `remove_port` 支持，不再列为缺口。
 12. 工程 zip 导入导出、模板工程。
 13. 覆盖率汇总、形式验证（需外部 solver）。
 

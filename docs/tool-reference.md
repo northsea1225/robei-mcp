@@ -1,6 +1,7 @@
 # 工具参考
 
-49 个工具的完整参数、返回值和真实调用示例。工具名、参数名、返回字段保持英文。
+1.7 开发分支共 51 个工具（文件级 40 + GUI 11）；已发布的 1.6.1 仍为 49/38。
+本分支版本号尚未 bump，工具名、参数名、返回字段保持英文。
 
 > 这份文件是从早期 README 拆出来的，示例里的时间戳/路径是当时的真实输出，不要当成当前默认值。
 
@@ -33,7 +34,7 @@
   - `stale` / `stale_warning`：源码比进程新时为 `true`，`stale_warning` 说明"要重启服务或重开
     Codex"。`stale=true` 时**每个工具**的返回都会多一条 `warnings`（错误结果也带），不需要
     额外轮询
-- 生命周期块（H1）：`path`、`pid`、`recent_events`（最近 5 条）、`previous_exit`；日志不可读时返回 `available=false`，不影响其它运行态字段。
+- 生命周期块（H1）：`path`、`pid`、`current_run_id`、`recent_events`（最近 5 条）、`previous_exit`；日志不可读时返回 `available=false`，不影响其它运行态字段。
 - `recent_events` 中 `stdin_closed` 表示客户端断开：正常关闭与 SSH 断开不做服务端来源区分，health 统一显示“客户端断开”。外层 cmd 与 Python 同时被强杀且没有 `exit` 时，health 显示“未观察到终止”。
 - `tools/mcp_health.sh` 是 Mac 侧只读检查。命令行 server 标记认 `robei_mcp/server`、`robei_mcp\server`、
   `robei_mcp.server`，大小写不敏感；身份满足以下任一规则才算 `alive`：
@@ -618,6 +619,23 @@ yosys -p "read_verilog <build>/<top>.v; synth_xilinx -flatten -arch xc7 -abc9 -n
   `workspace/build/fpga-*/`（返回里的 `run_dir`）：`summary.json` 是整次调用的记录
   （`summary_path`），同目录下每个 stage 还有一个 `<stage>.log`（`log_path`）。
 - 本工具没有 `steps` 参数（综合只有一段）；分段执行请用 `build_bitstream`。
+
+- 1.7 为本工具及 `build_bitstream` 增加以下字段，原 `utilization` 保持兼容；
+  `robei_gui_synthesis` 不因此获得同样的结构化字段：
+
+  | 字段 | 说明 |
+  |---|---|
+  | `utilization_capacity` | 资源容量字典；没有可用容量时为 `null` |
+  | `utilization_percent` | 各项 `100 * used / capacity`，保留三位小数；缺失或容量不大于 0 时为 `null` |
+  | `capacity_source` | `{path, lines}`，`lines` 是资源名到 part.yaml 行号的映射；无来源时为 `null` |
+  | `utilization_warnings` | 缺少 part、容量文件或可识别容量键的原因 |
+
+  容量只读器件库的 `part.yaml`，当前解析 LUT/FF/BRAM18/BRAM36/DSP/IO 的简单整数标量键，
+  不引入 YAML 依赖，不从型号、帧数或其它资源猜容量，也不自动互换 BRAM18/36。
+  CARRY 没有对应容量解析键，百分比为 `null`。本机 part.yaml 缺容量键时，
+  `capacity_source` 仍可能有路径和空 `lines`，这是“已找到文件”，不是“已取得容量”。
+  未知 `part` 返回 `device_unsupported` 并带 `available_parts`；先用 `list_fpga_devices` 查询。
+
 - `part` 可选；给了就校验型号存在，不存在返回 `device_unsupported`。综合本身不依赖 chipdb。
 - `timeout = {requested_s, effective_s, max_timeout_s, clamped}`：子进程超时会被
   `ROBEI_MAX_TIMEOUT_S`（默认 120 s）截断，`clamped=true` 时 `warnings` 里会明说；
@@ -968,29 +986,108 @@ Build → Synthesis 并等到 `Synthesis complete`（内部是 yosys 的 Xilinx 
 `robei_gui_*` 走的是计划任务桥，不是这批子进程：取消会让调用立刻返回，但桥任务会按它
 自己的超时跑完（结果丢弃）。已知副作用：被取消的调用可能留下半个 `workspace/build/sim-*/` 目录。
 
-
-
-## build_report (1.7 M2 draft)
+## `build_report`（1.7，Unreleased）
 
 ```text
-build_report(proj_path, tests=None, out=None, include=None,
-             truth_map=None, overwrite=False, timeout_s=60,
-             reuse_existing_runs=False)
+build_report(proj_path: str, tests: list[str] | None = None,
+             out: str | None = None, include: list[str] | None = None,
+             truth_map: dict[str, Any] | None = None,
+             overwrite: bool = False, timeout_s: int = 60,
+             reuse_existing_runs: bool = False)
 ```
 
-Writes a fact-only Markdown report and `<name>.evidence.jsonl` under
-`<project>/report/`. Source models/tests/VCDs are read-only; all paths stay inside
-`workspace/`. Existing reports are rejected unless `overwrite=true`. Missing data is
-reported as `未提供`; no inferred correctness conclusion is generated.
+生成事实型 Markdown 和同名 `.evidence.jsonl`，不生成 HTML，也不推断电路正确性。
 
-## export_vcd_window (1.7 M2 draft)
+- `proj_path` 必须在 workspace；默认报告为 `<project>/report/<project>.md`。
+  `out` 可指定该 report 目录内的 `.md` 文件名/路径，不得逃逸到工程外。
+- `tests=None` 枚举全部 `test/*.test`；显式列表接受 stem 或带 `.test` 的名字，
+  空列表不跑 test。每个 test 顺序调用 `simulate_project`。
+- `reuse_existing_runs=true` 优先选 `<project>/build/sim-*/<test>.vcd` 中 mtime 最新的同名文件，
+  找不到才仿真。复用只证明找到了 VCD，不是重新确认历史仿真 rc 或自检 PASS；
+  当前不会从旧运行恢复 `returncode`、`duration_ms`、`$display`。
+- `include` 接受 `simulation`、`truth_table`、`display`、`assertions`、`waveform`、`synthesis`。
+  `None` 或空列表启用全部；非空列表才按项选择。`Missing` 清单仍会输出。
+- 真值表默认从 `tb_<top>` 推导 top，并找工程 `verilog/<top>.v` 或 `build/<top>.v`；
+  找不到时记“未提供”。`truth_map` 可把 test stem 映射到 top 字符串，或
+  `{top, verilog_path?, deps?}` 对象。不是从 testbench 自动推断期望真值表。
+- waveform 用首个 VCD 的前 16 个信号生成 PNG。assertions 只筛选 `$display` 中含
+  `pass|fail|assert|mismatch|selftest` 的行，不是独立断言判定器。
+- synthesis 调用 `synthesize_project`；本接口没有 `part` 参数，不会据此猜测容量百分比。
+  `timeout_s` 传给 test 仿真及综合；真值表使用其工具自身默认时限，不是整个报告的总时限。
+- `.proj/.model/.test/.const` 和输入 VCD 只读；仿真、真值表、波形、综合仍可能生成各自的
+  build/Verilog 产物，因此不是“只写 report 目录”的工具。
+- Markdown 或 evidence 任一个已存在，默认 `already_exists`；只有 `overwrite=true` 才覆盖。
+
+例：路径相对 workspace，不要额外拼接工作区根目录。
+
+```json
+{"proj_path":"exp1_and/exp1_and.proj","tests":["tb_and2"],
+ "out":"lab2.md","reuse_existing_runs":true,
+ "truth_map":{"tb_and2":{"top":"and2","verilog_path":"exp1_and/verilog/and2.v"}}}
+```
+
+主要返回：
+
+| 字段 | 说明 |
+|---|---|
+| `ok` | 报告生成状态，不等于所有 test 自检通过，也不等于报告验收通过 |
+| `project/project_relative` | 工程路径 |
+| `report_path/report_relative_path` | Markdown 路径 |
+| `evidence_path/evidence_relative_path` | JSON Lines 证据路径 |
+| `tests[]` | `test, ok, returncode, duration_ms, vcd_paths, reused, display_output, display_truncated, headless`；可能附带 plot 与证据索引 |
+| `sections` | 实际选择的章节 |
+| `missing[]` | `section, test, reason`；缺失部分的契约是明确写“未提供” |
+| `size_bytes/sha256` | Markdown 大小与 SHA256 |
+
+证据文件一行一个 JSON：`{section, field, value, source, source_line}`。
+`[evidence:N]` 应对应 evidence 文件的第 N 行（从 1 开始）；`source/source_line` 可为空，
+不能把不可用的来源行号伪造成已知值。常见错误为 `path_escape`、`already_exists`、
+`not_found`、`invalid_argument`；依赖步骤也可能返回自己的错误码。
+
+**2026-10-30 Lab 2 待修复项（不是已接受的行为）**：复用运行时，缺失 rc/耗时仍被渲染成
+`None`；综合缺失时出现 `[evidence:None]`，未满足“缺失写未提供/证据行号可解析”的契约。
+`tb_alu8` 的 20 个输入位超过真值表默认 8 位限制时，会中断 exp5 整份报告，而不是局部记缺失。
+本轮未修改报告逻辑；不能把单元测试绿或 `ok=true` 写成 Lab 2 报告验收通过。
+
+## `export_vcd_window`（1.7，Unreleased）
 
 ```text
-export_vcd_window(vcd, signals, t_start, t_end, format="csv",
-                  step="edges", out=None, overwrite=False,
-                  include_initial=True)
+export_vcd_window(vcd: str, signals: list[str] | None,
+                  t_start: int, t_end: int, format: str = "csv",
+                  step: str | int = "edges", out: str | None = None,
+                  overwrite: bool = False, include_initial: bool = True)
 ```
 
-Exports a bounded VCD window to `<project>/build/vcd_windows/` using raw VCD ticks.
-Signal matching reuses exact/simple/suffix matching; ambiguous names are rejected.
-The source VCD is never modified and the existing VCD size limit applies.
+- 所有时间都是 **原始 VCD tick**。返回 `timescale` 和 `timescale_fs`，不做隐式物理时间换算；
+  例如 `timescale="1ps"`、`timescale_fs=1000` 时，tick 105000 表示 105000 ps。
+- `signals=None` 选择全部信号，空列表拒绝。依次按精确名、simple name、完整名后缀匹配；
+  未知名或歧义返回 `bad_argument`，不会任选一个信号。
+- `step="edges"` 收集所选信号的变化 tick；正整数按固定 tick 间隔采样。
+  起点、终点总会输出，每行读取该 tick 已应用变化后的信号值；X/Z 保留原值。
+- **当前边界**：`include_initial` 只控制 `initial_missing` 诊断，不会移除起始行；
+  `change_count=rows-1`，不代表独立信号的翻转次数。
+- 默认输出 `<project>/build/vcd_windows/`；非工程 VCD 输出 workspace 的
+  `build/vcd_windows/`。`out` 只能是匹配格式后缀的简单文件名，禁止绝对路径或 `..`。
+- 输入、输出均受 `max_vcd_bytes` 限制；超限返回 `invalid_argument`。
+  输入 VCD 永不修改；已有输出默认 `already_exists`，需 `overwrite=true` 才覆盖。
+- 负时间、起点大于终点、超过 VCD 最大 tick、无效 step/format/空信号列表均为
+  `invalid_argument`；越过允许路径为 `path_escape`。
+
+```json
+{"vcd":"exp6_counter/build/sim-20261026-002649-3235bde3/tb_counter.vcd",
+ "signals":["tb_counter.clk","tb_counter.rst","tb_counter.en","tb_counter.cnt","tb_counter.co"],
+ "t_start":95000,"t_end":105000,"format":"csv","step":"edges"}
+```
+
+上面的 VCD 路径是 Lab 2 本轮实际使用的文件，不是固定默认路径；其它运行应使用工具返回的路径。
+本轮导出为 3 行：
+
+| tick | clk | rst | en | cnt（二进制） | co |
+|---:|---:|---:|---:|---|---:|
+| 95000 | 1 | 0 | 1 | 1001 | 1 |
+| 100000 | 0 | 0 | 1 | 1001 | 1 |
+| 105000 | 1 | 0 | 1 | 0000 | 0 |
+
+返回 `source_vcd/source_relative_path`、`path/relative_path`、`format`、
+`timescale/timescale_fs`、`window={start,end,step,include_initial}`、信号描述 `signals[]`、
+`rows`、`change_count`、`initial_missing`、`size_bytes`、`project`。

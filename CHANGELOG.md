@@ -2,6 +2,23 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.7.0 — Unreleased
+
+**实验闭环与事实报告（开发中，包版本仍为 1.6.1）。**
+
+- 新增 `build_report`：按 test 编排、可复用 sim-* VCD，输出 Markdown 与逐行 evidence.jsonl；
+  可选 simulation/truth_table/display/assertions/waveform/synthesis 章节与 truth_map 映射。
+- 新增 `export_vcd_window`：原始 tick 的 CSV/Markdown 切片、信号匹配、输出大小及覆盖保护，
+  返回 timescale/timescale_fs；Lab 2 exp6 已导出 95000–105000 窗口，en=1 时 cnt 9→0。
+- 扩展 `synthesize_project` / `build_bitstream` 的容量、百分比、来源行号和警告；容量未知为 null，
+  原 utilization 字段兼容，不新增 synthesis_utilization 工具。
+- 修复非 ns VCD 的频率换算：period_ticks * timescale_fs；1ps、period=10000 对应 100 MHz。
+- `runtime_status.lifecycle` 透传 current_run_id，包括日志不可读路径。
+- GUI 诊断：stage12 缺 fixture 提示先跑 stage11；树操作前检查外部全屏前台和鼠标限制；
+  compile_all 不再吞掉 GuiNeedsActiveDesktop。不改展开算法和测试断言，不操作外部应用。
+- **Lab 2 报告验收未通过**：缺失值仍显示 None、无效 evidence:None 引用、exp5 真值表超限中断。
+  本轮仅记录缺陷，未修改报告逻辑；生成了文件不代表报告验收通过。源文件 SHA256 保持不变。
+
 ## 1.6.1 — Unreleased
 
 **生命周期 previous-run 选择与 GUI tag 推送修复。**
