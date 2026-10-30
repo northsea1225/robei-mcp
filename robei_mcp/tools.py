@@ -1219,6 +1219,13 @@ def _report_value(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value)
 
 
+def _validate_report_evidence(text: str, evidence: list[dict[str, Any]]) -> None:
+    """Every rendered evidence link must address a physical JSONL record."""
+    for token in re.findall(r"\[evidence:([^\]]*)\]", text):
+        if not re.fullmatch(r"[1-9][0-9]*", token) or int(token) > len(evidence):
+            raise RuntimeError(f"invalid report evidence reference [evidence:{token}]")
+
+
 def build_report(
     proj_path: str,
     tests: list[str] | None = None,
@@ -1362,7 +1369,7 @@ def build_report(
             for line in row["display_output"].splitlines():
                 item = {"test": row["test"], "line": line, "source": (row.get("headless") or {}).get("tb_source_rel"), "source_line": _report_source_line(tb_source, line)}
                 display_lines.append(item)
-                fact("display", f"{row['test']}.display", line, item["source"], item["source_line"])
+                item["_evidence"] = fact("display", f"{row['test']}.display", line, item["source"], item["source_line"])
             row["display_truncated_evidence"] = fact("display", f"{row['test']}.display_truncated", row["display_truncated"], (row.get("headless") or {}).get("tb_source_rel"), None)
     if "display" not in sections:
         display_lines = []
@@ -1382,8 +1389,6 @@ def build_report(
             synthesis = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
             missing.append({"section": "synthesis", "test": "project", "reason": "未提供"})
 
-    evidence_path.parent.mkdir(parents=True, exist_ok=True)
-    evidence_path.write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in evidence), encoding="utf-8", newline="\n")
     lines = [f"# Robei MCP report: {project_dir.name}", "", f"- project: `{_rel(proj)}`", ""]
     if "simulation" in sections:
         lines += ["## Simulation facts", "", "| test | ok | rc | duration_ms | VCD | source |", "| --- | ---: | ---: | ---: | --- | --- |"]
@@ -1393,7 +1398,7 @@ def build_report(
     if "display" in sections:
         lines += ["## Raw $display facts", ""]
         for item in display_lines:
-            lines.append(f"- `{item['test']}`: `{item['line']}` ([source:{_report_value(item['source'])}:{_report_value(item['source_line'])}])")
+            lines.append(f"- `{item['test']}`: `{item['line']}` ([evidence:{item['_evidence']}])")
         for row in rows:
             lines.append(f"- `{row['test']}` display_truncated=`{row['display_truncated']}` ([evidence:{row.get('display_truncated_evidence')}])")
         if not display_lines:
@@ -1402,7 +1407,7 @@ def build_report(
     if "assertions" in sections:
         lines += ["## Assertion facts", ""]
         assertion_lines = [item for item in display_lines if re.search(r"(?i)pass|fail|assert|mismatch|selftest", item["line"])]
-        lines.extend(f"- `{item['test']}`: `{item['line']}` ([source:{_report_value(item['source'])}:{_report_value(item['source_line'])}])" for item in assertion_lines)
+        lines.extend(f"- `{item['test']}`: `{item['line']}` ([evidence:{item['_evidence']}])" for item in assertion_lines)
         if not assertion_lines:
             lines.append("未提供")
         lines.append("")
@@ -1439,6 +1444,9 @@ def build_report(
     lines.extend(f"- `{item['section']}` / `{item['test']}`: {item['reason']}" for item in missing) or lines.append("无")
     lines += ["", f"Evidence: `{_rel(evidence_path)}`"]
     report_text = "\n".join(lines) + "\n"
+    _validate_report_evidence(report_text, evidence)
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    evidence_path.write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in evidence), encoding="utf-8", newline="\n")
     target.write_text(report_text, encoding="utf-8", newline="\n")
     return {
         "ok": True,

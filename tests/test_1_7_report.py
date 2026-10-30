@@ -168,3 +168,49 @@ def test_report_reused_run_marks_timing_unprovided(monkeypatch, project: Path) -
     assert result["tests"][0]["reused"] is True
     assert "`None`" not in text
     assert text.count("`未提供`") >= 2
+
+
+def test_report_all_references_point_to_recorded_facts(monkeypatch, project: Path) -> None:
+    import re
+    from robei_mcp import fpga
+
+    monkeypatch.setattr(tools, "simulate_project", lambda *a, **k: {
+        "ok": True, "vcd_paths": [], "display_output": "SELFTEST PASS 4/4\nvalue=7",
+        "headless": {}, "simulation": {"returncode": 0, "duration_ms": 12},
+    })
+    monkeypatch.setattr(fpga, "synthesize_project", lambda *a, **k: {"ok": False})
+    result = tools.build_report(str(project), include=["simulation", "display", "assertions", "synthesis"])
+    text = Path(result["report_path"]).read_text(encoding="utf-8")
+    ledger = [json.loads(line) for line in Path(result["evidence_path"]).read_text(encoding="utf-8").splitlines()]
+    tokens = re.findall(r"\[evidence:([^\]]*)\]", text)
+    assert tokens and all(re.fullmatch(r"[1-9][0-9]*", token) for token in tokens)
+    assert all(1 <= int(token) <= len(ledger) for token in tokens)
+    for number, fact in enumerate(ledger, 1):
+        if fact["field"] == "tb_missing.display":
+            assert f"`{fact['value']}` ([evidence:{number}])" in text
+    row = result["tests"][0]
+    assert ledger[row["returncode_evidence"] - 1]["value"] == 0
+    assert ledger[row["duration_ms_evidence"] - 1]["value"] == 12
+    assert "[source:" not in text
+
+
+@pytest.mark.parametrize("token", ["None", "0", "2", "-1", ""])
+def test_report_rejects_invalid_evidence_reference(token: str) -> None:
+    with pytest.raises(RuntimeError, match="invalid report evidence reference"):
+        tools._validate_report_evidence(f"value ([evidence:{token}])", [{"value": 1}])
+
+
+def test_report_evidence_validation_precedes_writes(monkeypatch, project: Path) -> None:
+    def invalid(text, evidence):
+        raise RuntimeError("invalid report evidence reference")
+
+    monkeypatch.setattr(tools, "_validate_report_evidence", invalid, raising=False)
+    with pytest.raises(RuntimeError, match="invalid report evidence reference"):
+        tools.build_report(str(project), include=["simulation"])
+    report_dir = project.parent / "report"
+    assert not list(report_dir.glob("*.md"))
+    assert not list(report_dir.glob("*.evidence.jsonl"))
+
+
+def test_report_evidence_accepts_first_and_last_lines() -> None:
+    tools._validate_report_evidence("[evidence:1] [evidence:2]", [{"value": 1}, {"value": 2}])
