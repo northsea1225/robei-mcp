@@ -214,3 +214,53 @@ def test_report_evidence_validation_precedes_writes(monkeypatch, project: Path) 
 
 def test_report_evidence_accepts_first_and_last_lines() -> None:
     tools._validate_report_evidence("[evidence:1] [evidence:2]", [{"value": 1}, {"value": 2}])
+
+
+def test_report_truth_limit_is_local_and_keeps_both_tests(monkeypatch, project: Path) -> None:
+    for stem in ("tb_alu8", "tb_alu32"):
+        tools.create_robei_test(str(project), name=stem, code="initial $finish;")
+    verilog = project.parent / "verilog"
+    verilog.mkdir(exist_ok=True)
+    (verilog / "alu8.v").write_text("module alu8(input [19:0] a, output y); assign y=^a; endmodule\n", encoding="utf-8")
+    (verilog / "alu32.v").write_text("module alu32(input a, output y); assign y=a; endmodule\n", encoding="utf-8")
+    calls = []
+
+    def simulation(proj_path, stem, **kwargs):
+        calls.append(stem)
+        return {"ok": True, "vcd_paths": [], "display_output": f"{stem} SELFTEST PASS",
+                "simulation": {"returncode": 0, "duration_ms": 5}}
+
+    monkeypatch.setattr(tools, "simulate_project", simulation)
+    result = tools.build_report(str(project), tests=["tb_alu8", "tb_alu32"],
+                                include=["simulation", "truth_table", "display", "assertions"])
+    text = Path(result["report_path"]).read_text(encoding="utf-8")
+    ledger = [json.loads(line) for line in Path(result["evidence_path"]).read_text(encoding="utf-8").splitlines()]
+    assert result["ok"] is True
+    assert calls == ["tb_alu8", "tb_alu32"]
+    assert [row["test"] for row in result["tests"]] == calls
+    assert "tb_alu8 SELFTEST PASS" in text and "tb_alu32 SELFTEST PASS" in text
+    assert "未提供（输入 20 位 > 上限 8）" in text.split("## Truth-table facts", 1)[1]
+    assert "`row_count=2`" in text  # The later, small truth table still ran.
+    assert len(result["warnings"]) == 1
+    warning = result["warnings"][0]
+    assert warning["code"] == "truth_table_input_limit" and warning["test"] == "tb_alu8"
+    assert (warning["input_bits"], warning["max_inputs"]) == (20, 8)
+    assert ledger[warning["evidence"] - 1]["value"]["input_bits"] == 20
+    assert any(item["test"] == "tb_alu8" and item["reason"] == warning["message"] for item in result["missing"])
+
+
+@pytest.mark.parametrize("failure", [ValueError("unexpected parse error"), KeyError("unexpected port")])
+def test_report_does_not_hide_other_truth_errors(monkeypatch, project: Path, failure: Exception) -> None:
+    from robei_mcp import p1
+
+    verilog = project.parent / "verilog"
+    verilog.mkdir(exist_ok=True)
+    (verilog / "missing.v").write_text("module missing(input a, output y); assign y=a; endmodule\n", encoding="utf-8")
+
+    def broken(**kwargs):
+        raise failure
+
+    monkeypatch.setattr(p1, "truth_table", broken)
+    with pytest.raises(type(failure)) as caught:
+        tools.build_report(str(project), include=["truth_table"])
+    assert caught.value is failure

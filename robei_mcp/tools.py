@@ -1271,7 +1271,8 @@ def build_report(
         return len(evidence)
 
     rows: list[dict[str, Any]] = []
-    missing: list[dict[str, str]] = []
+    missing: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
     for stem in stems:
         reused = False
         vcd = _find_reusable_vcd(project_dir, stem) if reuse_existing_runs else None
@@ -1325,7 +1326,26 @@ def build_report(
                 missing.append({"section": "truth_table", "test": stem, "reason": "未提供"})
                 continue
             from . import p1
-            table = p1.truth_table(verilog_path=str(verilog), top=top, deps=mapping.get("deps"))
+            try:
+                table = p1.truth_table(verilog_path=str(verilog), top=top, deps=mapping.get("deps"))
+            except ValueError as exc:
+                limit = re.fullmatch(r"too many input bits \((\d+) over \d+ port\(s\) > max_inputs=(\d+)\)", str(exc))
+                if limit is None:
+                    raise
+                input_bits, max_inputs = map(int, limit.groups())
+                if input_bits <= max_inputs:
+                    raise
+                reason = f"未提供（输入 {input_bits} 位 > 上限 {max_inputs}）"
+                evidence_id = fact(
+                    "truth_table", f"{stem}.input_limit",
+                    {"input_bits": input_bits, "max_inputs": max_inputs, "error": str(exc)}, str(verilog), None,
+                )
+                missing.append({"section": "truth_table", "test": stem, "reason": reason, "evidence": evidence_id})
+                warnings.append({
+                    "code": "truth_table_input_limit", "test": stem, "input_bits": input_bits,
+                    "max_inputs": max_inputs, "message": reason, "evidence": evidence_id,
+                })
+                continue
             row_count_evidence = fact("truth_table", f"{stem}.row_count", table.get("row_count"), table.get("testbench"), None)
             expected_evidence = fact("truth_table", f"{stem}.expected_rows", table.get("expected_rows"), table.get("testbench"), None)
             row_evidence = [
@@ -1423,7 +1443,11 @@ def build_report(
             for index, item in enumerate(table.get("rows", [])):
                 evidence_id = (table.get("_row_evidence") or [None] * len(table.get("rows", [])))[index]
                 lines.append(f"  - `{_report_value(item)}` ([evidence:{evidence_id}])")
-        if not truth_result:
+        truth_missing = [item for item in missing if item["section"] == "truth_table"]
+        for item in truth_missing:
+            reference = f" ([evidence:{item['evidence']}])" if "evidence" in item else ""
+            lines.append(f"- `{item['test']}`: {item['reason']}{reference}")
+        if not truth_result and not truth_missing:
             lines.append("未提供")
         lines.append("")
     if "waveform" in sections:
@@ -1441,7 +1465,12 @@ def build_report(
             lines.append("| synthesis | 未提供 | - |")
         lines.append("")
     lines += ["## Missing", ""]
-    lines.extend(f"- `{item['section']}` / `{item['test']}`: {item['reason']}" for item in missing) or lines.append("无")
+    if missing:
+        for item in missing:
+            reference = f" ([evidence:{item['evidence']}])" if "evidence" in item else ""
+            lines.append(f"- `{item['section']}` / `{item['test']}`: {item['reason']}{reference}")
+    else:
+        lines.append("无")
     lines += ["", f"Evidence: `{_rel(evidence_path)}`"]
     report_text = "\n".join(lines) + "\n"
     _validate_report_evidence(report_text, evidence)
@@ -1459,6 +1488,7 @@ def build_report(
         "tests": rows,
         "sections": sorted(sections),
         "missing": missing,
+        "warnings": warnings,
         "size_bytes": target.stat().st_size,
         "sha256": _sha256(target),
     }
