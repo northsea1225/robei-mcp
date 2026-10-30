@@ -38,6 +38,12 @@ def check(name: str, ok: bool, data=None) -> None:
         print("      " + json.dumps(data, ensure_ascii=False)[:700])
 
 
+def _fixture_hint(entry: dict) -> str | None:
+    if "tb_counter4_mcp" not in (entry.get("tests") or []):
+        return "缺少 tb_counter4_mcp：先跑 stage11（tests/stage11_mcp_native.py）；stage10 会重建 scratch。"
+    return None
+
+
 async def main() -> int:
     params = StdioServerParameters(command=str(PYTHON), args=[str(ROOT / "server.py")], cwd=str(ROOT))
     async with stdio_client(params) as (read, write):
@@ -57,7 +63,8 @@ async def main() -> int:
             check("list_projects ok", data.get("ok") is True, data)
             check("finds counter4_scratch", any("counter4_scratch" in r for r in rels), rels)
             entry = next((p for p in data["projects"] if "counter4_scratch" in p["relative"]), {})
-            check("sees tests", entry.get("tests") == ["tb_counter4", "tb_counter4_mcp"], entry)
+            check("sees tests", entry.get("tests") == ["tb_counter4", "tb_counter4_mcp"],
+                  {"hint": _fixture_hint(entry), "project": entry})
             # 0.11: the project's build/ no longer receives a VCD, because Robei's own
             # Build > Run is gone; simulations land under workspace/build/sim-*.
             check("sees verilog export", "counter4.v" in entry.get("verilog", []), entry)

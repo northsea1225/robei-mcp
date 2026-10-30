@@ -170,6 +170,53 @@ def _foreground() -> None:
         pass
 
 
+def _tree_input_state() -> dict:
+    """Read input ownership without focusing windows or releasing cursor capture."""
+    import ctypes
+    from ctypes import wintypes
+
+    import win32api
+    import win32gui
+    import win32process
+
+    user32 = ctypes.windll.user32
+    foreground = win32gui.GetForegroundWindow()
+    _, pid = win32process.GetWindowThreadProcessId(foreground)
+    rect = list(win32gui.GetWindowRect(foreground))
+    monitor = list(win32api.GetMonitorInfo(win32api.MonitorFromWindow(foreground, 2))["Monitor"])
+    style = win32gui.GetWindowLong(foreground, -16)
+    shell = win32gui.GetClassName(foreground) in {"Progman", "WorkerW", "Shell_TrayWnd"}
+    covers = rect[0] <= monitor[0] and rect[1] <= monitor[1] and rect[2] >= monitor[2] and rect[3] >= monitor[3]
+    clip = wintypes.RECT()
+    if not user32.GetClipCursor(ctypes.byref(clip)):
+        raise OSError("GetClipCursor failed")
+    left, top = user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)
+    return {
+        "foreground_hwnd": foreground,
+        "foreground_process": _exe_name(pid) or "unknown",
+        "fullscreen_app": bool(covers and not style & 0x00C00000 and not shell),
+        "clip_rect": [clip.left, clip.top, clip.right, clip.bottom],
+        "screen_rect": [left, top, left + user32.GetSystemMetrics(78), top + user32.GetSystemMetrics(79)],
+    }
+
+
+def _require_tree_input(win: dict) -> None:
+    """Fail before tree navigation; leave expansion and desktop state unchanged."""
+    try:
+        state = _tree_input_state()
+    except Exception as exc:
+        raise GuiNeedsActiveDesktop(f"cannot inspect Files tree input: {type(exc).__name__}") from exc
+    foreign_fullscreen = state["fullscreen_app"] and state["foreground_hwnd"] != win["hwnd"]
+    if foreign_fullscreen or state["clip_rect"] != state["screen_rect"]:
+        raise GuiNeedsActiveDesktop(
+            "Files tree input unavailable: "
+            f"foreground_process={state['foreground_process']}, fullscreen_app={state['fullscreen_app']}, "
+            f"foreground_is_robei={state['foreground_hwnd'] == win['hwnd']}, "
+            f"clip_rect={state['clip_rect']}, screen_rect={state['screen_rect']}; "
+            "bring Robei to the foreground and release cursor capture before retrying"
+        )
+
+
 def _mouse(action: str, coords, retries: int = 1):
     """Click, retrying once after a focus if the desktop refused input."""
     from pywinauto import mouse
@@ -811,6 +858,7 @@ def compile_all(compile_timeout: float = 45.0, models: list[str] | None = None) 
     dlg, win = main_window()
     if dlg is None:
         return {"ok": False, "error": "Robei is not running"}
+    _require_tree_input(win)
     names = [n for n in (models or []) if n.lower().endswith(".model")]
     if not names:
         # a freshly opened project keeps its folders collapsed
@@ -827,6 +875,8 @@ def compile_all(compile_timeout: float = 45.0, models: list[str] | None = None) 
             for folder in folders[:4]:
                 try:
                     _expand_tree_item(folder["item"])
+                except GuiNeedsActiveDesktop:
+                    raise
                 except Exception:
                     continue
             time.sleep(0.6)
@@ -1264,6 +1314,7 @@ def open_model(name: str) -> dict:
     dlg, win = main_window()
     if dlg is None:
         return {"ok": False, "error": "Robei is not running"}
+    _require_tree_input(win)
     tree = _file_tree(dlg)
     if tree is None:
         return {"ok": False, "error": "Files tree not found"}
