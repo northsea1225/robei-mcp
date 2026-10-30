@@ -2,9 +2,9 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
-## 1.7.0 — Unreleased
+## 1.7.0 — 2026-10-30
 
-**实验闭环与事实报告（开发中，包版本仍为 1.6.1）。**
+**实验闭环与事实报告。** 工具面为 51 个（文件级 40 + GUI 11）。
 
 - 新增 `build_report`：按 test 编排、可复用 sim-* VCD，输出 Markdown 与逐行 evidence.jsonl；
   可选 simulation/truth_table/display/assertions/waveform/synthesis 章节与 truth_map 映射。
@@ -20,7 +20,10 @@
   真值表输入超限局部降级为“未提供”并带结构化 warning，不再中断整个工程的报告。
 - 澄清 M4 客户端等待错误：临时脚本给 SDK read_timeout_seconds 误传 timedelta；
   正确用数值秒，服务端 timeout_s 接口不变。补充工具参数转发测试与客户端调用示例。
-- 报告验收须使用新的输出名、真实仿真及源文件 SHA256 对比，不能用文件存在或单元测试绿替代。
+- M5 Lab 2 验收：六个工程、7 个 test 均以 reuse_existing_runs=false 真实仿真，全部 rc=0；
+  rc/耗时逐项匹配执行日志，6 份 Markdown 无 None/null，102 处证据引用全部有效，源文件 SHA256 不变。
+  tb_alu8 的真值表明确降级为“未提供（输入 20 位 > 上限 8）”并带 warning；
+  tb_alu32、tb_alu8 均完整进入报告，不把局部降级写成 20 位完整穷举通过。
 
 ## 1.6.1 — Unreleased
 

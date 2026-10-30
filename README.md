@@ -3,7 +3,7 @@
 > An MCP server that turns Robei EDA into AI-callable tools: Verilog lint, simulation,
 > waveform analysis, project XML, and optional GUI automation. Docs are in Chinese.
 
-**状态：稳定版**（49 个工具）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
+**状态：1.7.0**（51 个工具，GUI=0 时 40 个）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
 
 > **升级注意（1.0.2 起）**：`simulate` 默认开启**严格路径扫描**。像
 > `$readmemh(PATH, mem)` 这种无法静态判定路径的写法，以前能跑，现在会直接返回
@@ -14,7 +14,7 @@
 以及（可选）驱动 Robei 本体 GUI。基于 MCP（Model Context Protocol）stdio 传输，
 可在 Codex / Claude Code 里直接用自然语言完成「写代码 → 检查 → 仿真 → 看波形」。
 
-- **49 个工具**，其中 38 个不需要 Robei、不需要桌面：只要有 `iverilog`/`vvp`/`yosys` 就能跑。
+- **51 个工具**，其中 40 个不需要 Robei、不需要桌面：只要有 `iverilog`/`vvp`/`yosys` 就能跑。
 - **不碰安装目录**：`E:\Robei` 全程只读，所有产物写在 `workspace/`。
 - **可回滚**：每次运行独立目录，默认不覆盖已有文件，改模型前先备份。
 - **不执行任意 shell**：固定工具白名单 + `shell=False` + 路径白名单。
@@ -25,6 +25,14 @@
   器件有没有 chipdb、引脚绑没绑全都会在动手前告诉你。
 - **画布可增量改**：`edit_robei_canvas` 用 `add_instance` / `connect` / `rename_wire` 这组
   操作改画布，整批校验通过才落盘；`set_robei_code` / `set_robei_parameter` 改行为与参数。
+
+## 1.7 实验闭环与报告
+
+- `build_report` 输出事实型 Markdown 与 evidence.jsonl，支持选择 test/章节、truth_map 和运行复用。
+- `export_vcd_window` 按原始 VCD tick 导出 CSV/Markdown；综合工具增加容量、百分比与来源字段。
+- M5 Lab 2 六个工程、7 个 test 真实仿真均 rc=0；缺失值写“未提供”，证据引用已逐项核对。
+  tb_alu8 的真值表因 20 位输入超过上限 8 局部降级，两个 ALU test 均正常进入报告。
+- 完整签名、路径/覆盖边界及超时参数说明见 [工具参考](docs/tool-reference.md)。
 
 ## 1.6 根参数与服务生命周期
 
@@ -105,8 +113,8 @@ python C:\dev\robei-mcp\tools\setup.py --apply
 `[gui]` 会带上 `pywinauto`、`Pillow`、`pywin32`。**没装这三个包时 GUI 工具不会出现在
 `tools/list` 里**，而不是调用时才报错；`tools\setup.py --apply` 也会在 Windows 上补装它们。
 
-一句话：基础 wheel 只有 **38 个文件级工具**；装上 `[gui]`（且只在 Windows 上）才会多出
-11 个 `robei_gui_*`，合计 **49 个**。
+一句话：基础 wheel 只有 **40 个文件级工具**；装上 `[gui]`（且只在 Windows 上）才会多出
+11 个 `robei_gui_*`，合计 **51 个**。
 
 ### 3. 自检
 
@@ -180,7 +188,7 @@ read_waveform(<上一步的 vcd_path>, signals=["counter4_tb.dut.count"], time=4
 | `ROBEI_HOME` | Robei 安装根目录 |
 | `IVERILOG_EXE` / `VVP_EXE` / `YOSYS_EXE` | 单独指定工具链 |
 | `VERILATOR_EXE` / `VERILATOR_ROOT_DIR` | Verilator 那一路 |
-| `ROBEI_MCP_GUI` | `0` 强制关闭 GUI 面（工具从 `tools/list` 消失，只剩 38 个） |
+| `ROBEI_MCP_GUI` | `0` 强制关闭 GUI 面（工具从 `tools/list` 消失，只剩 40 个） |
 | `ROBEI_MCP_STRICT_PATHS` | 默认 `1`：源码扫描遇到无法静态判定的路径（`$readmemh(PATH)`）直接拒绝；设 `0` 退回只记录 `unresolved` |
 | `ROBEI_DEFAULT_TIMEOUT_S` / `ROBEI_MAX_TIMEOUT_S` | 子进程超时，默认 30 / 120 秒；大器件跑 Roplace 时把上限调大 |
 | `ROBEI_FPGA_DB` | 器件库根目录，默认 `C:\ProgramData\Robei\xilinx`（里面要有 `chipdb/` 与 `<family>/<part>/part.yaml`） |
@@ -307,7 +315,7 @@ GUI 工具），UIA 拿不到桌面就会报 `Errno 22`。**不要在嵌套 stdi
 
 | 文件 | 内容 |
 |---|---|
-| [docs/tool-reference.md](docs/tool-reference.md) | 49 个工具的完整参数、返回值、真实示例 |
+| [docs/tool-reference.md](docs/tool-reference.md) | 51 个工具的完整参数、返回值、真实示例 |
 | [docs/gui-tools.md](docs/gui-tools.md) | GUI 工具、Session-1 桥、坐标/菜单/画布的历史坑 |
 | [docs/L1-uia-bridge.md](docs/L1-uia-bridge.md) | Robei 内建 UIA 桥的层级与控件 id |
 | [docs/verification-log.md](docs/verification-log.md) | 每个阶段「实际跑通了什么」的证据日志 |

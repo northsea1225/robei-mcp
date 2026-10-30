@@ -1,7 +1,7 @@
 # 工具参考
 
-1.7 开发分支共 51 个工具（文件级 40 + GUI 11）；已发布的 1.6.1 仍为 49/38。
-本分支版本号尚未 bump，工具名、参数名、返回字段保持英文。
+1.7.0 共 51 个工具（文件级 40 + GUI 11）；ROBEI_MCP_GUI=0 时为 40 个。
+工具名、参数名、返回字段保持英文。
 
 > 这份文件是从早期 README 拆出来的，示例里的时间戳/路径是当时的真实输出，不要当成当前默认值。
 
@@ -422,7 +422,7 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
   解析不出来的表达式要求两端字面量一致。不一致返回 `code=width_mismatch`，消息里带两边位宽
 - `connect` 的位选（`a[0]` / `a[7:0]`）与 `create_robei_canvas_model` 同规则：父端口越界、
   切片宽度与实例端口不等、两端都带位选都报错；参数化宽度只给 warning
-- `set_parameters` 是对实例参数的最小改法（没有新增独立工具，工具数仍是 49 / 38）：子模型没
+- `set_parameters` 是对实例参数的最小改法（本 op 不新增独立工具；1.7.0 工具数为 51 / 40）：子模型没
   声明的名字直接报错，名字大小写按子模型的声明改写（`len` → `LEN`）
 - `diff` 里除了 wire，还会报 `connects_added` / `connects_changed` / `connects_removed` /
   `parameters_changed`，位选和参数改动不会"看起来没动"
@@ -986,7 +986,7 @@ Build → Synthesis 并等到 `Synthesis complete`（内部是 yosys 的 Xilinx 
 `robei_gui_*` 走的是计划任务桥，不是这批子进程：取消会让调用立刻返回，但桥任务会按它
 自己的超时跑完（结果丢弃）。已知副作用：被取消的调用可能留下半个 `workspace/build/sim-*/` 目录。
 
-## `build_report`（1.7，Unreleased）
+## `build_report`（1.7.0）
 
 ```text
 build_report(proj_path: str, tests: list[str] | None = None,
@@ -1045,7 +1045,7 @@ build_report(proj_path: str, tests: list[str] | None = None,
 不能把不可用的来源行号伪造成已知值。常见错误为 `path_escape`、`already_exists`、
 `not_found`、`invalid_argument`；依赖步骤也可能返回自己的错误码。
 
-**M5 修复**：Markdown 的缺失值（含嵌套容量/百分比）统一呈现为“未提供”，
+**1.7.0 缺失值与证据约定**：Markdown 的缺失值（含嵌套容量/百分比）统一呈现为“未提供”，
 JSON 返回与 JSONL 仍保留原始可空值，不伪造 rc/耗时。$display/断言文字引用对应的 evidence 行；
 所有 `[evidence:N]` 在写报告和 evidence 文件前校验，必须指向真实的第 N 条记录。
 
@@ -1054,6 +1054,11 @@ JSON 返回与 JSONL 仍保留原始可空值，不伪造 rc/耗时。$display/�
 `code="truth_table_input_limit", test, input_bits, max_inputs, message, evidence`；
 `missing[]` 同时记录原因和证据索引。其它非超限异常不被静默隐藏。
 这不是完整穷举通过；不能把局部降级或 `ok=true` 写成该真值表验收通过。
+
+**M5 Lab 2 验收（2026-10-30）**：六个工程的 7 个 test 使用 reuse_existing_runs=false，
+全部 rc=0，耗时与执行日志一致；6 份报告均无 None/null，102 处引用全部有效，源文件 SHA256 不变。
+tb_alu8 真值表为“未提供（输入 20 位 > 上限 8）”，带一条超限 warning，
+且 tb_alu32 与 tb_alu8 均保留在报告中。
 
 ### MCP Python 客户端的等待参数
 
@@ -1075,7 +1080,7 @@ result = await session.call_tool(
 SDK 可能已发出请求后才抛本地等待参数错误；失败后先检查产物，重试使用新报告名，
 不要因此自动覆盖已有报告。无需为此修改服务端接口或 venv。
 
-## `export_vcd_window`（1.7，Unreleased）
+## `export_vcd_window`（1.7.0）
 
 ```text
 export_vcd_window(vcd: str, signals: list[str] | None,
