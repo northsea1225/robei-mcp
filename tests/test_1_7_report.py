@@ -264,3 +264,39 @@ def test_report_does_not_hide_other_truth_errors(monkeypatch, project: Path, fai
     with pytest.raises(type(failure)) as caught:
         tools.build_report(str(project), include=["truth_table"])
     assert caught.value is failure
+
+
+def test_report_timeout_s_reaches_simulation_and_synthesis(monkeypatch, project: Path) -> None:
+    from robei_mcp import fpga
+    seen = []
+
+    def simulation(*args, **kwargs):
+        seen.append(("simulation", kwargs["timeout_s"]))
+        return {"ok": True, "vcd_paths": [], "simulation": {"returncode": 0, "duration_ms": 3}}
+
+    def synthesis(*args, **kwargs):
+        seen.append(("synthesis", kwargs["timeout_s"]))
+        return {"ok": True, "utilization": {"LUT": 0}}
+
+    monkeypatch.setattr(tools, "simulate_project", simulation)
+    monkeypatch.setattr(fpga, "synthesize_project", synthesis)
+    result = tools.build_report(str(project), timeout_s=37, include=["simulation", "synthesis"])
+    assert result["ok"] is True
+    assert seen == [("simulation", 37), ("synthesis", 37)]
+
+
+def test_report_mcp_wrapper_preserves_timeout_s(monkeypatch) -> None:
+    import asyncio
+    from robei_mcp import server_app
+    seen = []
+
+    async def invoke(fn, ctx, name, **kwargs):
+        seen.append((fn, name, kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr(server_app, "_invoke", invoke)
+    result = asyncio.run(server_app.build_report("demo/demo.proj", timeout_s=37, reuse_existing_runs=False))
+    assert result["ok"] is True
+    assert seen[0][0] is tools.build_report and seen[0][1] == "build_report"
+    assert seen[0][2]["timeout_s"] == 37
+    assert seen[0][2]["reuse_existing_runs"] is False

@@ -1036,7 +1036,8 @@ build_report(proj_path: str, tests: list[str] | None = None,
 | `evidence_path/evidence_relative_path` | JSON Lines 证据路径 |
 | `tests[]` | `test, ok, returncode, duration_ms, vcd_paths, reused, display_output, display_truncated, headless`；可能附带 plot 与证据索引 |
 | `sections` | 实际选择的章节 |
-| `missing[]` | `section, test, reason`；缺失部分的契约是明确写“未提供” |
+| `missing[]` | `section, test, reason`；超限项还含 evidence 索引 |
+| `warnings[]` | 真值表超限的 test、输入位数、上限、说明及证据索引 |
 | `size_bytes/sha256` | Markdown 大小与 SHA256 |
 
 证据文件一行一个 JSON：`{section, field, value, source, source_line}`。
@@ -1044,10 +1045,35 @@ build_report(proj_path: str, tests: list[str] | None = None,
 不能把不可用的来源行号伪造成已知值。常见错误为 `path_escape`、`already_exists`、
 `not_found`、`invalid_argument`；依赖步骤也可能返回自己的错误码。
 
-**2026-10-30 Lab 2 待修复项（不是已接受的行为）**：复用运行时，缺失 rc/耗时仍被渲染成
-`None`；综合缺失时出现 `[evidence:None]`，未满足“缺失写未提供/证据行号可解析”的契约。
-`tb_alu8` 的 20 个输入位超过真值表默认 8 位限制时，会中断 exp5 整份报告，而不是局部记缺失。
-本轮未修改报告逻辑；不能把单元测试绿或 `ok=true` 写成 Lab 2 报告验收通过。
+**M5 修复**：Markdown 的缺失值（含嵌套容量/百分比）统一呈现为“未提供”，
+JSON 返回与 JSONL 仍保留原始可空值，不伪造 rc/耗时。$display/断言文字引用对应的 evidence 行；
+所有 `[evidence:N]` 在写报告和 evidence 文件前校验，必须指向真实的第 N 条记录。
+
+真值表输入超限只降级该 test 的 truth-table 小节，写“未提供（输入 N 位 > 上限 M）”，
+其余 test 和章节继续。返回 `warnings[]`，每项含
+`code="truth_table_input_limit", test, input_bits, max_inputs, message, evidence`；
+`missing[]` 同时记录原因和证据索引。其它非超限异常不被静默隐藏。
+这不是完整穷举通过；不能把局部降级或 `ok=true` 写成该真值表验收通过。
+
+### MCP Python 客户端的等待参数
+
+M4 exp1 的 `float + datetime.timedelta` 错误来自临时验收脚本，不是 Codex 本体故障，
+也不是 `build_report.timeout_s` 接口错误。本仓库使用的 MCP SDK 2.3.0 中，
+`ClientSession.call_tool(..., read_timeout_seconds=...)` 接受数值秒（`float | None`），
+不能传 `timedelta`。工具参数 `timeout_s` 是另一层的整数子进程预算：
+
+```python
+result = await session.call_tool(
+    "build_report",
+    {"proj_path": "exp1_and/exp1_and.proj", "out": "lab2-m5.md",
+     "timeout_s": 60, "reuse_existing_runs": False},
+    read_timeout_seconds=180.0,
+)
+```
+
+客户端等待并非单个仿真/综合步骤的预算，也不是报告总执行时限。
+SDK 可能已发出请求后才抛本地等待参数错误；失败后先检查产物，重试使用新报告名，
+不要因此自动覆盖已有报告。无需为此修改服务端接口或 venv。
 
 ## `export_vcd_window`（1.7，Unreleased）
 

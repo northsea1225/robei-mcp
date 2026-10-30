@@ -16,8 +16,11 @@
 - `runtime_status.lifecycle` 透传 current_run_id，包括日志不可读路径。
 - GUI 诊断：stage12 缺 fixture 提示先跑 stage11；树操作前检查外部全屏前台和鼠标限制；
   compile_all 不再吞掉 GuiNeedsActiveDesktop。不改展开算法和测试断言，不操作外部应用。
-- **Lab 2 报告验收未通过**：缺失值仍显示 None、无效 evidence:None 引用、exp5 真值表超限中断。
-  本轮仅记录缺陷，未修改报告逻辑；生成了文件不代表报告验收通过。源文件 SHA256 保持不变。
+- M5 修复报告缺失值呈现、写盘前 evidence 行号校验、$display/断言事实引用；
+  真值表输入超限局部降级为“未提供”并带结构化 warning，不再中断整个工程的报告。
+- 澄清 M4 客户端等待错误：临时脚本给 SDK read_timeout_seconds 误传 timedelta；
+  正确用数值秒，服务端 timeout_s 接口不变。补充工具参数转发测试与客户端调用示例。
+- 报告验收须使用新的输出名、真实仿真及源文件 SHA256 对比，不能用文件存在或单元测试绿替代。
 
 ## 1.6.1 — Unreleased
 
