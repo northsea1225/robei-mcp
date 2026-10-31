@@ -221,6 +221,9 @@ def payload(exc: BaseException, **extra: Any) -> dict[str, Any]:
     available = getattr(exc, "available", None)
     if available:
         data["available_parts"] = available
+    references = getattr(exc, "references", None)
+    if references is not None:
+        data["references"] = references
     record = getattr(exc, "record", None)
     if record:
         data["record"] = record

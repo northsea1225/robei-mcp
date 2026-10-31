@@ -1007,6 +1007,7 @@ def run_all_tests(
     import concurrent.futures
     import math
 
+    batch_started = time.monotonic()
     proj = resolve_project_path(proj_path)
     if not is_within(proj, SETTINGS.workspace):
         raise ValueError("refusing to simulate a project outside the workspace")
@@ -1243,6 +1244,7 @@ def run_all_tests(
         "tests": rows,
         "vcd_paths": [path for row in rows for path in (row.get("vcd_paths") or [])],
         "warnings": warnings,
+        "elapsed_ms": round((time.monotonic() - batch_started) * 1000),
     }
 
 
@@ -3391,6 +3393,8 @@ OP_KINDS = (
     "disconnect",
     "set_parameters",
     "rename_wire",
+    "move_instance",
+    "rename_port",
 )
 
 
@@ -3509,12 +3513,57 @@ def _shorthand_endpoint(endpoint: dict[str, Any] | None) -> str:
     return f"{instance}.{port}" if instance else port
 
 
-def _canvas_state(model: dict[str, Any]) -> dict[str, Any]:
+def _raw_unknown_children(text: str) -> list[str]:
+    """Capture direct non-canvas children verbatim for renderer round-trips."""
+    root = re.search(r"<Module\b[^>]*>", text, re.IGNORECASE)
+    if root is None:
+        return []
+    close = text.lower().rfind("</module>")
+    if close < root.end():
+        return []
+    inner = text[root.end():close]
+    token_re = re.compile(r"<(/?)([A-Za-z_][A-Za-z0-9_.:-]*)(?:\s+(?:[^\"<>]|\"[^\"]*\"|'[^']*')*)?(/?)>", re.S)
+    known = {"port", "module", "instance", "wire"}
+    depth = 0
+    child_start = None
+    child_tag = None
+    out: list[str] = []
+    for match in token_re.finditer(inner):
+        closing, tag, _self_close = match.groups()
+        self_close = match.group(0).rstrip().endswith("/>")
+        tag_lower = tag.lower()
+        if closing:
+            depth -= 1
+            if depth == 0 and child_start is not None:
+                if (child_tag or "").lower() not in known:
+                    out.append(inner[child_start:match.end()])
+                child_start = None
+                child_tag = None
+            continue
+        if depth == 0:
+            child_start = match.start()
+            child_tag = tag
+        if self_close:
+            if depth == 0 and (tag_lower not in known):
+                out.append(inner[match.start():match.end()])
+            child_start = None
+            child_tag = None
+        else:
+            depth += 1
+    return out
+
+
+def _canvas_state(model: dict[str, Any], raw_text: str | None = None) -> dict[str, Any]:
     """Normalize a parsed model into the shape the canvas renderer/editor uses."""
     return {
         "name": model["name"],
         "comment": model.get("comment") or "",
         "parameters": model.get("parameters") or "",
+        "vendor": model.get("vendor") or "",
+        "device": model.get("device") or "",
+        "family": model.get("family") or "",
+        "code": model.get("code") or "",
+        "other_children_xml": _raw_unknown_children(raw_text or ""),
         "ports": [
             {
                 "name": port["name"],
@@ -3572,11 +3621,16 @@ def _render_canvas(state: dict[str, Any]) -> str:
     """Serialize the editable state back into Robei's canvas XML."""
     name = state["name"]
     lines = ["<!DOCTYPE Robei>"]
+    meta = "".join(
+        f' {attribute}="{_attr(state.get(key) or "")}"'
+        for attribute, key in (("Vendor", "vendor"), ("Device", "device"), ("Family", "family"))
+        if state.get(key)
+    )
     lines.append(
         f'<Module Name="{_attr(name)}" Type="module" Width="900" Class="module" '
         f'Comment="{_attr(state.get("comment") or "")}" X="0" '
         f'Parameters="{_attr(state.get("parameters") or "")}" Y="0" Parent="0" Height="600" '
-        f'Color="#d3d3d3" Include="" File="Current/{_attr(name)}.model" Code="">'
+        f'Color="#d3d3d3" Include="" File="Current/{_attr(name)}.model" Code=""{meta}>'
     )
     for item in state["instances"]:
         module_attr = f'Module="{_attr(item["module"])}" ' if item.get("module") else ""
@@ -3598,6 +3652,7 @@ def _render_canvas(state: dict[str, Any]) -> str:
             f'From="{_canvas_endpoint(name, wire["from"])}" Datatype="{_attr(wire["datatype"])}" '
             f'Parent="{_attr(name)}" Datasize="{_attr(str(wire["datasize"]))}"/>'
         )
+    lines.extend(state.get("other_children_xml") or [])
     lines.append("</Module>")
     return "\n".join(lines) + "\n"
 
@@ -3684,6 +3739,87 @@ def _hydrate_instance_ports(state: dict[str, Any], model_dir: Path) -> None:
             item["ports"] = _instance_ports_from_model(parse_robei_model(source))
 
 
+
+def _canvas_coordinate(value: Any, field: str) -> int:
+    if isinstance(value, bool) or value is None:
+        raise BadRequest(f"{field} must be an integer coordinate", f'pass {field}=200')
+    try:
+        number = float(str(value).strip())
+    except (TypeError, ValueError):
+        raise BadRequest(f"{field} must be an integer coordinate", f'pass {field}=200')
+    if not number.is_integer() or abs(number) > 1_000_000:
+        raise BadRequest(f"{field} must be a finite integer coordinate", f'pass {field}=200')
+    return int(number)
+
+
+def _rename_port_token(text: str, old: str, new: str) -> str:
+    return re.sub(rf"(?<![A-Za-z0-9_$]){re.escape(old)}(?![A-Za-z0-9_$])", new, text)
+
+
+def _rename_canvas_endpoint(ref: str, old: str, new: str) -> str:
+    if ref == old:
+        return new
+    prefix, dot, port = ref.partition(".")
+    if dot and port == old:
+        return f"{prefix}.{new}"
+    return ref
+
+
+def _direct_model_references(model_path: Path, model_name: str, port_name: str) -> list[dict[str, Any]]:
+    """Find direct canvas and Code references to a child port in sibling models."""
+    project_dir = model_path.parent.parent
+    references: list[dict[str, Any]] = []
+    for parent_path in sorted(model_path.parent.glob("*.model")):
+        if parent_path.resolve() == model_path.resolve():
+            continue
+        try:
+            parent = parse_robei_model(parent_path)
+        except Exception as exc:
+            references.append({"kind": "parse_error", "path": str(parent_path), "reason": f"{type(exc).__name__}: {exc}"})
+            continue
+        code = parent.get("code") or ""
+        if re.search(rf"(?<![A-Za-z0-9_$]){re.escape(model_name)}(?![A-Za-z0-9_$])", code):
+            references.append({"kind": "behavior_code", "path": str(parent_path), "parent_model": parent["name"], "reason": "model/port reference appears in Code"})
+        for instance in parent.get("instances") or []:
+            if not _instance_model_matches(instance, model_name):
+                continue
+            inst_name = instance.get("instance") or ""
+            for port in instance.get("ports") or []:
+                if port.get("name") == port_name:
+                    references.append({"kind": "canvas_port", "path": str(parent_path), "parent_model": parent["name"], "instance": inst_name, "port": port_name})
+            for wire in parent.get("wires") or []:
+                for endpoint in (wire.get("from") or {}, wire.get("to") or {}):
+                    if isinstance(endpoint, dict) and endpoint.get("instance") == inst_name and endpoint.get("port") == port_name:
+                        references.append({"kind": "canvas_wire", "path": str(parent_path), "parent_model": parent["name"], "instance": inst_name, "port": port_name, "net": wire.get("net")})
+    return references
+
+
+def _rename_parent_canvas(parent_path: Path, model_name: str, old: str, new: str) -> tuple[str, list[dict[str, Any]]]:
+    raw = parent_path.read_text(encoding="utf-8")
+    parent = parse_robei_model(parent_path)
+    state = _canvas_state(parent, raw)
+    changed: list[dict[str, Any]] = []
+    for instance in state["instances"]:
+        if not _instance_model_matches(instance, model_name):
+            continue
+        touched = False
+        for port in instance.get("ports") or []:
+            if port.get("name") == old:
+                port["name"] = new
+                port["connect"] = _rename_port_token(port.get("connect") or "", old, new)
+                touched = True
+        for wire in state["wires"]:
+            before_from, before_to = wire["from"], wire["to"]
+            wire["from"] = _rename_canvas_endpoint(before_from, old, new) if before_from.startswith(f"{instance['instance']}.") else before_from
+            wire["to"] = _rename_canvas_endpoint(before_to, old, new) if before_to.startswith(f"{instance['instance']}.") else before_to
+            touched = touched or before_from != wire["from"] or before_to != wire["to"]
+        if touched:
+            changed.append({"parent_model": parent["name"], "path": str(parent_path), "instance": instance["instance"], "old_name": old, "new_name": new})
+    if not changed:
+        return raw, []
+    return _render_canvas(state), changed
+
+
 def _apply_canvas_op(state: dict[str, Any], op: Any, model_dir: Path) -> dict[str, Any]:
     """Mutate ``state`` for one op. Validation happens before anything is written."""
     if not isinstance(op, dict):
@@ -3691,6 +3827,45 @@ def _apply_canvas_op(state: dict[str, Any], op: Any, model_dir: Path) -> dict[st
     kind = str(op.get("op") or "").strip()
     if kind not in OP_KINDS:
         raise ValueError(f"unknown op {kind!r}; expected one of {list(OP_KINDS)}")
+
+    if kind == "move_instance":
+        name = str(op.get("name") or op.get("instance") or "").strip()
+        item = next((entry for entry in state["instances"] if entry["instance"] == name), None)
+        if item is None:
+            raise BadRequest(
+                f"unknown instance {name!r}",
+                f"move_instance needs a placed instance: {_names(entry['instance'] for entry in state['instances'])}",
+            )
+        if "x" not in op or "y" not in op:
+            raise BadRequest("move_instance needs x and y", 'use {"op":"move_instance","name":"u1","x":200,"y":120}')
+        before = {"x": item["x"], "y": item["y"]}
+        item["x"] = _canvas_coordinate(op.get("x"), "x")
+        item["y"] = _canvas_coordinate(op.get("y"), "y")
+        return {"op": kind, "instance": name, "before": before, "after": {"x": item["x"], "y": item["y"]}}
+
+    if kind == "rename_port":
+        old = str(op.get("name") or "").strip()
+        new = str(op.get("new_name") or "").strip()
+        port = next((entry for entry in state["ports"] if entry["name"] == old), None)
+        if port is None:
+            raise BadRequest(f"unknown port {old!r}", f"rename_port needs an exact top-level port: {_names(entry['name'] for entry in state['ports'])}")
+        if not PORT_NAME_RE.fullmatch(new):
+            raise BadRequest(f"invalid port name: {new!r}", "new_name must be a Verilog identifier")
+        if any(entry["name"] == new for entry in state["ports"]):
+            raise BadRequest(f"duplicate port name: {new!r}", f"choose a free name; current ports: {_names(entry['name'] for entry in state['ports'])}")
+        code = state.get("code") or ""
+        if re.search(rf"(?<![A-Za-z0-9_$]){re.escape(old)}(?![A-Za-z0-9_$])", code):
+            exc = BadRequest(f"port {old!r} is referenced by this model's Code", "rename_port never rewrites behavioral Code", code="model_in_use")
+            exc.references = [{"kind": "behavior_code", "model": state["name"], "port": old}]
+            raise exc
+        port["name"] = new
+        for wire in state["wires"]:
+            wire["from"] = _rename_canvas_endpoint(wire["from"], old, new)
+            wire["to"] = _rename_canvas_endpoint(wire["to"], old, new)
+        for instance in state["instances"]:
+            for item in instance.get("ports") or []:
+                item["connect"] = _rename_port_token(item.get("connect") or "", old, new)
+        return {"op": kind, "old_name": old, "new_name": new, "update_parents": bool(op.get("update_parents", False))}
 
     if kind == "add_port":
         name = str(op.get("name") or "").strip()
@@ -3957,6 +4132,18 @@ def _apply_canvas_op(state: dict[str, Any], op: Any, model_dir: Path) -> dict[st
 def _canvas_diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     before_instances = {item["instance"] for item in before["instances"]}
     after_instances = {item["instance"] for item in after["instances"]}
+    before_positions = {item["instance"]: {"x": item["x"], "y": item["y"]} for item in before["instances"]}
+    after_positions = {item["instance"]: {"x": item["x"], "y": item["y"]} for item in after["instances"]}
+    instances_moved = [
+        {"instance": name, "before": before_positions[name], "after": after_positions[name]}
+        for name in sorted(set(before_positions) & set(after_positions))
+        if before_positions[name] != after_positions[name]
+    ]
+    before_ports = {port["name"] for port in before["ports"]}
+    after_ports = {port["name"] for port in after["ports"]}
+    ports_renamed = []
+    if len(before_ports) == len(after_ports) and before_ports != after_ports:
+        ports_renamed = [{"old_name": old, "new_name": new} for old, new in zip(sorted(before_ports - after_ports), sorted(after_ports - before_ports))]
     before_wires = {(w["net"], w["from"], w["to"], str(w["datasize"])) for w in before["wires"]}
     after_wires = {(w["net"], w["from"], w["to"], str(w["datasize"])) for w in after["wires"]}
 
@@ -3980,6 +4167,8 @@ def _canvas_diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any
     return {
         "instances_added": sorted(after_instances - before_instances),
         "instances_removed": sorted(before_instances - after_instances),
+        "instances_moved": instances_moved,
+        "ports_renamed": ports_renamed,
         "wires_added": [wire_row(key) for key in sorted(after_wires - before_wires)],
         "wires_removed": [wire_row(key) for key in sorted(before_wires - after_wires)],
         "connects_added": {k: v for k, v in after_connects.items() if k not in before_connects},
@@ -4004,26 +4193,51 @@ def edit_robei_canvas(
     ops: list[dict[str, Any]],
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Apply canvas ops (add/remove instance, connect, disconnect, rename) atomically.
-
-    Every op is validated before anything is written: an unknown port, a width
-    mismatch or a duplicate instance name aborts the whole call, so a half
-    applied edit can never reach the file.
-    """
+    """Apply canvas ops atomically, including coordinate moves and port renames."""
     path = resolve_model_path(model_path)
     if not dry_run and not is_within(path, SETTINGS.workspace):
         raise PermissionError(f"refusing to modify a model outside the workspace: {path}")
+    raw_text = path.read_text(encoding="utf-8")
     model = parse_robei_model(path)
     if not isinstance(ops, list) or not ops:
         raise ValueError("ops must be a non-empty list of canvas operations")
-    before = _canvas_state(model)
+    rename_ops = [op for op in ops if isinstance(op, dict) and op.get("op") == "rename_port"]
+    if len(rename_ops) > 1:
+        raise BadRequest("one rename_port operation is allowed per transaction", "split port renames into separate calls", code="bad_argument")
+    parent_texts: dict[Path, str] = {}
+    parent_updates: list[dict[str, Any]] = []
+    references: list[dict[str, Any]] = []
+    if rename_ops:
+        rename = rename_ops[0]
+        old_name = str(rename.get("name") or "").strip()
+        new_name = str(rename.get("new_name") or "").strip()
+        references = _direct_model_references(path, model["name"], old_name)
+        update_parents = bool(rename.get("update_parents", False))
+        non_canvas = [item for item in references if item.get("kind") not in {"canvas_port", "canvas_wire"}]
+        if non_canvas or (references and not update_parents):
+            exc = BadRequest(
+                f"port {old_name!r} is referenced by other models",
+                "pass update_parents=true to update direct canvas parents; behavioral Code is never rewritten",
+                code="model_in_use",
+            )
+            exc.references = references
+            raise exc
+        if update_parents:
+            for reference in references:
+                parent_path = Path(reference["path"])
+                if parent_path in parent_texts:
+                    continue
+                updated_text, updates = _rename_parent_canvas(parent_path, model["name"], old_name, new_name)
+                if updates:
+                    parent_texts[parent_path] = updated_text
+                    parent_updates.extend(updates)
+    before = _canvas_state(model, raw_text)
     _hydrate_instance_ports(before, path.parent)
     working = copy.deepcopy(before)
     applied = [_apply_canvas_op(working, op, path.parent) for op in ops]
     warnings = [item for entry in applied for item in entry.get("warnings") or []]
-
-    text = _render_canvas(working)
-    preview_model = parse_robei_model_text(text, path)
+    rendered = _render_canvas(working)
+    preview_model = parse_robei_model_text(rendered, path)
     result: dict[str, Any] = _result_widths({
         "ok": True,
         "dry_run": bool(dry_run),
@@ -4038,15 +4252,31 @@ def edit_robei_canvas(
         "wires": working["wires"],
         "netlist": preview_model["netlist"],
         "verilog_preview": model_to_verilog(preview_model),
+        "references": references,
+        "parent_updates": parent_updates,
     })
     if dry_run:
         return result
 
-    backup = _backup_file(path)
-    path.write_text(text, encoding="utf-8", newline="\n")
-    result.update({"backup": str(backup) if backup else None, "sha256": _sha256(path)})
+    originals = {path: path.read_bytes(), **{parent: parent.read_bytes() for parent in parent_texts}}
+    backups: dict[Path, Path | None] = {}
+    try:
+        backups[path] = _backup_file(path)
+        for parent in parent_texts:
+            backups[parent] = _backup_file(parent)
+        path.write_text(rendered, encoding="utf-8", newline="\n")
+        for parent, parent_text in parent_texts.items():
+            parent.write_text(parent_text, encoding="utf-8", newline="\n")
+    except Exception:
+        for target, data in originals.items():
+            target.write_bytes(data)
+        raise
+    result.update({
+        "backup": str(backups[path]) if backups[path] else None,
+        "parent_backups": {str(target): str(backup) for target, backup in backups.items() if target != path and backup},
+        "sha256": _sha256(path),
+    })
     return result
-
 
 def set_robei_code(model_path: str, code: str, dry_run: bool = False) -> dict[str, Any]:
     """Rewrite the ``Code`` attribute of a *behavioural* model (no instances/wires)."""
@@ -4544,6 +4774,152 @@ def create_robei_model(
     })
 
 
+
+def _project_model_entry_replace(text: str, old: str, new: str | None) -> tuple[str, str]:
+    pattern = re.compile(rf"<({re.escape(old)}\.model)\b[^>]*/>")
+    match = pattern.search(text)
+    if match is None:
+        return text, "missing"
+    tag = match.group(0)
+    if new is None:
+        replacement = ""
+        status = "deleted"
+    else:
+        replacement = tag.replace(f"<{old}.model", f"<{new}.model", 1)
+        replacement = replacement.replace(f'name="{old}.model"', f'name="{new}.model"', 1)
+        status = "renamed"
+    updated = text[:match.start()] + replacement + text[match.end():]
+    ET.fromstring(updated)
+    return updated, status
+
+
+def _model_references(proj: Path, target_path: Path, model_name: str) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    token = re.compile(rf"(?<![A-Za-z0-9_$]){re.escape(model_name)}(?![A-Za-z0-9_$])")
+    for candidate in sorted((proj.parent / "model").glob("*.model")):
+        if candidate.resolve() == target_path.resolve():
+            continue
+        try:
+            model = parse_robei_model(candidate)
+        except Exception as exc:
+            refs.append({"kind": "parse_error", "path": str(candidate), "reason": f"{type(exc).__name__}: {exc}"})
+            continue
+        for instance in model.get("instances") or []:
+            if _instance_model_matches(instance, model_name):
+                refs.append({"kind": "canvas_instance", "path": str(candidate), "parent_model": model["name"], "instance": instance.get("instance"), "model": model_name})
+        if token.search(model.get("code") or ""):
+            refs.append({"kind": "behavior_code", "path": str(candidate), "parent_model": model["name"], "model": model_name})
+    for candidate in sorted((proj.parent / "test").glob("*.test")):
+        try:
+            code = parse_robei_model(candidate).get("code") or ""
+        except Exception as exc:
+            refs.append({"kind": "parse_error", "path": str(candidate), "reason": f"{type(exc).__name__}: {exc}"})
+            continue
+        if token.search(code):
+            refs.append({"kind": "test_code", "path": str(candidate), "test": candidate.stem, "model": model_name})
+    return refs
+
+
+def manage_robei_model(
+    proj_path: str,
+    model_path: str,
+    op: str,
+    new_name: str | None = None,
+    overwrite: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Rename, delete or duplicate one project model with transactional backups."""
+    if op not in {"rename", "delete", "duplicate"}:
+        raise BadRequest("op must be rename, delete or duplicate", 'use op="rename", "delete" or "duplicate"', code="bad_argument")
+    proj = resolve_project_path(proj_path)
+    source = resolve_model_path(model_path)
+    model_dir = proj.parent / "model"
+    if source.parent.resolve() != model_dir.resolve():
+        raise PathEscape(f"model path must stay inside the project model directory: {source}")
+    if not source.is_file():
+        raise FileNotFoundError(f"model not found: {source}")
+    parsed = parse_robei_model(source)
+    old_name = parsed["name"]
+    target: Path | None = None
+    if op in {"rename", "duplicate"}:
+        if not new_name or not MODEL_NAME_RE.fullmatch(new_name):
+            raise BadRequest("new_name must be a legal model identifier", "pass a Verilog identifier such as new_top", code="bad_argument")
+        target = model_dir / f"{new_name}.model"
+        if target.exists() and not overwrite:
+            raise FileExistsError(f"model already exists: {target}")
+        if target.resolve() == source.resolve():
+            raise BadRequest("new_name must differ from the source model", "choose a different model name", code="bad_argument")
+    refs = [] if op == "duplicate" else _model_references(proj, source, old_name)
+    if refs:
+        exc = BadRequest(f"model {old_name!r} is still referenced", "remove or update all references before this operation", code="model_in_use")
+        exc.references = refs
+        raise exc
+    project_text = proj.read_text(encoding="utf-8")
+    project_preview = project_text
+    registration = "unchanged"
+    if op == "rename":
+        project_preview, registration = _project_model_entry_replace(project_text, old_name, new_name)
+    elif op == "delete":
+        project_preview, registration = _project_model_entry_replace(project_text, old_name, None)
+    elif op == "duplicate":
+        registration = "pending"
+    files = [str(source), str(proj)] + ([str(target)] if target is not None and target.exists() else [])
+    result: dict[str, Any] = {
+        "ok": True,
+        "dry_run": bool(dry_run),
+        "op": op,
+        "model": old_name,
+        "new_name": new_name,
+        "source": str(source),
+        "target": str(target) if target is not None else None,
+        "project": str(proj),
+        "references": refs,
+        "files": files,
+        "registration": registration,
+        "sha256_before": _sha256(source),
+    }
+    if dry_run:
+        return result
+
+    originals: dict[Path, bytes] = {source: source.read_bytes(), proj: proj.read_bytes()}
+    if target is not None and target.exists():
+        originals[target] = target.read_bytes()
+    backups: dict[Path, Path | None] = {}
+    created_target = target is not None and not target.exists()
+    try:
+        for item in originals:
+            backups[item] = _backup_file(item)
+        if op == "rename":
+            rewritten = _rewrite_root_attr(source.read_text(encoding="utf-8"), "Name", new_name or "")
+            ET.fromstring(rewritten)
+            target.write_text(rewritten, encoding="utf-8", newline="\n")
+            source.unlink()
+            proj.write_text(project_preview, encoding="utf-8", newline="\n")
+        elif op == "delete":
+            source.unlink()
+            proj.write_text(project_preview, encoding="utf-8", newline="\n")
+        else:
+            rewritten = _rewrite_root_attr(source.read_text(encoding="utf-8"), "Name", new_name or "")
+            ET.fromstring(rewritten)
+            target.write_text(rewritten, encoding="utf-8", newline="\n")
+            registration = _register_model_in_project(proj, new_name or "")
+    except Exception:
+        if target is not None and target not in originals and target.exists():
+            target.unlink()
+        for item, data in originals.items():
+            item.parent.mkdir(parents=True, exist_ok=True)
+            item.write_bytes(data)
+        raise
+    result.update({
+        "registration": registration,
+        "backup": str(backups.get(source)) if backups.get(source) else None,
+        "backups": {str(item): str(backup) for item, backup in backups.items() if backup},
+        "sha256": _sha256(target if op in {"rename", "duplicate"} else source) if op != "delete" else None,
+        "project_sha256": _sha256(proj),
+    })
+    return result
+
+
 # ---------------------------------------------------------------------------
 # 1.1.0 — component library (read-only scan of the installed Robei ToolBox)
 # ---------------------------------------------------------------------------
@@ -4834,5 +5210,3 @@ def import_library_model(
         }
     )
     return result
-    batch_started = time.monotonic()
-        "elapsed_ms": round((time.monotonic() - batch_started) * 1000),

@@ -583,15 +583,32 @@ def edit_robei_canvas(
     ops: list[dict[str, Any]],
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Edit a canvas model in place, atomically, then return the diff and a Verilog preview.
-
-    ops: add_instance [{"op": "add_instance", "name": "u1", "model": "and2"}],
-    remove_instance, connect [{"from": "a", "to": "u1.a", "net": "a_n"}],
-    disconnect [{"net": "a_n"}], rename_wire [{"net": "a_n", "new_name": "a_bus"}].
-    Unknown ports/instances, width mismatches and duplicate names abort the whole call.
-    """
+    """Edit a canvas model atomically (including move_instance and rename_port)."""
     try:
         return tools.edit_robei_canvas(model_path=model_path, ops=ops, dry_run=dry_run)
+    except Exception as exc:
+        return _error(exc)
+
+
+@tool(annotations=WRITE)
+def manage_robei_model(
+    proj_path: str,
+    model_path: str,
+    op: Literal["rename", "delete", "duplicate"],
+    new_name: str | None = None,
+    overwrite: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Rename, delete or duplicate a project model with reference checks and rollback."""
+    try:
+        return tools.manage_robei_model(
+            proj_path=proj_path,
+            model_path=model_path,
+            op=op,
+            new_name=new_name,
+            overwrite=overwrite,
+            dry_run=dry_run,
+        )
     except Exception as exc:
         return _error(exc)
 
