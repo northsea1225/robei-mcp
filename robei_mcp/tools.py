@@ -1434,6 +1434,7 @@ def build_report(
     overwrite: bool = False,
     timeout_s: int = 60,
     reuse_existing_runs: bool = False,
+    testbench_results: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build a fact-only Markdown report and a line-addressable evidence ledger."""
     allowed = {"simulation", "truth_table", "display", "assertions", "waveform", "synthesis"}
@@ -1472,6 +1473,13 @@ def build_report(
     rows: list[dict[str, Any]] = []
     missing: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
+    testbench_by_name: dict[str, dict[str, Any]] = {}
+    for item in testbench_results or []:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("test") or item.get("name")
+        if isinstance(key, str) and key:
+            testbench_by_name[key.removesuffix(".test")] = item
     for stem in stems:
         reused = False
         vcd = _find_reusable_vcd(project_dir, stem) if reuse_existing_runs else None
@@ -1503,6 +1511,35 @@ def build_report(
             test_row[f"{field}_evidence"] = fact_line
         vcd_fact = fact("simulation", f"{stem}.vcd_paths", vcds, str(proj), None)
         test_row["vcd_evidence"] = vcd_fact
+
+    # Optional semantic-TB facts are advisory: malformed or incomplete entries
+    # become "未提供" facts and never abort an otherwise valid report.
+    testbench_rows: list[dict[str, Any]] = []
+    for row in rows:
+        item = testbench_by_name.get(row["test"])
+        if item is None:
+            continue
+        semantic = item.get("semantic") if isinstance(item.get("semantic"), dict) else {}
+        run_item = item.get("run") if isinstance(item.get("run"), dict) else {}
+        run_tests = run_item.get("tests") if isinstance(run_item.get("tests"), list) else []
+        run_row = run_tests[0] if run_tests and isinstance(run_tests[0], dict) else {}
+        facts = {
+            "test": row["test"],
+            "vector_count": semantic.get("vector_count"),
+            "assertion_count": semantic.get("assertion_count"),
+            "mode": semantic.get("mode"),
+            "ok": item.get("ok"),
+            "run_ok": run_item.get("ok"),
+            "selftest": "PASS" if "SELFTEST PASS" in str(run_row.get("display_output") or "") else ("FAIL" if "SELFTEST FAIL" in str(run_row.get("display_output") or "") else None),
+            "log_path": run_row.get("run_dir") or item.get("log_path"),
+        }
+        facts["_evidence"] = {
+            key: fact("testbench", f"{row['test']}.{key}", value, facts.get("log_path"), None)
+            for key, value in facts.items()
+            if not key.startswith("_")
+        }
+        row["testbench"] = facts
+        testbench_rows.append(facts)
 
     if "truth_table" in sections:
         truth_rows: list[dict[str, Any]] = []
@@ -1655,6 +1692,16 @@ def build_report(
             plot = row.get("plot") or {}
             lines.append(f"- `{row['test']}`: `{plot.get('relative_path') or '未提供'}`")
         lines.append("")
+    if testbench_rows:
+        lines += ["## Semantic testbench facts", "", "| test | mode | vectors | assertions | PASS/FAIL | log |", "| --- | --- | ---: | ---: | --- | --- |"]
+        for item in testbench_rows:
+            ev = item.get("_evidence") or {}
+            lines.append(
+                f"| `{item['test']}` | `{_report_value(item.get('mode'))}` | `{_report_value(item.get('vector_count'))}` ([evidence:{ev.get('vector_count')}]) | "
+                f"`{_report_value(item.get('assertion_count'))}` ([evidence:{ev.get('assertion_count')}]) | `{_report_value(item.get('selftest') or item.get('run_ok') or item.get('ok'))}` ([evidence:{ev.get('selftest')}]) | "
+                f"`{_report_value(item.get('log_path'))}` ([evidence:{ev.get('log_path')}]) |"
+            )
+        lines.append("")
     if "synthesis" in sections:
         lines += ["## Synthesis facts", "", "| field | value | evidence |", "| --- | --- | --- |"]
         if synthesis and synthesis.get("ok"):
@@ -1685,6 +1732,7 @@ def build_report(
         "evidence_path": str(evidence_path),
         "evidence_relative_path": _rel(evidence_path),
         "tests": rows,
+        "testbench": testbench_rows,
         "sections": sorted(sections),
         "missing": missing,
         "warnings": warnings,

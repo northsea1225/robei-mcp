@@ -890,6 +890,7 @@ async def build_report(
     overwrite: bool = False,
     timeout_s: int = 60,
     reuse_existing_runs: bool = False,
+    testbench_results: list[dict[str, Any]] | None = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Build a fact-only Markdown report plus a line-addressable evidence ledger."""
@@ -906,6 +907,7 @@ async def build_report(
             overwrite=overwrite,
             timeout_s=timeout_s,
             reuse_existing_runs=reuse_existing_runs,
+            testbench_results=testbench_results,
         )
     except Exception as exc:
         return _error(exc)
