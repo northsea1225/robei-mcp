@@ -52,7 +52,7 @@ create_testbench(
 )
 ```
 
-组合输入上限 12 bit、4096 个向量；timed 仿真最长 1 ms。`run=true` 复用 `run_all_tests`，生成的自检日志出现 `SELFTEST FAIL` 时返回 `selftest_failed`。`build_report(testbench_results=[...])` 可引用向量数、PASS/FAIL 和运行目录；字段缺失时写“未提供”。
+组合输入默认上限 12 bit、4096 个向量；宽 DUT 的有限 literal vectors 可显式传 `allow_wide_vectors=true`，仍不能用来穷举；timed 仿真最长 1 ms。`run=true` 复用 `run_all_tests`，生成的自检日志出现 `SELFTEST FAIL` 时返回 `selftest_failed`。`build_report(testbench_results=[...])` 可引用向量数、PASS/FAIL 和运行目录；字段缺失时写“未提供”。
 
 ## 1.6 根参数与服务生命周期
 

@@ -2360,6 +2360,7 @@ def create_testbench(
     reset: dict[str, Any] | None = None,
     stimuli: list[dict[str, Any]] | None = None,
     assertions: list[dict[str, Any]] | None = None,
+    allow_wide_vectors: bool = False,
 ) -> dict[str, Any]:
     """Create a bounded literal-vector or timed ``test/*.test`` model."""
     proj = resolve_project_path(proj_path)
@@ -2449,10 +2450,10 @@ def create_testbench(
         }
 
     if mode == "combinational":
-        if input_bits > 12:
+        if input_bits > 12 and not allow_wide_vectors:
             raise BadRequest(
                 f"input width {input_bits} exceeds create_testbench limit 12",
-                "split the DUT or provide a smaller combinational interface",
+                "split the DUT, or pass allow_wide_vectors=true for finite literal vectors",
                 code="limit_exceeded",
             )
         if not isinstance(vectors, list) or not vectors:
@@ -2507,6 +2508,7 @@ def create_testbench(
             "mode": "combinational", "dut": parsed["name"], "model_path": str(model),
             "input_bits": input_bits, "vector_count": len(assignments),
             "assertion_count": len(assignments) * len(output_ports), "literal_expectations": True,
+            "allow_wide_vectors": bool(allow_wide_vectors),
         })
 
     # timed mode ------------------------------------------------------------

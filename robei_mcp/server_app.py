@@ -656,6 +656,7 @@ def create_testbench(
     reset: dict[str, Any] | None = None,
     stimuli: list[dict[str, Any]] | None = None,
     assertions: list[dict[str, Any]] | None = None,
+    allow_wide_vectors: bool = False,
 ) -> dict[str, Any]:
     """Create a bounded combinational or timed test/*.test from literal expectations."""
     try:
@@ -663,6 +664,7 @@ def create_testbench(
             proj_path=proj_path, name=name, model_path=model_path, vectors=vectors,
             timescale=timescale, overwrite=overwrite, run=run, mode=mode,
             clock=clock, reset=reset, stimuli=stimuli, assertions=assertions,
+            allow_wide_vectors=allow_wide_vectors,
         )
     except Exception as exc:
         return _error(exc)

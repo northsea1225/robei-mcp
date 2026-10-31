@@ -549,9 +549,10 @@ set_robei_parameter(action="rename", name="LEN", new_name="WIDTH",
   `stimuli[{at,drive}]` 和 `assertions[{at,expect}]`。边沿相对断言写成
   `{"after_edge": N, "expect": {...}}`；同一时刻按 drive → 一个 timescale 单位的 settle → sample。
 
-时间 `at` 只按声明的 `timescale` 解释，不做隐式单位换算。整段仿真最长 1 ms；组合模式最多
-12 个输入 bit / 4096 个 vectors，超限返回 `code=limit_exceeded`。参数化端口位宽无法解析时
-返回 `invalid_argument`。默认 `run=false`；传 `run=true` 会调用 `run_all_tests`，若生成的
+时间 `at` 只按声明的 `timescale` 解释，不做隐式单位换算。整段仿真最长 1 ms；组合模式默认最多
+12 个输入 bit / 4096 个 vectors，超限返回 `code=limit_exceeded`。对 exp5 这类宽 DUT，有限
+literal vectors 可显式传 `allow_wide_vectors=true`；仍受 4096 vectors 上限约束，不做穷举。
+参数化端口位宽无法解析时返回 `invalid_argument`。默认 `run=false`；传 `run=true` 会调用 `run_all_tests`，若生成的
 PASS/FAIL 汇总出现 `SELFTEST FAIL`，返回 `code=selftest_failed`。生成代码不包含 `module`、
 `$dumpfile` 或 `$dumpvars`，Robei 外层负责测试模块和 VCD dump。
 
