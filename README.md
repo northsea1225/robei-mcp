@@ -103,7 +103,7 @@ lab16 的最小顺序示例：
 | Python 3.10+ | 开发机用 3.12.10 |
 | Robei EDA | 自带 `iverilog` / `vvp` / `yosys`；也可用独立安装的 Icarus |
 | （可选）Verilator | `--lint-only` 那一路，缺了会自动跳过 |
-| （可选）Windows 交互桌面 | 只有 11 个 `robei_gui_*` 工具需要 |
+| （可选）Windows 交互桌面 | 只有 12 个 GUI 工具需要 |
 
 ### 2. 安装
 
@@ -123,7 +123,7 @@ python C:\dev\robei-mcp\tools\setup.py --apply
 
 依赖只有两个：`mcp==2.3.0`、`matplotlib`（画波形 PNG 用）。
 
-想用 11 个 `robei_gui_*` 工具，再装可选依赖（仅 Windows 需要）：
+想用 12 个 GUI 工具，再装可选依赖（仅 Windows 需要）：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e ".[gui]"     # 源码目录
@@ -133,8 +133,8 @@ python C:\dev\robei-mcp\tools\setup.py --apply
 `[gui]` 会带上 `pywinauto`、`Pillow`、`pywin32`。**没装这三个包时 GUI 工具不会出现在
 `tools/list` 里**，而不是调用时才报错；`tools\setup.py --apply` 也会在 Windows 上补装它们。
 
-一句话：基础 wheel 只有 **40 个文件级工具**；装上 `[gui]`（且只在 Windows 上）才会多出
-11 个 `robei_gui_*`，合计 **51 个**。
+一句话：基础 wheel 只有 **42 个文件级工具**；装上 `[gui]`（且只在 Windows 上）才会多出
+12 个 GUI 工具，合计 **54 个**。
 
 ### 3. 自检
 
@@ -241,7 +241,7 @@ strict_path_scan = true
 
 **FPGA（3）** — `list_fpga_devices`（器件表：有没有 chipdb、有没有 part.yaml）、`synthesize_project`（yosys `synth_xilinx` + LUT/FF/BRAM/DSP/IO 用量）、`build_bitstream`（Roplace → fasm2frames → xc7frames2bit，直出 `.bit`）
 
-**GUI（11，需 Windows 桌面）** — `robei_gui_status`（`probe=true` 顺带查 UIA 桥是否还活着）、`launch`、`open_project`、`open_model`、`compile`、`output`、`save_project`、`synthesis`、`compile_all`、`screenshot`、`close`
+**GUI（12，需 Windows 桌面）** — `gui_doctor`、`robei_gui_status`（`probe=true` 顺带查 UIA 桥是否还活着）、`launch`、`open_project`、`open_model`、`compile`、`output`、`save_project`、`synthesis`、`compile_all`、`screenshot`、`close`
 
 ## GUI 部分的前提
 
