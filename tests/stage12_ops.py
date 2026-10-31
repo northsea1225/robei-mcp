@@ -49,6 +49,11 @@ async def main() -> int:
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
+            doctor = payload(await session.call_tool("gui_doctor", {}))
+            print("GUI_DOCTOR", json.dumps(doctor, ensure_ascii=False))
+            if not doctor.get("ok"):
+                print("GUI_DOCTOR_FAILED", json.dumps(doctor.get("failed_checks") or [], ensure_ascii=False))
+                return 2
             names = [t.name for t in (await session.list_tools()).tools]
             print("TOOL_COUNT=", len(names))
             for want in ("list_projects", "robei_gui_status", "robei_gui_compile_all"):

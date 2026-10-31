@@ -18,7 +18,17 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from robei_mcp import tools
+from robei_mcp import gui, tools
+
+
+def gui_preflight() -> dict:
+    data = gui.gui_doctor()
+    print("GUI_DOCTOR", json.dumps(data, ensure_ascii=False))
+    if not data.get("ok"):
+        print("GUI_DOCTOR_FAILED", json.dumps(data.get("failed_checks") or [], ensure_ascii=False))
+        raise RuntimeError("gui_doctor failed before stage10")
+    return data
+
 
 PROJECT = "counter4_scratch"  # scratch: never overwrite the tracked counter4_native
 TEST = "tb_counter4.test"
@@ -44,6 +54,7 @@ end"""
 def main() -> None:
     report: dict = {}
     try:
+        gui_preflight()
         root = tools.SETTINGS.workspace / PROJECT
         if root.exists():
             shutil.rmtree(root)
@@ -90,6 +101,8 @@ def main() -> None:
             report["png"] = {k: png.get(k) for k in ("ok", "path", "relative_path")}
     except Exception:
         report["fatal"] = traceback.format_exc()[-2500:]
+        print(json.dumps(report, ensure_ascii=False, indent=1))
+        raise SystemExit(2)
     print(json.dumps(report, ensure_ascii=False, indent=1))
 
 
