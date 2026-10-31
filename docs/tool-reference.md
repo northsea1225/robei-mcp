@@ -417,12 +417,14 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 | `disconnect` | `net` / `from` / `to` 至少一个 | 匹配不到任何线就报错；`from`/`to` 命中某个实例端口的 `Connect` 时一并清空（`connects_cleared`） |
 | `set_parameters` | `name`, `parameters`（对象或 `"A = 1;"` 字符串） | 重写该实例的 `Parameters`（`LEN=8` / 多参数都走同一套校验），`""` 表示清空 |
 | `rename_wire` | `net`（或 `from`）+ `new_name` | 新名字不能和已有 net 撞 |
+| `move_instance` | `name`, `x`, `y` | 只改实例坐标，其他属性保持不变；坐标必须是有限整数 |
+| `rename_port` | `name`, `new_name`, 可选 `update_parents` | token 级更新 Wire、Connect、netlist；行为 Code 引用或父模型引用默认返回 `model_in_use` |
 
 - 位宽按 Robei 的语义算：`Datasize="4"` 是 4 位、`"3:0"` 是 4 位；`"LEN-1:0"` 这种
   解析不出来的表达式要求两端字面量一致。不一致返回 `code=width_mismatch`，消息里带两边位宽
 - `connect` 的位选（`a[0]` / `a[7:0]`）与 `create_robei_canvas_model` 同规则：父端口越界、
   切片宽度与实例端口不等、两端都带位选都报错；参数化宽度只给 warning
-- `set_parameters` 是对实例参数的最小改法（本 op 不新增独立工具；1.7.0 工具数为 51 / 40）：子模型没
+- `set_parameters` 是对实例参数的最小改法（本 op 不新增独立工具；1.8 M3 默认工具数为 52 / 41）：子模型没
   声明的名字直接报错，名字大小写按子模型的声明改写（`len` → `LEN`）
 - `diff` 里除了 wire，还会报 `connects_added` / `connects_changed` / `connects_removed` /
   `parameters_changed`，位选和参数改动不会"看起来没动"
@@ -430,8 +432,21 @@ test 模型、`verilog/` 下的依赖、`build/` 里已有的 VCD，以及 `.pro
 - 端点不存在 / 实例重名 / 未知 op → `invalid_argument`
 - 返回 `diff`（增删的实例与 wire）、`ports`、`instances`、`wires`、`netlist`、`verilog_preview`
 - 写盘前留 `.bak-<时间戳>`；`dry_run=true` 只返回预览
+- renderer 会保留根 `Vendor` / `Device` / `Family` 属性和未知 `other_children` 节点
 - 旧式 `<Instance Name="u1" Module="and2"/>` 也能读：`instances[].module` 就是那个字段，
   没有 `<Port>` 子节点时端口从子模型补齐
+
+### `manage_robei_model`
+
+```json
+{"proj_path":"lab_copy/lab_copy.proj","model_path":"lab_copy/model/child.model","op":"rename","new_name":"child2"}
+```
+
+支持 `rename`、`delete`、`duplicate`；新建模型继续使用 `create_robei_model`。
+操作同步 `.proj` 的 model 注册，发现画布实例、行为 Code 或 test 引用时返回
+`code=model_in_use` 和 `references[]`。涉及多个文件时逐个创建 `.bak`，失败会回滚全部文件。
+路径、已存在目标、未知模型和非法参数分别返回 `path_escape`、`already_exists`、
+`not_found`、`bad_argument`。
 
 ### `set_robei_code`
 
@@ -761,15 +776,18 @@ workspace 下 `logs/`、`build/` 目录里的文件（工程自带的 `<proj>/bu
       "warnings": []
     }
   ],
-  "warnings": []
+  "warnings": [],
+  "elapsed_ms": 908
 }
 ```
 
+- `elapsed_ms` 是整批调用的实际墙钟耗时，不是各 test `duration_ms` 的简单相加。
 - 单个 test 失败或超时不会中断其它 test；`fail_fast=true` 后尚未完成的 test 标记为
   `aborted`，不计入 `failed`。
-- `timeout_s` 是每个 test 的预算；`total_timeout_s` 是整批墙钟预算。无法取得的
-  `returncode`、`duration_ms`、`vcd_paths` 或 `error_tail` 返回 `null`，并在 `warnings[]`
-  中列出字段，不用估算值。
+- `timeout_s` 是每个 test 的预算；`total_timeout_s` 是整批墙钟预算。整批预算到期时，
+  尚未开始的 test 标记为 `aborted`；正在运行的 test 被取消/标记为 `aborted`，不会计入
+  `failed`。`elapsed_ms` 仍返回实际墙钟耗时。无法取得的 `returncode`、`duration_ms`、
+  `vcd_paths` 或 `error_tail` 返回 `null`，并在 `warnings[]` 中列出字段，不用估算值。
 - 空测试集返回 `total=0`、`ok=false`。路径/名称错误分别返回 `path_escape`、`not_found`
   或 `invalid_argument`；子进程超时/客户端取消分别为 `timeout`/`cancelled`。
 

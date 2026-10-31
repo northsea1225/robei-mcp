@@ -4834,3 +4834,5 @@ def import_library_model(
         }
     )
     return result
+    batch_started = time.monotonic()
+        "elapsed_ms": round((time.monotonic() - batch_started) * 1000),
