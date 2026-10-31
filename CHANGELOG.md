@@ -2,6 +2,15 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.9.0 — Unreleased
+
+**Session-1 GUI 前置诊断与语义化测试台。**
+
+- 新增只读 `gui_doctor`：统一检查电源、Session-1、锁屏、前台全屏、clip_rect 和内置前台黑名单。
+- `create_testbench` 支持组合向量与 timed clock/reset/stimuli/assertions；支持 `after_edge`，
+  生成测试自检 PASS/FAIL，组合输入上限 12 bit、4096 vectors，timed 仿真上限 1 ms。
+- stage10/11/12/18 开始前统一执行 `gui_doctor`；失败打印 `failed_checks` 并停止。
+
 ## 1.8.0 — 2026-10-31
 
 **批量实验闭环、模型生命周期与容量来源。**

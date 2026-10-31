@@ -524,6 +524,52 @@ set_robei_parameter(action="rename", name="LEN", new_name="WIDTH",
 - `full_combo=true`：穷举所有自由输入的组合（`2^bits` 行，`bits > max_combo_bits` 直接拒绝），
   每步 `$display("combo a=%b b=%b y=%b", ...)`，适合组合逻辑直接出真值表
 
+### `create_testbench`
+
+```json
+{
+  "proj_path": "_qa_runs/m3_exp6/exp6_counter.proj",
+  "name": "tb_counter_timed",
+  "model_path": "_qa_runs/m3_exp6/model/dec_counter.model",
+  "mode": "timed",
+  "clock": {"signal": "clk", "period": 10, "edge": "posedge"},
+  "reset": {"signal": "rst", "active": 1, "at": 0, "duration": 10},
+  "stimuli": [{"at": 110, "drive": {"en": 0}}],
+  "assertions": [{"after_edge": 10, "expect": {"cnt": 0, "co": 0}}],
+  "run": false
+}
+```
+
+生成并注册 `test/<name>.test`，复用 `create_robei_test` 的备份和 overwrite 规则；输入源
+`.model` 只读。`mode` 有两种：
+
+- `combinational`：`vectors=[{"drive": {...}, "expect": {...}}]`，期望值必须是整数或
+  0/1/x/z 字面量，使用四态 `===` 比较。
+- `timed`：支持 `clock{signal,period,edge}`、`reset{signal,active,at,duration}`、
+  `stimuli[{at,drive}]` 和 `assertions[{at,expect}]`。边沿相对断言写成
+  `{"after_edge": N, "expect": {...}}`；同一时刻按 drive → 一个 timescale 单位的 settle → sample。
+
+时间 `at` 只按声明的 `timescale` 解释，不做隐式单位换算。整段仿真最长 1 ms；组合模式最多
+12 个输入 bit / 4096 个 vectors，超限返回 `code=limit_exceeded`。参数化端口位宽无法解析时
+返回 `invalid_argument`。默认 `run=false`；传 `run=true` 会调用 `run_all_tests`，若生成的
+PASS/FAIL 汇总出现 `SELFTEST FAIL`，返回 `code=selftest_failed`。生成代码不包含 `module`、
+`$dumpfile` 或 `$dumpvars`，Robei 外层负责测试模块和 VCD dump。
+
+### `gui_doctor`
+
+```json
+{"blocked_foreground": ["my-game.exe"], "screenshot": false}
+```
+
+只读地通过 Session-1 `RobeiMCP_GuiAgent` 检查 GUI 前置条件：BatteryStatus 全为 2、
+Session-1 的 explorer 恰为 1、input desktop 为 `Default`、未锁屏、前台不是全屏应用、
+`clip_rect` 为空或等于整屏。内置前台黑名单 `Endfield.exe` / `HYP.exe` 不可删除，
+`blocked_foreground` 只能追加。不会调用 `SetCursorPos`、`SendInput`、`taskkill` 或切换焦点。
+
+返回完整的 `session`、`battery`、`desktop`、`foreground`、`input`、`checks` 和
+`failed_checks`；任何硬门槛失败都返回 `ok=false`、`code=gui_preflight_failed`。`screenshot=true`
+时才在 `workspace/gui_shots/` 留截图元数据。
+
 ### `create_robei_const`
 
 ```json
@@ -793,6 +839,12 @@ workspace 下 `logs/`、`build/` 目录里的文件（工程自带的 `<proj>/bu
   `vcd_paths` 或 `error_tail` 返回 `null`，并在 `warnings[]` 中列出字段，不用估算值。
 - 空测试集返回 `total=0`、`ok=false`。路径/名称错误分别返回 `path_escape`、`not_found`
   或 `invalid_argument`；子进程超时/客户端取消分别为 `timeout`/`cancelled`。
+
+### GUI stage preflight
+
+stage10、stage11、stage12、stage18 都在开始时调用 `gui_doctor`；失败打印 `failed_checks`
+并停止，成功则把完整返回写入 stage 日志。旧的 `generate_testbench` 和 `simulate_project`
+接口语义不变。
 
 ### `robei_gui_open_project`
 
