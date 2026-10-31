@@ -990,64 +990,260 @@ def simulate_project(
 
 def run_all_tests(
     proj_path: str,
+    tests: list[str] | None = None,
     timeout_s: int = 60,
     render: bool = False,
+    max_parallel: int = 1,
+    fail_fast: bool = False,
+    total_timeout_s: int | None = None,
     progress=None,
 ) -> dict[str, Any]:
-    """Run every ``test/*.test`` model in a project and aggregate the result.
+    """Run selected ``test/*.test`` models and isolate each result.
 
-    One failing test does not stop the batch: the payload keeps per-test rc,
-    duration, VCD paths and the error tail so the caller can see what broke.
+    ``simulate_project`` remains a single-test primitive. This controller adds
+    optional bounded parallelism (at most two workers), fail-fast cancellation of
+    not-yet-started tests, and an optional wall-clock budget for the batch.
     """
+    import concurrent.futures
+    import math
+
     proj = resolve_project_path(proj_path)
     if not is_within(proj, SETTINGS.workspace):
         raise ValueError("refusing to simulate a project outside the workspace")
+    if isinstance(max_parallel, bool) or not isinstance(max_parallel, int) or not 1 <= max_parallel <= 2:
+        raise ValueError("max_parallel must be an integer between 1 and 2")
+    if total_timeout_s is not None and (
+        isinstance(total_timeout_s, bool)
+        or not isinstance(total_timeout_s, int)
+        or total_timeout_s <= 0
+    ):
+        raise ValueError("total_timeout_s must be a positive integer or null")
+    if tests is not None and not isinstance(tests, list):
+        raise TypeError("tests must be a list of test names or null")
+
     test_dir = proj.parent / "test"
-    tests = sorted(test_dir.glob("*.test")) if test_dir.is_dir() else []
-    rows: list[dict[str, Any]] = []
-    for index, test_path in enumerate(tests):
-        _notify(progress, index, max(1, len(tests)), f"running {test_path.stem}")
-        started = time.monotonic()
+    if tests is None:
+        stems = sorted(path.stem for path in test_dir.glob("*.test")) if test_dir.is_dir() else []
+    else:
+        stems = []
+        for item in tests:
+            if not isinstance(item, str):
+                raise TypeError("tests entries must be strings")
+            stem = item[:-5] if item.lower().endswith(".test") else item
+            if not MODEL_NAME_RE.match(stem):
+                raise ValueError(f"invalid test name: {item!r}")
+            test_path = test_dir / f"{stem}.test"
+            if not test_path.is_file():
+                available = sorted(p.stem for p in test_dir.glob("*.test")) if test_dir.is_dir() else []
+                raise FileNotFoundError(
+                    f"test model not found: {test_path} (available: {available})"
+                )
+            if stem in stems:
+                raise ValueError(f"duplicate test name: {stem!r}")
+            stems.append(stem)
+
+    warnings: list[dict[str, Any]] = []
+    rows_by_index: dict[int, dict[str, Any]] = {}
+    token = runstate.current()
+    deadline = time.monotonic() + total_timeout_s if total_timeout_s is not None else None
+
+    def _row_warnings(row: dict[str, Any], stem: str) -> None:
+        row_warnings = row.setdefault("warnings", [])
+        for field in ("returncode", "duration_ms", "vcd_paths", "error_tail"):
+            if row.get(field) is None:
+                item = {"test": stem, "field": field, "reason": "not provided"}
+                row_warnings.append(item)
+                warnings.append(item)
+
+    def _run_one(stem: str, budget: int) -> dict[str, Any]:
         try:
-            result = simulate_project(
-                proj_path=str(proj),
-                test_name=test_path.stem,
-                timeout_s=timeout_s,
-                render=render,
-            )
+            if token is None:
+                result = simulate_project(
+                    proj_path=str(proj), test_name=stem, timeout_s=budget, render=render
+                )
+            else:
+                with runstate.use(token):
+                    result = simulate_project(
+                        proj_path=str(proj), test_name=stem, timeout_s=budget, render=render
+                    )
+        except TimeoutError as exc:
             row = {
-                "test": test_path.stem,
-                "ok": bool(result.get("ok")),
-                "returncode": result.get("returncode"),
-                "duration_ms": round((time.monotonic() - started) * 1000),
-                "vcd_paths": result.get("vcd_paths") or [],
-                "error_tail": [] if result.get("ok") else _result_tail(result),
-            }
-            if result.get("plot"):
-                row["plot"] = result["plot"]
-        except Exception as exc:  # one broken test must not hide the others
-            row = {
-                "test": test_path.stem,
+                "test": stem,
                 "ok": False,
                 "returncode": None,
-                "duration_ms": round((time.monotonic() - started) * 1000),
-                "vcd_paths": [],
+                "duration_ms": None,
+                "timed_out": True,
+                "vcd_paths": None,
                 "error_tail": [f"{type(exc).__name__}: {exc}"],
             }
-        rows.append(row)
-    _notify(progress, len(tests), max(1, len(tests)), "done")
-    passed = sum(1 for row in rows if row["ok"])
+            _row_warnings(row, stem)
+            return row
+        except Exception as exc:  # one broken test must not hide the others
+            row = {
+                "test": stem,
+                "ok": False,
+                "returncode": None,
+                "duration_ms": None,
+                "timed_out": False,
+                "vcd_paths": None,
+                "error_tail": [f"{type(exc).__name__}: {exc}"],
+            }
+            _row_warnings(row, stem)
+            return row
+
+        compile_result = result.get("compile") if isinstance(result, dict) else None
+        simulation_result = result.get("simulation") if isinstance(result, dict) else None
+        stage = simulation_result if isinstance(simulation_result, dict) else compile_result
+        stage = stage if isinstance(stage, dict) else {}
+        returncode = result.get("returncode") if isinstance(result, dict) and "returncode" in result else stage.get("returncode")
+        duration_ms = result.get("duration_ms") if isinstance(result, dict) and "duration_ms" in result else stage.get("duration_ms")
+        vcd_paths = result.get("vcd_paths") if isinstance(result, dict) and "vcd_paths" in result else None
+        timed_out = bool(
+            isinstance(result, dict)
+            and (
+                result.get("code") == "timeout"
+                or result.get("timeout")
+                or (isinstance(compile_result, dict) and compile_result.get("timeout"))
+                or (isinstance(simulation_result, dict) and simulation_result.get("timeout"))
+            )
+        )
+        if isinstance(result, dict) and result.get("ok") is True:
+            error_tail = []
+        elif isinstance(result, dict) and any(
+            key in result for key in ("stdout", "stderr", "compile", "simulation")
+        ):
+            error_tail = _result_tail(result)
+        else:
+            error_tail = None
+        row = {
+            "test": stem,
+            "ok": result.get("ok") if isinstance(result, dict) and "ok" in result else None,
+            "returncode": returncode,
+            "duration_ms": duration_ms,
+            "timed_out": timed_out,
+            "vcd_paths": vcd_paths,
+            "error_tail": error_tail,
+        }
+        if isinstance(result, dict):
+            for key in ("code", "stage", "run_dir"):
+                if key in result:
+                    row[key] = result[key]
+            if result.get("plot") is not None:
+                row["plot"] = result["plot"]
+        _row_warnings(row, stem)
+        return row
+
+    def _aborted(index: int, stem: str, reason: str) -> None:
+        row = {
+            "test": stem,
+            "ok": False,
+            "returncode": None,
+            "duration_ms": None,
+            "timed_out": False,
+            "vcd_paths": None,
+            "error_tail": None,
+            "aborted": True,
+            "warnings": [{"test": stem, "field": "aborted", "reason": reason}],
+        }
+        warnings.append(row["warnings"][0])
+        _row_warnings(row, stem)
+        rows_by_index[index] = row
+
+    if stems:
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel)
+        futures: dict[concurrent.futures.Future, tuple[int, str]] = {}
+        next_index = 0
+        wait_for_workers = True
+
+        def submit_available() -> None:
+            nonlocal next_index
+            while len(futures) < max_parallel and next_index < len(stems):
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        for index in range(next_index, len(stems)):
+                            _aborted(index, stems[index], "total_timeout_s exceeded before start")
+                        next_index = len(stems)
+                        return
+                    budget = min(timeout_s, max(1, int(math.ceil(remaining))))
+                else:
+                    budget = timeout_s
+                index = next_index
+                stem = stems[index]
+                next_index += 1
+                futures[executor.submit(_run_one, stem, budget)] = (index, stem)
+
+        submit_available()
+        try:
+            while futures:
+                wait_timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+                done, _ = concurrent.futures.wait(
+                    tuple(futures), timeout=wait_timeout,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                if not done:
+                    wait_for_workers = False
+                    for future, (index, stem) in list(futures.items()):
+                        future.cancel()
+                        _aborted(index, stem, "total_timeout_s exceeded")
+                    futures.clear()
+                    for index in range(next_index, len(stems)):
+                        _aborted(index, stems[index], "total_timeout_s exceeded before start")
+                    next_index = len(stems)
+                    break
+                for future in done:
+                    index, stem = futures.pop(future)
+                    try:
+                        rows_by_index[index] = future.result()
+                    except Exception as exc:  # defensive: worker already isolates normal errors
+                        row = {
+                            "test": stem,
+                            "ok": False,
+                            "returncode": None,
+                            "duration_ms": None,
+                            "timed_out": False,
+                            "vcd_paths": None,
+                            "error_tail": [f"{type(exc).__name__}: {exc}"],
+                        }
+                        _row_warnings(row, stem)
+                        rows_by_index[index] = row
+                    _notify(progress, len(rows_by_index), len(stems), f"finished {stem}")
+                    if fail_fast and rows_by_index[index].get("ok") is not True:
+                        wait_for_workers = False
+                        for other, (other_index, other_stem) in list(futures.items()):
+                            other.cancel()
+                            _aborted(other_index, other_stem, f"fail_fast after {stem}")
+                        futures.clear()
+                        for other_index in range(next_index, len(stems)):
+                            _aborted(other_index, stems[other_index], f"fail_fast after {stem}")
+                        next_index = len(stems)
+                        break
+                if not futures:
+                    if next_index >= len(stems):
+                        break
+                    submit_available()
+                    continue
+                submit_available()
+        finally:
+            executor.shutdown(wait=wait_for_workers, cancel_futures=True)
+
+    rows = [rows_by_index[index] for index in range(len(stems))]
+    passed = sum(1 for row in rows if row.get("ok") is True)
+    aborted = sum(1 for row in rows if row.get("aborted") is True)
+    failed = len(rows) - passed - aborted
+    _notify(progress, len(rows), max(1, len(stems)), "done")
     return {
         "ok": bool(rows) and passed == len(rows),
         "project": str(proj),
         "project_relative": _rel(proj),
         "total": len(rows),
         "passed": passed,
-        "failed": len(rows) - passed,
+        "failed": failed,
+        "aborted": aborted,
         "tests": rows,
-        "vcd_paths": [path for row in rows for path in row["vcd_paths"]],
+        "vcd_paths": [path for row in rows for path in (row.get("vcd_paths") or [])],
+        "warnings": warnings,
     }
-
 
 
 def _window_output_path(source: Path, out: str | None, suffix: str) -> tuple[Path, Path | None]:

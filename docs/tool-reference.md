@@ -718,22 +718,60 @@ workspace 下 `logs/`、`build/` 目录里的文件（工程自带的 `<proj>/bu
 ### `run_all_tests`
 
 ```json
-{"proj_path": "part2_exp12/part2_exp12.proj", "timeout_s": 60}
+{
+  "proj_path": "part2_exp12/part2_exp12.proj",
+  "tests": ["tb_ok", "tb_broken"],
+  "timeout_s": 60,
+  "max_parallel": 1,
+  "fail_fast": false,
+  "total_timeout_s": null
+}
 ```
 
-跑 `test/*.test` 里的每一个用例（内部就是 `simulate_project`），返回：
+批量运行指定的 `test/*.test`；`tests=null` 时枚举全部测试，名称可带或不带 `.test`。
+`simulate_project` 仍保持单 test 语义。`max_parallel` 默认串行，最大为 2；超过上限返回
+`code=invalid_argument`。每个 test 使用独立 run 目录。
 
 ```json
-{"ok": false, "total": 2, "passed": 1, "failed": 1,
- "tests": [{"test": "tb_ok", "ok": true, "returncode": 0, "duration_ms": 812,
-            "vcd_paths": ["workspace/build/headless-.../tb_ok.vcd"], "error_tail": []},
-           {"test": "tb_broken", "ok": false, "returncode": 1, "duration_ms": 96,
-            "vcd_paths": [], "error_tail": ["... syntax error ..."]}],
- "vcd_paths": ["..."]}
+{
+  "ok": true,
+  "total": 2,
+  "passed": 1,
+  "failed": 1,
+  "aborted": 0,
+  "tests": [
+    {
+      "test": "tb_ok",
+      "ok": true,
+      "returncode": 0,
+      "duration_ms": 812,
+      "timed_out": false,
+      "vcd_paths": ["workspace/build/headless-.../tb_ok.vcd"],
+      "error_tail": [],
+      "warnings": []
+    },
+    {
+      "test": "tb_broken",
+      "ok": false,
+      "returncode": 1,
+      "duration_ms": 96,
+      "timed_out": false,
+      "vcd_paths": [],
+      "error_tail": ["... syntax error ..."],
+      "warnings": []
+    }
+  ],
+  "warnings": []
+}
 ```
 
-一个用例失败不影响其它用例；`error_tail` 会把 `compile` / `simulation` 两段的 stderr 一起收进来。
-工程里没有任何 `.test` 时 `total=0`、`ok=false`。
+- 单个 test 失败或超时不会中断其它 test；`fail_fast=true` 后尚未完成的 test 标记为
+  `aborted`，不计入 `failed`。
+- `timeout_s` 是每个 test 的预算；`total_timeout_s` 是整批墙钟预算。无法取得的
+  `returncode`、`duration_ms`、`vcd_paths` 或 `error_tail` 返回 `null`，并在 `warnings[]`
+  中列出字段，不用估算值。
+- 空测试集返回 `total=0`、`ok=false`。路径/名称错误分别返回 `path_escape`、`not_found`
+  或 `invalid_argument`；子进程超时/客户端取消分别为 `timeout`/`cancelled`。
 
 ### `robei_gui_open_project`
 

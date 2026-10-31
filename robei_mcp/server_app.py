@@ -870,18 +870,31 @@ async def build_report(
 @tool(annotations=ANALYZE)
 async def run_all_tests(
     proj_path: str,
+    tests: list[str] | None = None,
     timeout_s: int = 60,
     render: bool = False,
+    max_parallel: int = 1,
+    fail_fast: bool = False,
+    total_timeout_s: int | None = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Run every test/*.test model in a project and aggregate pass/fail plus VCD paths."""
+    """Run selected test/*.test models and aggregate isolated results."""
     try:
         return await _invoke(
-            tools.run_all_tests, ctx, "run_all_tests",
-            proj_path=proj_path, timeout_s=timeout_s, render=render,
+            tools.run_all_tests,
+            ctx,
+            "run_all_tests",
+            proj_path=proj_path,
+            tests=tests,
+            timeout_s=timeout_s,
+            render=render,
+            max_parallel=max_parallel,
+            fail_fast=fail_fast,
+            total_timeout_s=total_timeout_s,
         )
     except Exception as exc:
         return _error(exc)
+
 
 
 def robei_gui_status(output_lines: int = 20, probe: bool = False) -> dict[str, Any]:
