@@ -3,7 +3,7 @@
 > An MCP server that turns Robei EDA into AI-callable tools: Verilog lint, simulation,
 > waveform analysis, project XML, and optional GUI automation. Docs are in Chinese.
 
-**状态：1.9.0 开发中**（54 个工具，GUI=0 时 42 个）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
+**状态：1.9.0**（54 个工具，GUI=0 时 42 个）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
 
 > **升级注意（1.0.2 起）**：`simulate` 默认开启**严格路径扫描**。像
 > `$readmemh(PATH, mem)` 这种无法静态判定路径的写法，以前能跑，现在会直接返回
