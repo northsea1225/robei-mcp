@@ -157,6 +157,11 @@ def list_fpga_devices(part: str | None = None) -> dict[str, Any]:
         devices = [row for row in devices if row["part"] == wanted]
         if not devices:
             raise ValueError(f"unknown part {part!r}; call list_fpga_devices for the installed parts")
+    for row in devices:
+        capacity, source, warnings = _capacity_for_device(row)
+        row["capacity"] = capacity
+        row["capacity_source"] = source
+        row["capacity_warnings"] = warnings
     tools = tool_paths()
     return {
         "ok": bool(devices),
@@ -200,6 +205,75 @@ _CAPACITY_ALIASES = {
 }
 
 
+
+_MANUAL_CAPACITY_PATH = Path(__file__).resolve().parent / "data" / "fpga_capacity.yaml"
+
+
+def _sha256_path(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _parse_manual_capacity(path: Path = _MANUAL_CAPACITY_PATH) -> dict[str, dict[str, Any]]:
+    """Parse the small checked-in YAML subset without adding a YAML dependency."""
+    if not path.is_file():
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    current: dict[str, Any] | None = None
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.split("#", 1)[0].rstrip()
+        if not line.strip() or line.strip() in {"parts:", ""}:
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        stripped = line.strip()
+        if indent == 2 and stripped.endswith(":"):
+            current = {}
+            result[stripped[:-1].strip()] = current
+            continue
+        if current is None or ":" not in stripped:
+            continue
+        key, value = [item.strip() for item in stripped.split(":", 1)]
+        value = value.strip()
+        if value.lower() == "null":
+            current[key] = None
+        elif value.isdigit():
+            current[key] = int(value)
+        else:
+            current[key] = value.strip('"')
+    return result
+
+
+def _capacity_source(kind: str, paths: list[Path], derivation: str, confidence: str) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "paths": [str(path) for path in paths],
+        "sha256": [digest for path in paths if (digest := _sha256_path(path))],
+        "derivation": derivation,
+        "confidence": confidence,
+    }
+
+
+def _manual_capacity_for_part(part: str) -> tuple[dict[str, int] | None, dict[str, Any] | None, list[str]]:
+    row = _parse_manual_capacity().get(part)
+    if not row:
+        return None, None, [f"no manual capacity row for {part}"]
+    keys = ("lut", "ff", "bram36", "bram18", "dsp", "io_package_user", "io_fabric_iob")
+    capacity = {key.upper(): row.get(key) for key in keys if isinstance(row.get(key), int)}
+    source = _capacity_source(
+        "manual_datasheet",
+        [_MANUAL_CAPACITY_PATH],
+        "manual table; IO percentage uses IO_PACKAGE_USER; BRAM18 and BRAM36 remain separate",
+        str(row.get("confidence") or "manual_datasheet"),
+    )
+    source["document"] = row.get("source")
+    source["date"] = row.get("date")
+    missing = [key for key in keys if row.get(key) is None]
+    warnings = [f"manual capacity field {key} is null" for key in missing]
+    return capacity, source, warnings
+
+
 def _capacity_from_part_yaml(path: Path | None) -> tuple[dict[str, int] | None, dict[str, Any] | None, list[str]]:
     """Read optional simple capacity keys without assuming a YAML dependency/schema."""
     if path is None or not path.is_file():
@@ -229,16 +303,50 @@ def _capacity_for_device(device: dict[str, Any] | None) -> tuple[dict[str, int] 
     if device is None:
         return None, None, ["part is not provided; capacity and percentages are unavailable"]
     path = Path(device["part_yaml"]) if device.get("part_yaml") else None
-    return _capacity_from_part_yaml(path)
+    explicit, explicit_source, explicit_warnings = _capacity_from_part_yaml(path)
+    if explicit:
+        # Preserve the explicit part.yaml source while normalising IO capacity.
+        normalized = dict(explicit)
+        if "IO" in normalized and "IO_PACKAGE_USER" not in normalized:
+            normalized["IO_PACKAGE_USER"] = normalized["IO"]
+        source = _capacity_source(
+            "part_yaml",
+            [path] if path else [],
+            "explicit scalar capacity keys from part.yaml; IO percentage uses IO_PACKAGE_USER",
+            "part_yaml",
+        )
+        source["lines"] = (explicit_source or {}).get("lines", {})
+        return normalized, source, explicit_warnings
+    manual, manual_source, manual_warnings = _manual_capacity_for_part(str(device.get("part") or ""))
+    if manual:
+        return manual, manual_source, manual_warnings + explicit_warnings
+    # Tilegrid is display-only evidence and is deliberately not used for percentages.
+    derived_paths = []
+    family = str(device.get("family") or "")
+    if family and device.get("part"):
+        fabric = re.sub(r"-[0-9].*$", "", str(device["part"]))
+        candidate = db_root() / family / fabric / "tilegrid.json"
+        if candidate.is_file():
+            derived_paths.append(candidate)
+    source = _capacity_source(
+        "derived_tilegrid" if derived_paths else "none",
+        derived_paths,
+        "tilegrid site counts are display-only and excluded from utilization percentages",
+        "derived" if derived_paths else "none",
+    ) if derived_paths else None
+    return None, source, explicit_warnings + manual_warnings + ["capacity unavailable; percentages remain null"]
 
 
 def _utilization_percent(used: dict[str, int], capacity: dict[str, int] | None) -> dict[str, float | None]:
-    return {
-        key: round(100.0 * value / capacity[key], 3)
-        if capacity and capacity.get(key, 0) > 0
-        else None
-        for key, value in used.items()
-    }
+    result: dict[str, float | None] = {}
+    for key, value in used.items():
+        capacity_key = "IO_PACKAGE_USER" if key == "IO" else key
+        result[key] = (
+            round(100.0 * value / capacity[capacity_key], 3)
+            if capacity and capacity.get(capacity_key, 0) > 0
+            else None
+        )
+    return result
 
 
 def _project_paths(proj: Path) -> dict[str, Path]:

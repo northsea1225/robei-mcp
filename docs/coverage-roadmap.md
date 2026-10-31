@@ -183,6 +183,16 @@ JTAG Configure 建议不碰 GUI，改为自己的 `device/board/cable` 参数。
 - `.test` 的独立读写工具（现在借 `read_robei_model`，能用但不直观）。
 - `robei.toml` 的读/校验/生成（现在只能手写）。
 
+## 3.8 1.8 当前状态（2026-10-31）
+
+以下以当前源码和回归为准，覆盖旧历史快照中的过时描述：
+
+- P0：`list_fpga_devices`/库模型/Code 编辑/画布基础动作/`run_all_tests`/综合资源字段已完成；
+  const 的 device/family 严格校验仍是部分完成。
+- P1：`build_bitstream`、GUI 截图、Markdown/evidence 报告已完成；JTAG 扫描/烧写未做，HTML 报告未做。
+- P2：`move_instance`、`rename_port`、模型 rename/delete/duplicate 已实现；工程 zip/模板和跨 test 覆盖率/形式验证仍未做。
+- 1.8 新增：批量仿真控制、Verilog 行为/结构分类、模型事务 CRUD、`fpga_capacity.yaml` 来源标注。
+
 ## 4. 路线图
 
 ### P0（不依赖新数据，1–2 天量级）

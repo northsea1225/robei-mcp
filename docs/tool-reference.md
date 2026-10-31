@@ -642,7 +642,7 @@ yosys -p "read_verilog <build>/<top>.v; synth_xilinx -flatten -arch xc7 -abc9 -n
   |---|---|
   | `utilization_capacity` | 资源容量字典；没有可用容量时为 `null` |
   | `utilization_percent` | 各项 `100 * used / capacity`，保留三位小数；缺失或容量不大于 0 时为 `null` |
-  | `capacity_source` | `{path, lines}`，`lines` 是资源名到 part.yaml 行号的映射；无来源时为 `null` |
+  | `capacity_source` | `{kind, paths, sha256, derivation, confidence}`；显式 part.yaml 优先，其次人工表，tilegrid 只作 derived 展示 |
   | `utilization_warnings` | 缺少 part、容量文件或可识别容量键的原因 |
 
   容量只读器件库的 `part.yaml`，当前解析 LUT/FF/BRAM18/BRAM36/DSP/IO 的简单整数标量键，
@@ -650,6 +650,9 @@ yosys -p "read_verilog <build>/<top>.v; synth_xilinx -flatten -arch xc7 -abc9 -n
   CARRY 没有对应容量解析键，百分比为 `null`。本机 part.yaml 缺容量键时，
   `capacity_source` 仍可能有路径和空 `lines`，这是“已找到文件”，不是“已取得容量”。
   未知 `part` 返回 `device_unsupported` 并带 `available_parts`；先用 `list_fpga_devices` 查询。
+  1.8 的人工表为 `robei_mcp/data/fpga_capacity.yaml`，只收录 5 个可 build part；`IO` 百分比使用
+  `io_package_user`，`io_fabric_iob` 只作信息展示，Zynq PS/MIO 不计入 PL IO。`BRAM18` 与
+  `BRAM36` 始终分开。若没有显式或人工容量，tilegrid 来源会标记 `kind=derived`，不参与百分比。
 
 - `part` 可选；给了就校验型号存在，不存在返回 `device_unsupported`。综合本身不依赖 chipdb。
 - `timeout = {requested_s, effective_s, max_timeout_s, clamped}`：子进程超时会被

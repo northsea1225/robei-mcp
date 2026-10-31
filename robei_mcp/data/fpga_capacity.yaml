@@ -1,0 +1,58 @@
+# Manual device capacity catalog. Values are kept separate from tilegrid-derived counts.
+# io_package_user is the denominator for utilization[IO]; io_fabric_iob is informational.
+parts:
+  xc7a50tfgg484-1:
+    lut: 32600
+    ff: 65200
+    bram36: 75
+    bram18: 150
+    dsp: 120
+    io_package_user: 250
+    io_fabric_iob: 250
+    source: "AMD/Xilinx 7 Series FPGAs Data Sheet: Overview (DS180) v2.6"
+    date: "2026-10-31"
+    confidence: manual_datasheet
+  xc7a100tfgg484-1:
+    lut: 63400
+    ff: 126800
+    bram36: 135
+    bram18: 270
+    dsp: 240
+    io_package_user: 285
+    io_fabric_iob: 300
+    source: "AMD/Xilinx 7 Series FPGAs Data Sheet: Overview (DS180) v2.6"
+    date: "2026-10-31"
+    confidence: manual_datasheet
+  xc7a200tfbg484-1:
+    lut: 134600
+    ff: 269200
+    bram36: 365
+    bram18: 730
+    dsp: 740
+    io_package_user: 285
+    io_fabric_iob: 500
+    source: "AMD/Xilinx 7 Series FPGAs Data Sheet: Overview (DS180) v2.6"
+    date: "2026-10-31"
+    confidence: manual_datasheet
+  xc7z020clg400-1:
+    lut: 53200
+    ff: 106400
+    bram36: 140
+    bram18: 280
+    dsp: 220
+    io_package_user: 125
+    io_fabric_iob: 200
+    source: "AMD/Xilinx Zynq-7000 SoC Data Sheet: Overview (DS190) v1.11"
+    date: "2026-10-31"
+    confidence: manual_datasheet
+  xc7z020clg484-1:
+    lut: 53200
+    ff: 106400
+    bram36: 140
+    bram18: 280
+    dsp: 220
+    io_package_user: 200
+    io_fabric_iob: 200
+    source: "AMD/Xilinx Zynq-7000 SoC Data Sheet: Overview (DS190) v1.11"
+    date: "2026-10-31"
+    confidence: manual_datasheet

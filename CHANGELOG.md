@@ -2,6 +2,16 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.8.0 — Unreleased
+
+**批量实验闭环、模型生命周期与容量来源。**
+
+- `run_all_tests` 增加 test 选择、最多 2 路并发、fail-fast、整批超时和 `elapsed_ms`；单 test 失败/超时隔离，未完成项标记 `aborted`。
+- `import_verilog_canvas` 增加 behavioral/structural/mixed 分类；mixed 默认拒绝，行为级只返回 `create_robei_model` 建议。
+- `edit_robei_canvas` 增加 `move_instance`、`rename_port`；父模型引用检查和事务回滚不改行为 Code。
+- 新增 `manage_robei_model`（rename/delete/duplicate），同步 `.proj` 注册并保留多文件备份/回滚。
+- 新增只读 `fpga_capacity.yaml` 人工容量表和来源 provenance；默认工具数 52（GUI=0 为 41）。
+
 ## 1.7.0 — 2026-10-30
 
 **实验闭环与事实报告。** 工具面为 51 个（文件级 40 + GUI 11）。
