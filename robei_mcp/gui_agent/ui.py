@@ -158,16 +158,120 @@ CONSTRAIN_MARKERS = ("Finished to generate constrain file",)
 SYNTH_MARKERS = ("Synthesis complete",)
 
 
-def _foreground() -> None:
-    """Bring Robei to the front; input injection fails when it is not."""
+def _foreground_info() -> dict:
+    """Return the current foreground window identity for diagnostics."""
     try:
         import win32gui
+        import win32process
 
-        _, win = main_window()
-        if win and win.get("hwnd"):
-            win32gui.SetForegroundWindow(win["hwnd"])
+        hwnd = int(win32gui.GetForegroundWindow() or 0)
+        if not hwnd:
+            return {
+                "foreground_hwnd": None,
+                "foreground_pid": None,
+                "foreground_exe": "unknown",
+            }
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        return {
+            "foreground_hwnd": hwnd,
+            "foreground_pid": int(pid),
+            "foreground_exe": _exe_name(int(pid)) or "unknown",
+        }
+    except Exception as exc:
+        return {
+            "foreground_hwnd": None,
+            "foreground_pid": None,
+            "foreground_exe": "unknown",
+            "foreground_error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _wait_foreground(hwnd: int, timeout_s: float = 3.0) -> bool:
+    import win32gui
+
+    deadline = time.monotonic() + timeout_s
+    while True:
+        if int(win32gui.GetForegroundWindow() or 0) == int(hwnd):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def _attach_thread_input(hwnd: int) -> bool:
+    """Retry foreground activation through the current foreground thread."""
+    import ctypes
+    import win32gui
+    import win32process
+
+    user32 = ctypes.windll.user32
+    current = int(ctypes.windll.kernel32.GetCurrentThreadId())
+    foreground = int(win32gui.GetForegroundWindow() or 0)
+    if not foreground:
+        return False
+    foreground_thread, _ = win32process.GetWindowThreadProcessId(foreground)
+    if not foreground_thread or foreground_thread == current:
+        return False
+    attached = bool(user32.AttachThreadInput(current, int(foreground_thread), True))
+    if not attached:
+        return False
+    try:
+        try:
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception:
+            return False
+        return True
+    finally:
+        user32.AttachThreadInput(current, int(foreground_thread), False)
+
+
+def _simulate_alt() -> bool:
+    """Give the current process one foreground-activation opportunity."""
+    import ctypes
+
+    try:
+        user32 = ctypes.windll.user32
+        user32.keybd_event(0x12, 0, 0, 0)  # VK_MENU down
+        user32.keybd_event(0x12, 0, 2, 0)  # VK_MENU up
+        return True
     except Exception:
-        pass
+        return False
+
+
+def _foreground() -> dict:
+    """Bring Robei to the front and report the resulting foreground process."""
+    _, win = main_window()
+    target_hwnd = int((win or {}).get("hwnd") or 0)
+    if not target_hwnd:
+        return {"ok": False, **_foreground_info(), "error": "Robei window not found"}
+
+    import win32gui
+
+    set_error = None
+    try:
+        result = win32gui.SetForegroundWindow(target_hwnd)
+        if result is False:
+            set_error = "SetForegroundWindow returned False"
+    except Exception as exc:
+        set_error = f"{type(exc).__name__}: {exc}"
+    switched = _wait_foreground(target_hwnd, 3.0)
+    attached = False
+    if not switched:
+        attached = _attach_thread_input(target_hwnd)
+        switched = _wait_foreground(target_hwnd, 3.0)
+    if not switched:
+        _simulate_alt()
+        try:
+            win32gui.SetForegroundWindow(target_hwnd)
+        except Exception:
+            pass
+        switched = _wait_foreground(target_hwnd, 3.0)
+
+    info = _foreground_info()
+    info.update({"ok": bool(switched), "target_hwnd": target_hwnd, "attached": attached})
+    if not switched:
+        info["error"] = set_error or "foreground window did not switch within 3s"
+    return info
 
 
 def _tree_input_state() -> dict:
@@ -217,8 +321,16 @@ def _require_tree_input(win: dict) -> None:
         )
 
 
+def _desktop_error(prefix: str, focus: dict | None = None) -> str:
+    info = focus or _foreground_info()
+    return (
+        f"{prefix}; foreground_pid={info.get('foreground_pid')}, "
+        f"foreground_exe={info.get('foreground_exe')}"
+    )
+
+
 def _mouse(action: str, coords, retries: int = 1):
-    """Click, retrying once after a focus if the desktop refused input."""
+    """Click, retrying only after Robei is confirmed in the foreground."""
     from pywinauto import mouse
 
     for attempt in range(retries + 1):
@@ -229,17 +341,29 @@ def _mouse(action: str, coords, retries: int = 1):
                 mouse.click(button="left", coords=coords)
             return
         except Exception as exc:
-            if attempt < retries and "active desktop" in str(exc).lower():
-                _foreground()
-                time.sleep(0.8)
+            active_desktop = "active desktop" in str(exc).lower()
+            if not active_desktop:
+                raise
+            if attempt < retries:
+                focus = _foreground()
+                if not focus.get("ok"):
+                    raise GuiNeedsActiveDesktop(
+                        _desktop_error(
+                            "the interactive desktop cannot take mouse input "
+                            "(Robei did not reach the foreground)",
+                            focus,
+                        )
+                    ) from exc
+                time.sleep(0.1)
                 continue
-            if "active desktop" in str(exc).lower():
-                raise GuiNeedsActiveDesktop(
+            raise GuiNeedsActiveDesktop(
+                _desktop_error(
                     "the interactive desktop cannot take mouse input (locked or "
-                    "disconnected); open_project/compile work without it, the Files "
-                    "tree does not"
-                ) from exc
-            raise
+                    "disconnected); open_project/compile work without it, the "
+                    "Files tree does not",
+                )
+            ) from exc
+
 
 
 def _click(coords):
@@ -687,6 +811,11 @@ def open_project(path: str, attempts: int = 2, discard_unsaved: bool = False) ->
     notes: list[str] = []
     discarded = None
     if owned is not None and running:
+        focus = _foreground()
+        if not focus.get("ok"):
+            raise GuiNeedsActiveDesktop(
+                _desktop_error("cannot bring Robei to the foreground before open_project", focus)
+            )
         dlg, win = main_window(owned)
         marker = _unsaved_marker(dlg, win) if dlg is not None else None
         if marker is not None:
@@ -709,6 +838,14 @@ def open_project(path: str, attempts: int = 2, discard_unsaved: bool = False) ->
     dlg, win = main_window(pid)
     if dlg is None:
         return {"ok": False, "error": "Robei window did not appear for the new process", "pid": pid}
+    focus = _foreground()
+    if not focus.get("ok"):
+        return {
+            "ok": False,
+            "error": _desktop_error("cannot bring Robei to the foreground after open_project", focus),
+            "focus": focus,
+            "pid": pid,
+        }
 
     deadline = time.time() + 25.0
     tree: list[str] = []
@@ -1315,6 +1452,11 @@ def open_model(name: str) -> dict:
     if dlg is None:
         return {"ok": False, "error": "Robei is not running"}
     _require_tree_input(win)
+    focus = _foreground()
+    if not focus.get("ok"):
+        raise GuiNeedsActiveDesktop(
+            _desktop_error("cannot bring Robei to the foreground before open_model", focus)
+        )
     tree = _file_tree(dlg)
     if tree is None:
         return {"ok": False, "error": "Files tree not found"}
