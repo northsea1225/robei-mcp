@@ -643,6 +643,31 @@ def set_robei_parameter(
 
 
 @tool(annotations=WRITE)
+def create_testbench(
+    proj_path: str,
+    name: str,
+    model_path: str,
+    vectors: list[dict[str, Any]],
+    timescale: str = "1ns/1ps",
+    overwrite: bool = False,
+    run: bool = False,
+) -> dict[str, Any]:
+    """Create a bounded combinational test/*.test from literal expected vectors."""
+    try:
+        return tools.create_testbench(
+            proj_path=proj_path,
+            name=name,
+            model_path=model_path,
+            vectors=vectors,
+            timescale=timescale,
+            overwrite=overwrite,
+            run=run,
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@tool(annotations=WRITE)
 def generate_testbench(
     verilog_path: str,
     top: str,

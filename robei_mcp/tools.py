@@ -1124,6 +1124,7 @@ def run_all_tests(
             "timed_out": timed_out,
             "vcd_paths": vcd_paths,
             "error_tail": error_tail,
+            "display_output": result.get("display_output") if isinstance(result, dict) else None,
         }
         if isinstance(result, dict):
             for key in ("code", "stage", "run_dir"):
@@ -2296,6 +2297,190 @@ def export_robei_verilog(
         "warnings": export_warnings,
         "lint": lint,
     }
+
+
+def create_testbench(
+    proj_path: str,
+    name: str,
+    model_path: str,
+    vectors: list[dict[str, Any]],
+    timescale: str = "1ns/1ps",
+    overwrite: bool = False,
+    run: bool = False,
+) -> dict[str, Any]:
+    """Create a bounded combinational ``test/*.test`` from literal vectors."""
+    proj = resolve_project_path(proj_path)
+    if not is_within(proj, SETTINGS.workspace):
+        raise PathEscape(f"project path escapes workspace: {proj}")
+    model = resolve_model_path(model_path)
+    if not is_within(model, proj.parent / "model"):
+        raise PathEscape("model_path must be a model in the selected project")
+    parsed = parse_robei_model(model)
+    ports = parsed.get("ports") or []
+    if not ports:
+        raise BadRequest("DUT has no ports", "pass a model with at least one input/output port")
+    widths: dict[str, int] = {}
+    directions: dict[str, str] = {}
+    for port in ports:
+        port_name = str(port.get("name") or "")
+        width = robei_width(port.get("datasize"))
+        if width is None:
+            raise BadRequest(
+                f"cannot resolve parameterised width for port {port_name!r}",
+                "export the model with concrete parameter values before creating a testbench",
+            )
+        widths[port_name] = int(width)
+        directions[port_name] = str(port.get("inout") or "input").lower()
+    input_ports = [name for name, direction in directions.items() if direction == "input"]
+    output_ports = [name for name, direction in directions.items() if direction == "output"]
+    if any(direction not in {"input", "output"} for direction in directions.values()):
+        raise BadRequest("inout ports are not supported by combinational create_testbench", "use input/output ports")
+    input_bits = sum(widths[name] for name in input_ports)
+    if input_bits > 12:
+        raise BadRequest(
+            f"input width {input_bits} exceeds create_testbench limit 12",
+            "split the DUT or provide a smaller combinational interface",
+            code="limit_exceeded",
+        )
+    if not isinstance(vectors, list) or not vectors:
+        raise BadRequest("vectors must be a non-empty list", "pass one or more drive/expect objects")
+    if len(vectors) > 4096:
+        raise BadRequest(
+            f"vector count {len(vectors)} exceeds create_testbench limit 4096",
+            "split the test or reduce the vector count",
+            code="limit_exceeded",
+        )
+
+    def literal(value: Any, width: int, field: str) -> str:
+        if isinstance(value, bool):
+            value = int(value)
+        if isinstance(value, int):
+            if value < 0 or value >= (1 << width):
+                raise BadRequest(
+                    f"{field}={value} does not fit in {width} bit(s)",
+                    f"pass a value from 0 to {(1 << width) - 1}",
+                )
+            bits = format(value, f"0{width}b")
+        else:
+            text = str(value).strip()
+            if re.fullmatch(r"[01xXzZ]+", text):
+                if len(text) > width:
+                    raise BadRequest(
+                        f"{field} has {len(text)} bits, but the port is {width} bit(s)",
+                        "shorten the literal or use the DUT port width",
+                    )
+                bits = text.rjust(width, "0")
+            elif re.fullmatch(r"[0-9]+", text):
+                return literal(int(text), width, field)
+            else:
+                raise BadRequest(
+                    f"{field} must be an integer or a 0/1/x/z bit string",
+                    "pass literal expected values only; expressions are not accepted",
+                )
+        return f"{width}'b{bits.lower()}"
+
+    assignments: list[tuple[dict[str, str], dict[str, str]]] = []
+    for index, vector in enumerate(vectors):
+        if not isinstance(vector, dict):
+            raise BadRequest(f"vectors[{index}] must be an object", "use {drive:{...}, expect:{...}}")
+        drive = vector.get("drive")
+        expect = vector.get("expect", vector.get("expected"))
+        if not isinstance(drive, dict) or not isinstance(expect, dict):
+            raise BadRequest(
+                f"vectors[{index}] needs drive and expect objects",
+                "use {drive:{input:value}, expect:{output:value}}",
+            )
+        if set(drive) - set(input_ports):
+            unknown = sorted(set(drive) - set(input_ports))
+            raise BadRequest(f"vectors[{index}] drives non-input ports: {unknown}", "drive only DUT input ports")
+        if set(expect) - set(output_ports):
+            unknown = sorted(set(expect) - set(output_ports))
+            raise BadRequest(f"vectors[{index}] expects non-output ports: {unknown}", "expect only DUT output ports")
+        if set(drive) != set(input_ports):
+            missing = sorted(set(input_ports) - set(drive))
+            raise BadRequest(f"vectors[{index}] is missing inputs: {missing}", "drive every DUT input in every vector")
+        if set(expect) != set(output_ports):
+            missing = sorted(set(output_ports) - set(expect))
+            raise BadRequest(f"vectors[{index}] is missing outputs: {missing}", "provide an expected value for every DUT output")
+        drive_literals = {
+            port: literal(value, widths[port], f"vectors[{index}].drive.{port}")
+            for port, value in drive.items()
+        }
+        expect_literals = {
+            port: literal(value, widths[port], f"vectors[{index}].expect.{port}")
+            for port, value in expect.items()
+        }
+        assignments.append((drive_literals, expect_literals))
+
+    def declaration(kind: str, port: str) -> str:
+        width = widths[port]
+        suffix = "" if width == 1 else f" [{width - 1}:0]"
+        return f"{kind}{suffix} {port};"
+
+    lines: list[str] = []
+    lines.extend(declaration("reg", port) for port in input_ports)
+    lines.extend(declaration("wire", port) for port in output_ports)
+    lines.extend(["integer fail, vector;", "", f"{parsed['name']} dut("])
+    lines.append(",\n".join(f"  .{port['name']}({port['name']})" for port in ports))
+    lines.extend([
+        ");",
+        "",
+        "initial begin",
+        "  fail = 0;",
+        "  vector = 0;",
+    ])
+    for drive_literals, expect_literals in assignments:
+        lines.append("  vector = vector + 1;")
+        lines.extend(f"  {port} = {value};" for port, value in drive_literals.items())
+        lines.append("  #1;")
+        condition = " && ".join(f"({port} === {value})" for port, value in expect_literals.items())
+        lines.extend([
+            f"  if (!({condition})) begin",
+            "    fail = fail + 1;",
+            '    $display("FAIL vector=%0d", vector);',
+            "  end",
+        ])
+    lines.extend([
+        f'  if (fail == 0) $display("SELFTEST PASS: {name} %0d/%0d vectors", vector, vector);',
+        f'  else $display("SELFTEST FAIL: %0d mismatches", fail);',
+        "  $finish;",
+        "end",
+    ])
+    code = "\n".join(lines) + "\n"
+    if re.search(r"(?i)\bmodule\b|\$dump", code):
+        raise RuntimeError("generated semantic testbench contains a forbidden module/dump token")
+    created = create_robei_test(
+        str(proj),
+        name,
+        code=code,
+        timescale=timescale,
+        overwrite=overwrite,
+        sync_deps=True,
+    )
+    run_result = None
+    if run:
+        run_result = run_all_tests(str(proj), tests=[name], timeout_s=60)
+        selftest_failed = any(
+            "SELFTEST FAIL" in str(row.get("display_output") or "")
+            for row in (run_result.get("tests") or [])
+        )
+        if selftest_failed:
+            run_result = {**run_result, "ok": False, "code": "selftest_failed"}
+    result = {
+        **created,
+        "ok": bool(created.get("ok")) and (run_result is None or run_result.get("ok") is True),
+        "semantic": {
+            "mode": "combinational",
+            "dut": parsed["name"],
+            "model_path": str(model),
+            "input_bits": input_bits,
+            "vector_count": len(assignments),
+            "assertion_count": len(assignments) * len(output_ports),
+            "literal_expectations": True,
+        },
+        "run": run_result,
+    }
+    return result
 
 
 def generate_testbench(
