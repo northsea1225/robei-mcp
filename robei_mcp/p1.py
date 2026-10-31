@@ -5,6 +5,7 @@ these functions reuse its helpers and never bypass the workspace policy.
 """
 from __future__ import annotations
 
+import re
 import statistics
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from typing import Any
 from . import tools
 from .config import SETTINGS
 from .erc import check as erc_check
+from .errors import BadRequest
 from .model import model_to_verilog, parse_robei_model
 from .security import (
     is_within,
@@ -21,7 +23,7 @@ from .security import (
     resolve_workspace_path,
 )
 from .vcd import match_signals, parse_vcd, timescale_fs, value_at
-from .verilog import width_info
+from .verilog import strip_comments, width_info
 from .verilog_ast import is_plain_net, net_width, parse_module, parse_modules, port_map, width_of
 
 REL = tools._rel
@@ -73,19 +75,130 @@ def _wire_list(module: dict[str, Any]) -> tuple[list[dict[str, str]], list[str]]
     return wires + selectors, skipped
 
 
+def _classify_verilog_module(source_text: str, name: str | None = None) -> tuple[dict[str, Any], str, dict[str, int], list[str], str]:
+    """Classify source Verilog without relying on the legacy boolean flag."""
+    clean = strip_comments(source_text)
+    module = parse_module(source_text, name)
+    header = re.search(rf"\bmodule\s+{re.escape(module['name'])}\b", clean, re.IGNORECASE)
+    body = ""
+    if header:
+        body_start = clean.find(";", header.end())
+        body_end = clean.find("endmodule", body_start + 1)
+        if body_start >= 0:
+            body = clean[body_start + 1 : body_end if body_end >= 0 else len(clean)]
+    behavior_blocks = [match.group(1) for match in re.finditer(
+        r"\b(always(?:_(?:comb|ff|latch))?|initial|function|task)\b",
+        body,
+        re.IGNORECASE,
+    )]
+    evidence = {
+        "instances": len(module["instances"]),
+        "wires": len(module["wires"]),
+        "assigns": len(module["assigns"]),
+        "behavior_blocks": len(behavior_blocks),
+    }
+    has_instances = evidence["instances"] > 0
+    has_behavior = evidence["assigns"] > 0 or evidence["behavior_blocks"] > 0
+    if has_instances and has_behavior:
+        classification = "mixed"
+    elif has_instances:
+        classification = "structural"
+    elif has_behavior:
+        classification = "behavioral"
+    else:
+        classification = "empty"
+    return module, classification, evidence, behavior_blocks, body.strip()
+
+
+def _behavioral_import_suggestion(
+    proj: Path,
+    source: Path,
+    module: dict[str, Any],
+    classification: str,
+    evidence: dict[str, int],
+    behavior_blocks: list[str],
+) -> dict[str, Any]:
+    ignored_assigns = [f"assign {a['lhs']} = {a['rhs']};" for a in module["assigns"]]
+    return {
+        "ok": True,
+        "classification": classification,
+        "classification_evidence": evidence,
+        "model": None,
+        "path": None,
+        "sha256": None,
+        "source": str(source),
+        "source_relative": REL(source),
+        "instances": [],
+        "wires": [],
+        "netlist": None,
+        "not_imported": {
+            "assigns": ignored_assigns,
+            "behavior_blocks": behavior_blocks,
+            "skipped_connections": [],
+        },
+        "create_robei_model": {
+            "proj_path": str(proj),
+            "name": module["name"],
+            "ports": [
+                {
+                    "name": port["name"],
+                    "direction": port["direction"],
+                    "width": width_of(port["width"]),
+                    "datatype": port["datatype"] or "wire",
+                }
+                for port in module["ports"]
+            ],
+            "code": module.get("_body", ""),
+        },
+        "note": "behavioral source is not written; call create_robei_model with the suggested arguments",
+    }
+
+
 def import_verilog_canvas(
     proj_path: str,
     verilog_path: str,
     name: str | None = None,
     overwrite: bool = False,
+    mode: str = "auto",
 ) -> dict[str, Any]:
-    """Create a canvas-level .model from a structural Verilog module."""
+    """Classify Verilog, then import only structural modules into a canvas."""
+    if mode not in {"auto", "structural", "behavioral"}:
+        raise ValueError("mode must be 'auto', 'structural' or 'behavioral'")
     proj = resolve_project_path(proj_path)
     if not is_within(proj, SETTINGS.workspace):
         raise ValueError("refusing to write a project outside the workspace")
     source = resolve_workspace_path(verilog_path)
     text = source.read_text(encoding="utf-8", errors="replace")
-    module = parse_module(text, name)
+    module, classification, evidence, behavior_blocks, body = _classify_verilog_module(text, name)
+    module["_body"] = body
+
+    if classification == "mixed":
+        raise BadRequest(
+            f"module {module['name']!r} mixes instances with behavioral statements",
+            "split the behavioral Code from the structural canvas or call a dedicated behavioral importer",
+            code="mixed_module",
+        )
+    if classification == "empty":
+        raise BadRequest(
+            f"module {module['name']!r} has no instances, assigns or behavioral blocks",
+            "provide a structural instance graph or behavioral Verilog body",
+            code="not_behavioral",
+        )
+    if mode == "structural" and classification != "structural":
+        raise BadRequest(
+            f"module {module['name']!r} is {classification}, not structural",
+            'use mode="behavioral" to receive create_robei_model suggestions',
+            code="not_behavioral",
+        )
+    if mode == "behavioral" and classification != "behavioral":
+        raise BadRequest(
+            f"module {module['name']!r} is {classification}, not behavioral",
+            'use mode="structural" for an instance graph',
+            code="not_behavioral",
+        )
+    if classification == "behavioral":
+        return _behavioral_import_suggestion(proj, source, module, classification, evidence, behavior_blocks)
+
     model_dir = proj.parent / "model"
     available = sorted(path.stem for path in model_dir.glob("*.model"))
     used = {instance["module"] for instance in module["instances"]}
@@ -94,8 +207,6 @@ def import_verilog_canvas(
         raise FileNotFoundError(
             f"instances reference modules without a .model file: {missing} (available: {available})"
         )
-    if not module["instances"]:
-        raise ValueError("module has no instance statements; nothing to draw on the canvas")
 
     for instance in module["instances"]:
         if not instance.get("positional"):
@@ -134,6 +245,8 @@ def import_verilog_canvas(
     ignored_assigns = [f"assign {a['lhs']} = {a['rhs']};" for a in module["assigns"]]
     return {
         "ok": True,
+        "classification": classification,
+        "classification_evidence": evidence,
         "model": model_name,
         "path": result["path"],
         "sha256": result["sha256"],
@@ -144,12 +257,12 @@ def import_verilog_canvas(
         "netlist": result["netlist"],
         "not_imported": {
             "assigns": ignored_assigns,
-            "has_behaviour": module["has_behaviour"],
+            "behavior_blocks": behavior_blocks,
+            "has_behaviour": module.get("has_behaviour", bool(behavior_blocks)),
             "skipped_connections": skipped,
         },
-        "note": "canvas models carry structure only; assign/always bodies must stay in a model's Code field",
+        "note": "canvas models carry structure only; assign/behavior bodies are never written to the canvas",
     }
-
 
 # ---------------------------------------------------------------------------
 # Connectivity (ERC)

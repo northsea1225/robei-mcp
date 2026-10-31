@@ -884,16 +884,28 @@ Build → Synthesis 并等到 `Synthesis complete`（内部是 yosys 的 Xilinx 
 ### `import_verilog_canvas`
 
 ```json
-{"proj_path": "p1_demo/p1_demo.proj", "verilog_path": "cases/two_and.v"}
+{
+  "proj_path": "p1_demo/p1_demo.proj",
+  "verilog_path": "cases/two_and.v",
+  "mode": "auto",
+  "overwrite": false
+}
 ```
 
-把结构化的 Verilog 模块写成画布级 `.model`：
+先对源模块分类，再处理结构级画布：
 
-- 实例 → 嵌套 `<Module Type="model">`，被引用模块必须已存在于 `<工程>/model/<模块>.model`
-- 端口连接 → `<Wire>`；同一网络超过两个端点时以第一个为基准发多条同名 wire
-- `assign` / `always` **不会**被画布承载，原样列在 `not_imported` 里；常量 / 拼接连接列在
-  `skipped_connections`
+- `mode=auto|structural|behavioral`；默认 `auto`
+- `structural`：实例 → 嵌套 `<Module Type="model">`，连接 → `<Wire>`；子模型必须已存在
+- `behavioral`：不写 `.model`，返回 `classification`、`classification_evidence` 和
+  `create_robei_model` 建议参数
+- 同时含实例和 `assign/always*/initial/function/task` 的模块是 `mixed`，默认返回
+  `code=mixed_module`，不会静默丢行为代码
+- `assign`、行为块和常量/拼接连接分别保留在
+  `not_imported.assigns`、`not_imported.behavior_blocks`、`not_imported.skipped_connections`
+- `classification_evidence` 固定包含 `instances`、`wires`、`assigns`、`behavior_blocks`
 - 目标 `.model` 已存在要 `overwrite=true`
+- 路径越界返回 `path_escape`；非法模式返回 `invalid_argument`；无行为/结构内容返回
+  `not_behavioral`
 
 ### `truth_table`
 

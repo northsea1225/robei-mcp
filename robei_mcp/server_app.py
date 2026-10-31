@@ -654,15 +654,16 @@ def import_verilog_canvas(
     verilog_path: str,
     name: str | None = None,
     overwrite: bool = False,
+    mode: Literal["auto", "structural", "behavioral"] = "auto",
 ) -> dict[str, Any]:
-    """Turn a structural Verilog module into a canvas-level .model (placed instances + wires).
-
-    Every instantiated module must already exist as <project>/model/<module>.model.
-    assign/always bodies are reported in ``not_imported`` - the canvas carries structure only.
-    """
+    """Classify Verilog; import structural sources or return a behavioral suggestion."""
     try:
         return p1.import_verilog_canvas(
-            proj_path=proj_path, verilog_path=verilog_path, name=name, overwrite=overwrite
+            proj_path=proj_path,
+            verilog_path=verilog_path,
+            name=name,
+            overwrite=overwrite,
+            mode=mode,
         )
     except Exception as exc:
         return _error(exc)
