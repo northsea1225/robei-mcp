@@ -2303,18 +2303,25 @@ def create_testbench(
     proj_path: str,
     name: str,
     model_path: str,
-    vectors: list[dict[str, Any]],
+    vectors: list[dict[str, Any]] | None = None,
     timescale: str = "1ns/1ps",
     overwrite: bool = False,
     run: bool = False,
+    mode: str = "combinational",
+    clock: dict[str, Any] | None = None,
+    reset: dict[str, Any] | None = None,
+    stimuli: list[dict[str, Any]] | None = None,
+    assertions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Create a bounded combinational ``test/*.test`` from literal vectors."""
+    """Create a bounded literal-vector or timed ``test/*.test`` model."""
     proj = resolve_project_path(proj_path)
     if not is_within(proj, SETTINGS.workspace):
         raise PathEscape(f"project path escapes workspace: {proj}")
     model = resolve_model_path(model_path)
     if not is_within(model, proj.parent / "model"):
         raise PathEscape("model_path must be a model in the selected project")
+    if mode not in {"combinational", "timed"}:
+        raise BadRequest("mode must be combinational or timed", "pass mode='combinational' or mode='timed'")
     parsed = parse_robei_model(model)
     ports = parsed.get("ports") or []
     if not ports:
@@ -2331,25 +2338,11 @@ def create_testbench(
             )
         widths[port_name] = int(width)
         directions[port_name] = str(port.get("inout") or "input").lower()
-    input_ports = [name for name, direction in directions.items() if direction == "input"]
-    output_ports = [name for name, direction in directions.items() if direction == "output"]
+    input_ports = [port for port, direction in directions.items() if direction == "input"]
+    output_ports = [port for port, direction in directions.items() if direction == "output"]
     if any(direction not in {"input", "output"} for direction in directions.values()):
-        raise BadRequest("inout ports are not supported by combinational create_testbench", "use input/output ports")
-    input_bits = sum(widths[name] for name in input_ports)
-    if input_bits > 12:
-        raise BadRequest(
-            f"input width {input_bits} exceeds create_testbench limit 12",
-            "split the DUT or provide a smaller combinational interface",
-            code="limit_exceeded",
-        )
-    if not isinstance(vectors, list) or not vectors:
-        raise BadRequest("vectors must be a non-empty list", "pass one or more drive/expect objects")
-    if len(vectors) > 4096:
-        raise BadRequest(
-            f"vector count {len(vectors)} exceeds create_testbench limit 4096",
-            "split the test or reduce the vector count",
-            code="limit_exceeded",
-        )
+        raise BadRequest("inout ports are not supported", "use input/output ports")
+    input_bits = sum(widths[port] for port in input_ports)
 
     def literal(value: Any, width: int, field: str) -> str:
         if isinstance(value, bool):
@@ -2379,108 +2372,231 @@ def create_testbench(
                 )
         return f"{width}'b{bits.lower()}"
 
-    assignments: list[tuple[dict[str, str], dict[str, str]]] = []
-    for index, vector in enumerate(vectors):
-        if not isinstance(vector, dict):
-            raise BadRequest(f"vectors[{index}] must be an object", "use {drive:{...}, expect:{...}}")
-        drive = vector.get("drive")
-        expect = vector.get("expect", vector.get("expected"))
-        if not isinstance(drive, dict) or not isinstance(expect, dict):
-            raise BadRequest(
-                f"vectors[{index}] needs drive and expect objects",
-                "use {drive:{input:value}, expect:{output:value}}",
-            )
-        if set(drive) - set(input_ports):
-            unknown = sorted(set(drive) - set(input_ports))
-            raise BadRequest(f"vectors[{index}] drives non-input ports: {unknown}", "drive only DUT input ports")
-        if set(expect) - set(output_ports):
-            unknown = sorted(set(expect) - set(output_ports))
-            raise BadRequest(f"vectors[{index}] expects non-output ports: {unknown}", "expect only DUT output ports")
-        if set(drive) != set(input_ports):
-            missing = sorted(set(input_ports) - set(drive))
-            raise BadRequest(f"vectors[{index}] is missing inputs: {missing}", "drive every DUT input in every vector")
-        if set(expect) != set(output_ports):
-            missing = sorted(set(output_ports) - set(expect))
-            raise BadRequest(f"vectors[{index}] is missing outputs: {missing}", "provide an expected value for every DUT output")
-        drive_literals = {
-            port: literal(value, widths[port], f"vectors[{index}].drive.{port}")
-            for port, value in drive.items()
-        }
-        expect_literals = {
-            port: literal(value, widths[port], f"vectors[{index}].expect.{port}")
-            for port, value in expect.items()
-        }
-        assignments.append((drive_literals, expect_literals))
-
     def declaration(kind: str, port: str) -> str:
         width = widths[port]
         suffix = "" if width == 1 else f" [{width - 1}:0]"
         return f"{kind}{suffix} {port};"
 
-    lines: list[str] = []
-    lines.extend(declaration("reg", port) for port in input_ports)
-    lines.extend(declaration("wire", port) for port in output_ports)
-    lines.extend(["integer fail, vector;", "", f"{parsed['name']} dut("])
-    lines.append(",\n".join(f"  .{port['name']}({port['name']})" for port in ports))
-    lines.extend([
-        ");",
-        "",
-        "initial begin",
-        "  fail = 0;",
-        "  vector = 0;",
-    ])
-    for drive_literals, expect_literals in assignments:
-        lines.append("  vector = vector + 1;")
-        lines.extend(f"  {port} = {value};" for port, value in drive_literals.items())
-        lines.append("  #1;")
-        condition = " && ".join(f"({port} === {value})" for port, value in expect_literals.items())
+    def finish(code: str, semantic: dict[str, Any]) -> dict[str, Any]:
+        if re.search(r"(?i)\bmodule\b|\$dump", code):
+            raise RuntimeError("generated semantic testbench contains a forbidden module/dump token")
+        created = create_robei_test(
+            str(proj), name, code=code, timescale=timescale,
+            overwrite=overwrite, sync_deps=True,
+        )
+        run_result = None
+        if run:
+            run_result = run_all_tests(str(proj), tests=[name], timeout_s=60)
+            selftest_failed = any(
+                "SELFTEST FAIL" in str(row.get("display_output") or "")
+                for row in (run_result.get("tests") or [])
+            )
+            if selftest_failed:
+                run_result = {**run_result, "ok": False, "code": "selftest_failed"}
+        return {
+            **created,
+            "ok": bool(created.get("ok")) and (run_result is None or run_result.get("ok") is True),
+            "semantic": semantic,
+            "run": run_result,
+        }
+
+    if mode == "combinational":
+        if input_bits > 12:
+            raise BadRequest(
+                f"input width {input_bits} exceeds create_testbench limit 12",
+                "split the DUT or provide a smaller combinational interface",
+                code="limit_exceeded",
+            )
+        if not isinstance(vectors, list) or not vectors:
+            raise BadRequest("vectors must be a non-empty list", "pass one or more drive/expect objects")
+        if len(vectors) > 4096:
+            raise BadRequest(
+                f"vector count {len(vectors)} exceeds create_testbench limit 4096",
+                "split the test or reduce the vector count",
+                code="limit_exceeded",
+            )
+        assignments: list[tuple[dict[str, str], dict[str, str]]] = []
+        for index, vector in enumerate(vectors):
+            if not isinstance(vector, dict):
+                raise BadRequest(f"vectors[{index}] must be an object", "use {drive:{...}, expect:{...}}")
+            drive = vector.get("drive")
+            expect = vector.get("expect", vector.get("expected"))
+            if not isinstance(drive, dict) or not isinstance(expect, dict):
+                raise BadRequest(
+                    f"vectors[{index}] needs drive and expect objects",
+                    "use {drive:{input:value}, expect:{output:value}}",
+                )
+            if set(drive) - set(input_ports):
+                raise BadRequest(f"vectors[{index}] drives non-input ports: {sorted(set(drive) - set(input_ports))}", "drive only DUT input ports")
+            if set(expect) - set(output_ports):
+                raise BadRequest(f"vectors[{index}] expects non-output ports: {sorted(set(expect) - set(output_ports))}", "expect only DUT output ports")
+            if set(drive) != set(input_ports):
+                raise BadRequest(f"vectors[{index}] is missing inputs: {sorted(set(input_ports) - set(drive))}", "drive every DUT input in every vector")
+            if set(expect) != set(output_ports):
+                raise BadRequest(f"vectors[{index}] is missing outputs: {sorted(set(output_ports) - set(expect))}", "provide an expected value for every DUT output")
+            assignments.append((
+                {port: literal(value, widths[port], f"vectors[{index}].drive.{port}") for port, value in drive.items()},
+                {port: literal(value, widths[port], f"vectors[{index}].expect.{port}") for port, value in expect.items()},
+            ))
+        lines: list[str] = []
+        lines.extend(declaration("reg", port) for port in input_ports)
+        lines.extend(declaration("wire", port) for port in output_ports)
+        lines.extend(["integer fail, vector;", "", f"{parsed['name']} dut("])
+        lines.append(",\n".join(f"  .{port['name']}({port['name']})" for port in ports))
+        lines.extend([");", "", "initial begin", "  fail = 0;", "  vector = 0;"])
+        for drive_literals, expect_literals in assignments:
+            lines.append("  vector = vector + 1;")
+            lines.extend(f"  {port} = {value};" for port, value in drive_literals.items())
+            lines.append("  #1;")
+            condition = " && ".join(f"({port} === {value})" for port, value in expect_literals.items())
+            lines.extend([f"  if (!({condition})) begin", "    fail = fail + 1;", '    $display("FAIL vector=%0d", vector);', "  end"])
         lines.extend([
+            f'  if (fail == 0) $display("SELFTEST PASS: {name} %0d/%0d vectors", vector, vector);',
+            '  else $display("SELFTEST FAIL: %0d mismatches", fail);',
+            "  $finish;", "end",
+        ])
+        return finish("\n".join(lines) + "\n", {
+            "mode": "combinational", "dut": parsed["name"], "model_path": str(model),
+            "input_bits": input_bits, "vector_count": len(assignments),
+            "assertion_count": len(assignments) * len(output_ports), "literal_expectations": True,
+        })
+
+    # timed mode ------------------------------------------------------------
+    if not isinstance(clock, dict):
+        raise BadRequest("timed mode requires clock", "pass clock={signal:'clk', period:10, edge:'posedge'}")
+    clock_signal = str(clock.get("signal") or "")
+    if clock_signal not in input_ports:
+        raise BadRequest("clock.signal must name an input port", "choose one of the DUT input ports")
+    period = clock.get("period")
+    if isinstance(period, bool) or not isinstance(period, int) or period <= 0:
+        raise BadRequest("clock.period must be a positive integer", "time is measured in the declared timescale")
+    edge = str(clock.get("edge", "posedge")).lower()
+    if edge not in {"posedge", "negedge"}:
+        raise BadRequest("clock.edge must be posedge or negedge", "pass edge='posedge' or edge='negedge'")
+    unit_match = re.match(r"^\s*1\s*(fs|ps|ns|us|ms|s)\s*/", str(timescale).lower())
+    if unit_match is None:
+        raise BadRequest("timescale must start with 1fs/1ps/1ns/1us/1ms/1s", "use a standard Verilog timescale")
+    unit_seconds = {"fs": 1e-15, "ps": 1e-12, "ns": 1e-9, "us": 1e-6, "ms": 1e-3, "s": 1.0}[unit_match.group(1)]
+    max_ticks = int(1e-3 / unit_seconds)
+
+    def tick(value: Any, field: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise BadRequest(f"{field} must be a non-negative integer", "use integer time in the declared timescale")
+        if value > max_ticks:
+            raise BadRequest(f"{field} exceeds the 1 ms simulation limit", "reduce the time or use a coarser timescale", code="limit_exceeded")
+        return value
+
+    events: list[tuple[int, dict[str, str]]] = []
+    reset_end = 0
+    if reset is not None:
+        if not isinstance(reset, dict) or str(reset.get("signal") or "") not in input_ports:
+            raise BadRequest("reset.signal must name an input port", "choose one of the DUT input ports")
+        reset_signal = str(reset["signal"])
+        active = reset.get("active")
+        if active not in (0, 1, False, True):
+            raise BadRequest("reset.active must be 0 or 1", "pass the active logic level")
+        reset_at = tick(reset.get("at", 0), "reset.at")
+        duration = tick(reset.get("duration", 0), "reset.duration")
+        reset_end = reset_at + duration
+        if reset_end > max_ticks:
+            raise BadRequest("reset duration exceeds the 1 ms simulation limit", "reduce reset.at + duration", code="limit_exceeded")
+        events.append((reset_at, {reset_signal: literal(int(bool(active)), widths[reset_signal], "reset.active")}))
+        events.append((reset_end, {reset_signal: literal(int(not bool(active)), widths[reset_signal], "reset.release")}))
+    for index, item in enumerate(stimuli or []):
+        if not isinstance(item, dict) or not isinstance(item.get("drive"), dict):
+            raise BadRequest(f"stimuli[{index}] needs at and drive", "use {at:10, drive:{en:1}}")
+        when = tick(item.get("at"), f"stimuli[{index}].at")
+        drive_literals: dict[str, str] = {}
+        for port, value in item["drive"].items():
+            if port not in input_ports:
+                raise BadRequest(f"stimuli[{index}] drives non-input port {port!r}", "drive only DUT inputs")
+            if port == clock_signal:
+                raise BadRequest("stimuli cannot drive the clock", "use clock.period and clock.edge")
+            drive_literals[port] = literal(value, widths[port], f"stimuli[{index}].drive.{port}")
+        events.append((when, drive_literals))
+    if not isinstance(assertions, list) or not assertions:
+        raise BadRequest("timed mode requires assertions", "pass assertions with at or after_edge")
+    assertion_specs: list[dict[str, Any]] = []
+    max_assert_tick = 0
+    max_after_edges = 0
+    for index, item in enumerate(assertions):
+        if not isinstance(item, dict) or not isinstance(item.get("expect"), dict):
+            raise BadRequest(f"assertions[{index}] needs expect", "use {at:40, expect:{cnt:9}}")
+        at_value = item.get("at")
+        after = item.get("after_edge")
+        if after is None:
+            for key in list(item):
+                if isinstance(key, str) and key.startswith("after_edge:"):
+                    after = int(key.split(":", 1)[1])
+                    break
+        if (at_value is None) == (after is None):
+            raise BadRequest(f"assertions[{index}] needs exactly one of at or after_edge", "choose absolute or edge-relative sampling")
+        expected: dict[str, str] = {}
+        for port, value in item["expect"].items():
+            if port not in output_ports:
+                raise BadRequest(f"assertions[{index}] expects non-output port {port!r}", "assert only DUT outputs")
+            expected[port] = literal(value, widths[port], f"assertions[{index}].expect.{port}")
+        if after is not None:
+            if isinstance(after, bool) or not isinstance(after, int) or after < 1:
+                raise BadRequest("after_edge must be a positive integer", "use after_edge=1 for the next clock edge")
+            max_after_edges = max(max_after_edges, after)
+            assertion_specs.append({"after_edge": after, "expect": expected})
+        else:
+            when = tick(at_value, f"assertions[{index}].at")
+            max_assert_tick = max(max_assert_tick, when + 1)
+            assertion_specs.append({"at": when, "expect": expected})
+    edge_duration = max_after_edges * period + 2
+    duration_ticks = max(reset_end, max_assert_tick, edge_duration, max((when for when, _ in events), default=0) + 2)
+    if duration_ticks > max_ticks:
+        raise BadRequest("timed testbench duration exceeds the 1 ms simulation limit", "reduce event/edge times", code="limit_exceeded")
+
+    lines = ["integer fail, assertion_count;", "", *[declaration("reg", port) for port in input_ports], *[declaration("wire", port) for port in output_ports], "", f"{parsed['name']} dut("]
+    lines.append(",\n".join(f"  .{port['name']}({port['name']})" for port in ports))
+    lines.append(");")
+    lines.append("")
+    lines.append(f"initial {clock_signal} = 1'b0;")
+    lines.append(f"always #{max(1, period // 2)} {clock_signal} = ~{clock_signal};")
+    lines.extend(["", "initial begin", "  fail = 0;", "  assertion_count = 0;"])
+    for port in input_ports:
+        if port != clock_signal:
+            lines.append(f"  {port} = {widths[port]}'b0;")
+    cursor = 0
+    for when, drives in sorted(events, key=lambda entry: entry[0]):
+        delta = when - cursor
+        if delta:
+            lines.append(f"  #{delta};")
+        lines.extend(f"  {port} = {value};" for port, value in drives.items())
+        cursor = when
+    if duration_ticks > cursor:
+        lines.append(f"  #{duration_ticks - cursor};")
+    lines.extend([
+        '  if (fail == 0) $display("SELFTEST PASS: timed assertions=%0d", assertion_count);',
+        '  else $display("SELFTEST FAIL: %0d mismatches", fail);',
+        "  $finish;", "end",
+    ])
+    for index, spec in enumerate(assertion_specs, 1):
+        lines.append("initial begin")
+        if "at" in spec:
+            lines.append(f"  #{spec['at']};")
+        else:
+            lines.append(f"  repeat ({spec['after_edge']}) @( {edge} {clock_signal} );")
+        lines.append("  #1;")
+        condition = " && ".join(f"({port} === {value})" for port, value in spec["expect"].items())
+        lines.extend([
+            "  assertion_count = assertion_count + 1;",
             f"  if (!({condition})) begin",
             "    fail = fail + 1;",
-            '    $display("FAIL vector=%0d", vector);',
+            f'    $display("FAIL assertion=%0d t=%0t", {index}, $time);',
             "  end",
+            "end",
         ])
-    lines.extend([
-        f'  if (fail == 0) $display("SELFTEST PASS: {name} %0d/%0d vectors", vector, vector);',
-        f'  else $display("SELFTEST FAIL: %0d mismatches", fail);',
-        "  $finish;",
-        "end",
-    ])
-    code = "\n".join(lines) + "\n"
-    if re.search(r"(?i)\bmodule\b|\$dump", code):
-        raise RuntimeError("generated semantic testbench contains a forbidden module/dump token")
-    created = create_robei_test(
-        str(proj),
-        name,
-        code=code,
-        timescale=timescale,
-        overwrite=overwrite,
-        sync_deps=True,
-    )
-    run_result = None
-    if run:
-        run_result = run_all_tests(str(proj), tests=[name], timeout_s=60)
-        selftest_failed = any(
-            "SELFTEST FAIL" in str(row.get("display_output") or "")
-            for row in (run_result.get("tests") or [])
-        )
-        if selftest_failed:
-            run_result = {**run_result, "ok": False, "code": "selftest_failed"}
-    result = {
-        **created,
-        "ok": bool(created.get("ok")) and (run_result is None or run_result.get("ok") is True),
-        "semantic": {
-            "mode": "combinational",
-            "dut": parsed["name"],
-            "model_path": str(model),
-            "input_bits": input_bits,
-            "vector_count": len(assignments),
-            "assertion_count": len(assignments) * len(output_ports),
-            "literal_expectations": True,
-        },
-        "run": run_result,
-    }
-    return result
+    return finish("\n".join(lines) + "\n", {
+        "mode": "timed", "dut": parsed["name"], "model_path": str(model),
+        "timescale": timescale, "duration_ticks": duration_ticks,
+        "clock": {"signal": clock_signal, "period": period, "edge": edge},
+        "stimuli_count": len(stimuli or []), "assertion_count": len(assertion_specs),
+        "simulation_limit": "1ms", "literal_expectations": True,
+    })
 
 
 def generate_testbench(

@@ -647,21 +647,22 @@ def create_testbench(
     proj_path: str,
     name: str,
     model_path: str,
-    vectors: list[dict[str, Any]],
+    vectors: list[dict[str, Any]] | None = None,
     timescale: str = "1ns/1ps",
     overwrite: bool = False,
     run: bool = False,
+    mode: Literal["combinational", "timed"] = "combinational",
+    clock: dict[str, Any] | None = None,
+    reset: dict[str, Any] | None = None,
+    stimuli: list[dict[str, Any]] | None = None,
+    assertions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Create a bounded combinational test/*.test from literal expected vectors."""
+    """Create a bounded combinational or timed test/*.test from literal expectations."""
     try:
         return tools.create_testbench(
-            proj_path=proj_path,
-            name=name,
-            model_path=model_path,
-            vectors=vectors,
-            timescale=timescale,
-            overwrite=overwrite,
-            run=run,
+            proj_path=proj_path, name=name, model_path=model_path, vectors=vectors,
+            timescale=timescale, overwrite=overwrite, run=run, mode=mode,
+            clock=clock, reset=reset, stimuli=stimuli, assertions=assertions,
         )
     except Exception as exc:
         return _error(exc)
