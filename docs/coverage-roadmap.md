@@ -193,6 +193,14 @@ JTAG Configure 建议不碰 GUI，改为自己的 `device/board/cable` 参数。
 - P2：`move_instance`、`rename_port`、模型 rename/delete/duplicate 已实现；工程 zip/模板和跨 test 覆盖率/形式验证仍未做。
 - 1.8 新增：批量仿真控制、Verilog 行为/结构分类、模型事务 CRUD、`fpga_capacity.yaml` 来源标注。
 
+## 3.9 1.9 当前状态（2026-11-01）
+
+- `gui_doctor` 已实现：通过 Session-1 计划任务只读检查电源、explorer、input desktop、锁屏、前台全屏和 clip_rect；GUI=0 时隐藏。
+- `create_testbench` 已实现组合与 timed 两种语义模式，支持 literal 期望值、`after_edge`、PASS/FAIL 自检和 1 ms 上限。
+- `build_report` 可选接收 semantic testbench 结果；缺失向量数、断言数、日志或 PASS/FAIL 字段时写“未提供”，不打断整份报告。
+- stage10/11/12/18 已统一在开跑前调用 `gui_doctor`。
+- 当前 workspace 可见 Lab 2 工程为 exp1–exp6（exp5 含两个 test）；未发现名为 exp7 的工程，不能凭空补造验收证据。
+
 ## 4. 路线图
 
 ### P0（不依赖新数据，1–2 天量级）

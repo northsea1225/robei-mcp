@@ -10,6 +10,9 @@
 - `create_testbench` 支持组合向量与 timed clock/reset/stimuli/assertions；支持 `after_edge`，
   生成测试自检 PASS/FAIL，组合输入上限 12 bit、4096 vectors，timed 仿真上限 1 ms。
 - stage10/11/12/18 开始前统一执行 `gui_doctor`；失败打印 `failed_checks` 并停止。
+- `build_report` 可接收 `testbench_results`，汇总向量数、断言数、PASS/FAIL 和运行目录；字段缺失时写“未提供”，不打断报告。
+- Lab 2 副本验收覆盖 exp1/exp2/exp3/exp4/exp5/exp6；exp6 timed TB 验证复位、回卷、暂停和 `co`，错误断言返回 `selftest_failed`。
+- 当前 workspace 未发现 exp7 工程，因此不编造 exp7 的仿真证据。
 
 ## 1.8.0 — 2026-10-31
 
