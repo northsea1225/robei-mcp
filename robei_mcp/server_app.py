@@ -1034,12 +1034,31 @@ def robei_gui_screenshot(label: str = "shot", inline: bool = False) -> dict[str,
     return _image_or_payload(payload, tools.inline_image_payload(Path(path)))
 
 
+def gui_doctor(
+    blocked_foreground: list[str] | None = None,
+    screenshot: bool = False,
+    label: str = "gui-doctor",
+    timeout_s: int = 20,
+) -> dict[str, Any]:
+    """Read-only Session-1 desktop/power/input preflight for GUI stages."""
+    try:
+        return gui.gui_doctor(
+            blocked_foreground=blocked_foreground,
+            screenshot=screenshot,
+            label=label,
+            timeout_s=timeout_s,
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
 # ---------------------------------------------------------------------------
 # The GUI bridge is optional: Windows plus the driver package must be present.
 # When it cannot run the tools are not advertised at all, instead of failing
 # only when a client calls them.
 # ---------------------------------------------------------------------------
 GUI_TOOLS: tuple[tuple[Any, Any], ...] = (
+    (gui_doctor, READ_GUI),
     (robei_gui_status, READ_GUI),
     (robei_gui_launch, WRITE_GUI),
     (robei_gui_open_project, WRITE_GUI),

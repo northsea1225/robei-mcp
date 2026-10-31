@@ -7,10 +7,17 @@ from __future__ import annotations
 
 import json
 
+from . import doctor as gui_doctor
 from . import ui as robei_ui
 from .paths import JOB_FILE
 
 OPS = {
+    "doctor": lambda a: gui_doctor.run(
+        blocked_foreground=a.get("blocked_foreground"),
+        screenshot=bool(a.get("screenshot", False)),
+        label=str(a.get("label", "gui-doctor")),
+        timeout_s=int(a.get("timeout_s", 20)),
+    ),
     "status": lambda a: robei_ui.status(int(a.get("output_lines", 20))),
     "open_project": lambda a: robei_ui.open_project(
         a["path"], discard_unsaved=bool(a.get("discard_unsaved", False))

@@ -132,6 +132,14 @@ def _run_direct(op: str, args: dict[str, Any]) -> dict[str, Any]:
 
     if op == "status":
         payload = module.status(int(args.get("output_lines", 20)))
+    elif op == "doctor":
+        from .gui_agent import doctor
+        payload = doctor.run(
+            blocked_foreground=args.get("blocked_foreground"),
+            screenshot=bool(args.get("screenshot", False)),
+            label=str(args.get("label", "gui-doctor")),
+            timeout_s=int(args.get("timeout_s", 20)),
+        )
     elif op == "open_project":
         payload = module.open_project(args["path"])
     elif op == "compile":
@@ -279,6 +287,25 @@ def call(op: str, args: dict[str, Any] | None = None, timeout_s: int | None = No
 # --------------------------------------------------------------------------
 # tool wrappers
 # --------------------------------------------------------------------------
+def gui_doctor(
+    blocked_foreground: list[str] | None = None,
+    screenshot: bool = False,
+    label: str = "gui-doctor",
+    timeout_s: int = 20,
+) -> dict[str, Any]:
+    """Read-only Session-1 desktop preflight."""
+    return call(
+        "doctor",
+        {
+            "blocked_foreground": blocked_foreground,
+            "screenshot": screenshot,
+            "label": label,
+            "timeout_s": timeout_s,
+        },
+        timeout_s=max(30, timeout_s + 10),
+    )
+
+
 def status(output_lines: int = 20, probe: bool = False) -> dict[str, Any]:
     payload = call("status", {"output_lines": output_lines})
     payload["bridge"] = transport()
