@@ -2,7 +2,7 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
-## 1.8.0 — Unreleased
+## 1.8.0 — 2026-10-31
 
 **批量实验闭环、模型生命周期与容量来源。**
 
