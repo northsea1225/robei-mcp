@@ -23,7 +23,7 @@ from robei_mcp import gui, tools
 
 def gui_preflight() -> dict:
     data = gui.gui_doctor()
-    print("GUI_DOCTOR", json.dumps(data, ensure_ascii=False))
+    print("GUI_DOCTOR", json.dumps(data, ensure_ascii=True))
     if not data.get("ok"):
         print("GUI_DOCTOR_FAILED", json.dumps(data.get("failed_checks") or [], ensure_ascii=False))
         raise RuntimeError("gui_doctor failed before stage10")

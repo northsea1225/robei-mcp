@@ -50,7 +50,7 @@ async def main() -> int:
         async with ClientSession(read, write) as session:
             await session.initialize()
             doctor = payload(await session.call_tool("gui_doctor", {}))
-            print("GUI_DOCTOR", json.dumps(doctor, ensure_ascii=False))
+            print("GUI_DOCTOR", json.dumps(doctor, ensure_ascii=True))
             if not doctor.get("ok"):
                 print("GUI_DOCTOR_FAILED", json.dumps(doctor.get("failed_checks") or [], ensure_ascii=False))
                 return 2
