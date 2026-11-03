@@ -1425,6 +1425,18 @@ def _validate_report_evidence(text: str, evidence: list[dict[str, Any]]) -> None
             raise RuntimeError(f"invalid report evidence reference [evidence:{token}]")
 
 
+def _report_truth_mappings(mapping: Any, semantic: dict[str, Any]) -> list[tuple[str | None, Any]]:
+    """Instance maps are opt-in; a legacy top map is still exactly one target."""
+    if not isinstance(mapping, dict) or "instances" not in mapping:
+        return [(None, mapping)]
+    instances = mapping.get("instances")
+    instances = instances if isinstance(instances, dict) else {}
+    duts = semantic.get("duts")
+    names = [dut["instance"] for dut in duts if isinstance(dut, dict) and isinstance(dut.get("instance"), str)] if isinstance(duts, list) else []
+    names = list(dict.fromkeys([*names, *(key for key in instances if isinstance(key, str))]))
+    return [(name, instances.get(name)) for name in names] or [(None, None)]
+
+
 def build_report(
     proj_path: str,
     tests: list[str] | None = None,
@@ -1533,11 +1545,29 @@ def build_report(
             "selftest": "PASS" if "SELFTEST PASS" in str(run_row.get("display_output") or "") else ("FAIL" if "SELFTEST FAIL" in str(run_row.get("display_output") or "") else None),
             "log_path": run_row.get("run_dir") or item.get("log_path"),
         }
+        duts = semantic.get("duts")
+        mapping = (truth_map or {}).get(row["test"])
+        extended = (isinstance(mapping, dict) and "instances" in mapping) or (
+            not (isinstance(duts, list) and len(duts) == 1)
+            and any(key in semantic for key in ("duts", "comparison_count", "expression_count"))
+        )
+        # Preserve the single-DUT Markdown and its evidence numbering. Only
+        # multi/instance-aware entries opt into the additional fact records.
+        if extended:
+            facts["duts"] = duts if isinstance(duts, list) and duts and all(isinstance(dut, dict) for dut in duts) else None
+            for key in ("comparison_count", "expression_count"):
+                value = semantic.get(key)
+                facts[key] = value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
         facts["_evidence"] = {
             key: fact("testbench", f"{row['test']}.{key}", value, facts.get("log_path"), None)
             for key, value in facts.items()
             if not key.startswith("_")
         }
+        if extended:
+            for key in ("duts", "comparison_count", "expression_count"):
+                if facts[key] is None:
+                    missing.append({"section": "testbench", "test": row["test"], "field": key,
+                                    "reason": "未提供", "evidence": facts["_evidence"][key]})
         row["testbench"] = facts
         testbench_rows.append(facts)
 
@@ -1548,53 +1578,65 @@ def build_report(
             if mapping is None:
                 top = stem[3:] if stem.startswith("tb_") else None
                 mapping = {"top": top} if top else None
-            elif isinstance(mapping, str):
-                mapping = {"top": mapping}
-            if not mapping or not mapping.get("top"):
-                missing.append({"section": "truth_table", "test": stem, "reason": "未提供"})
-                continue
-            top = str(mapping["top"])
-            verilog = mapping.get("verilog_path")
-            if verilog is None:
-                candidates = [project_dir / "verilog" / f"{top}.v", project_dir / "build" / f"{top}.v"]
-                verilog = next((str(item) for item in candidates if item.is_file()), None)
-            if verilog is None:
-                missing.append({"section": "truth_table", "test": stem, "reason": "未提供"})
-                continue
-            from . import p1
-            try:
-                table = p1.truth_table(verilog_path=str(verilog), top=top, deps=mapping.get("deps"))
-            except ValueError as exc:
-                limit = re.fullmatch(r"too many input bits \((\d+) over \d+ port\(s\) > max_inputs=(\d+)\)", str(exc))
-                if limit is None:
-                    raise
-                input_bits, max_inputs = map(int, limit.groups())
-                if input_bits <= max_inputs:
-                    raise
-                reason = f"未提供（输入 {input_bits} 位 > 上限 {max_inputs}）"
-                evidence_id = fact(
-                    "truth_table", f"{stem}.input_limit",
-                    {"input_bits": input_bits, "max_inputs": max_inputs, "error": str(exc)}, str(verilog), None,
-                )
-                missing.append({"section": "truth_table", "test": stem, "reason": reason, "evidence": evidence_id})
-                warnings.append({
-                    "code": "truth_table_input_limit", "test": stem, "input_bits": input_bits,
-                    "max_inputs": max_inputs, "message": reason, "evidence": evidence_id,
+            tb = testbench_by_name.get(stem, {})
+            semantic = tb.get("semantic") if isinstance(tb.get("semantic"), dict) else {}
+            for instance, target_map in _report_truth_mappings(mapping, semantic):
+                identity = {"test": stem, **({"instance": instance} if instance is not None else {})}
+                label = f"{stem}.{instance}" if instance is not None else stem
+                if isinstance(target_map, str):
+                    target_map = {"top": target_map}
+                if not isinstance(target_map, dict) or not target_map.get("top"):
+                    missing.append({"section": "truth_table", **identity, "reason": "未提供"})
+                    continue
+                top = str(target_map["top"])
+                verilog = target_map.get("verilog_path")
+                if verilog is None:
+                    candidates = [project_dir / "verilog" / f"{top}.v", project_dir / "build" / f"{top}.v"]
+                    verilog = next((str(item) for item in candidates if item.is_file()), None)
+                if verilog is None:
+                    missing.append({"section": "truth_table", **identity, "reason": "未提供"})
+                    continue
+                from . import p1
+                try:
+                    table = p1.truth_table(verilog_path=str(verilog), top=top, deps=target_map.get("deps"))
+                except (ValueError, FileNotFoundError) as exc:
+                    if isinstance(exc, PathEscape):
+                        raise
+                    limit = re.fullmatch(r"too many input bits \((\d+) over \d+ port\(s\) > max_inputs=(\d+)\)", str(exc))
+                    if limit is None:
+                        if instance is None:
+                            raise
+                        evidence_id = fact("truth_table", f"{label}.unavailable", {"error_type": type(exc).__name__}, str(verilog), None)
+                        missing.append({"section": "truth_table", **identity, "reason": "未提供", "evidence": evidence_id})
+                        warnings.append({"code": "truth_table_unavailable", **identity, "message": "未提供", "evidence": evidence_id})
+                        continue
+                    input_bits, max_inputs = map(int, limit.groups())
+                    if input_bits <= max_inputs:
+                        raise
+                    reason = f"未提供（输入 {input_bits} 位 > 上限 {max_inputs}）"
+                    evidence_id = fact(
+                        "truth_table", f"{label}.input_limit",
+                        {"input_bits": input_bits, "max_inputs": max_inputs, "error": str(exc)}, str(verilog), None,
+                    )
+                    missing.append({"section": "truth_table", **identity, "reason": reason, "evidence": evidence_id})
+                    warnings.append({
+                        "code": "truth_table_input_limit", **identity, "input_bits": input_bits,
+                        "max_inputs": max_inputs, "message": reason, "evidence": evidence_id,
+                    })
+                    continue
+                row_count_evidence = fact("truth_table", f"{label}.row_count", table.get("row_count"), table.get("testbench"), None)
+                expected_evidence = fact("truth_table", f"{label}.expected_rows", table.get("expected_rows"), table.get("testbench"), None)
+                row_evidence = [
+                    fact("truth_table", f"{label}.row[{index}]", item, table.get("testbench"), None)
+                    for index, item in enumerate(table.get("rows", []))
+                ]
+                truth_rows.append({
+                    **identity,
+                    **table,
+                    "_row_count_evidence": row_count_evidence,
+                    "_expected_evidence": expected_evidence,
+                    "_row_evidence": row_evidence,
                 })
-                continue
-            row_count_evidence = fact("truth_table", f"{stem}.row_count", table.get("row_count"), table.get("testbench"), None)
-            expected_evidence = fact("truth_table", f"{stem}.expected_rows", table.get("expected_rows"), table.get("testbench"), None)
-            row_evidence = [
-                fact("truth_table", f"{stem}.row[{index}]", item, table.get("testbench"), None)
-                for index, item in enumerate(table.get("rows", []))
-            ]
-            truth_rows.append({
-                "test": stem,
-                **table,
-                "_row_count_evidence": row_count_evidence,
-                "_expected_evidence": expected_evidence,
-                "_row_evidence": row_evidence,
-            })
         truth_result = truth_rows
     else:
         truth_result = []
@@ -1670,8 +1712,9 @@ def build_report(
     if "truth_table" in sections:
         lines += ["## Truth-table facts", ""]
         for table in truth_result:
+            label = f"{table['test']}.{table['instance']}" if "instance" in table else table["test"]
             lines.append(
-                f"- `{table['test']}`: `row_count={_report_value(table.get('row_count'))}` "
+                f"- `{label}`: `row_count={_report_value(table.get('row_count'))}` "
                 f"([evidence:{table.get('_row_count_evidence')}]), "
                 f"`expected_rows={_report_value(table.get('expected_rows'))}` "
                 f"([evidence:{table.get('_expected_evidence')}])"
@@ -1682,7 +1725,8 @@ def build_report(
         truth_missing = [item for item in missing if item["section"] == "truth_table"]
         for item in truth_missing:
             reference = f" ([evidence:{item['evidence']}])" if "evidence" in item else ""
-            lines.append(f"- `{item['test']}`: {item['reason']}{reference}")
+            label = f"{item['test']}.{item['instance']}" if "instance" in item else item["test"]
+            lines.append(f"- `{label}`: {item['reason']}{reference}")
         if not truth_result and not truth_missing:
             lines.append("未提供")
         lines.append("")
@@ -1702,6 +1746,14 @@ def build_report(
                 f"`{_report_value(item.get('log_path'))}` ([evidence:{ev.get('log_path')}]) |"
             )
         lines.append("")
+        multi_rows = [item for item in testbench_rows if "duts" in item]
+        if multi_rows:
+            lines += ["## Multi-DUT testbench facts", "", "| test | duts | comparisons | expressions |", "| --- | --- | ---: | ---: |"]
+            for item in multi_rows:
+                ev = item["_evidence"]
+                values = [f"`{_report_value(item.get(key))}` ([evidence:{ev[key]}])" for key in ("duts", "comparison_count", "expression_count")]
+                lines.append(f"| `{item['test']}` | " + " | ".join(values) + " |")
+            lines.append("")
     if "synthesis" in sections:
         lines += ["## Synthesis facts", "", "| field | value | evidence |", "| --- | --- | --- |"]
         if synthesis and synthesis.get("ok"):
@@ -1714,7 +1766,8 @@ def build_report(
     if missing:
         for item in missing:
             reference = f" ([evidence:{item['evidence']}])" if "evidence" in item else ""
-            lines.append(f"- `{item['section']}` / `{item['test']}`: {item['reason']}{reference}")
+            label = f"{item['test']}.{item['instance']}" if "instance" in item else item["test"]
+            lines.append(f"- `{item['section']}` / `{label}`: {item['reason']}{reference}")
     else:
         lines.append("无")
     lines += ["", f"Evidence: `{_rel(evidence_path)}`"]
