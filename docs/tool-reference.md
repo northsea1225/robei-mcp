@@ -1,6 +1,6 @@
 # 工具参考
 
-1.9.0 共 54 个工具（文件级 42 + GUI 12）；ROBEI_MCP_GUI=0 时为 42 个。
+1.10.0 共 54 个工具（文件级 42 + GUI 12）；ROBEI_MCP_GUI=0 时为 42 个。
 工具名、参数名、返回字段保持英文。
 
 > 这份文件是从早期 README 拆出来的，示例里的时间戳/路径是当时的真实输出，不要当成当前默认值。
@@ -560,7 +560,9 @@ create_testbench(proj_path, name, model_path=None, vectors=None,
 时间 `at` 只按声明的 `timescale` 解释，不做隐式单位换算。整段仿真最长 1 ms；组合模式默认最多
 12 个输入 bit / 4096 个 vectors，超限返回 `code=limit_exceeded`。对 exp5 这类宽 DUT，有限
 vectors（字面量或安全表达式）可显式传 `allow_wide_vectors=true`；仍受 4096 vectors 上限约束，不自动穷举。
-参数化端口位宽无法解析时返回 `invalid_argument`。默认 `run=false`；传 `run=true` 会调用 `run_all_tests`，若生成的
+端口位宽会代入模型根参数默认值（含安全的参数依赖表达式），单/多 DUT 均适用，不改写模型；
+存在循环、未声明标识符或仍无法解析的参数化位宽时返回 `invalid_argument`，解析后仍受 4096 位上限约束。
+这不改变 `truth_table` 的参数化位宽限制。默认 `run=false`；传 `run=true` 会调用 `run_all_tests`，若生成的
 PASS/FAIL 汇总出现 `SELFTEST FAIL`，返回 `ok=false`、`run.code=selftest_failed`。
 顶层 `code` 仍保存生成的 TB 源码，不会被错误码覆盖。生成代码不包含 `module`、
 `$dumpfile` 或 `$dumpvars`，Robei 外层负责测试模块和 VCD dump。

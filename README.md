@@ -3,7 +3,7 @@
 > An MCP server that turns Robei EDA into AI-callable tools: Verilog lint, simulation,
 > waveform analysis, project XML, and optional GUI automation. Docs are in Chinese.
 
-**状态：1.9.0**（54 个工具，GUI=0 时 42 个）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
+**状态：1.10.0**（54 个工具，GUI=0 时 42 个）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
 
 > **升级注意（1.0.2 起）**：`simulate` 默认开启**严格路径扫描**。像
 > `$readmemh(PATH, mem)` 这种无法静态判定路径的写法，以前能跑，现在会直接返回
@@ -54,7 +54,7 @@ create_testbench(
 
 组合输入默认上限 12 bit、4096 个向量；宽 DUT 的有限 vectors 可显式传 `allow_wide_vectors=true`，不自动穷举；timed 仿真最长 1 ms。`run=true` 复用 `run_all_tests`，生成的自检日志出现 `SELFTEST FAIL` 时返回 `ok=false, run.code=selftest_failed`；顶层 `code` 仍是生成的源码。`build_report(testbench_results=[...])` 可引用向量数、PASS/FAIL 和运行目录；字段缺失时写“未提供”。
 
-### 1.10 开发中：exp2 双 DUT 与表达式期望值
+### 1.10：exp2 双 DUT 与表达式期望值
 
 先把 exp2 工程复制到 `workspace/_qa_runs/m3_110/exp2_mux/`，不要修改 Lab 2 原工程。
 以下例子只取两组输入；完整穷举是 8 个向量：
@@ -82,7 +82,11 @@ create_testbench(
 内联表达式先赋给输出宽度的临时 reg，再用四态比较检查。`?:` 遇到 X/Z 时保留 Verilog 逐位合并语义。
 `semantic` 返回 `duts`、`comparison_count`、`expression_count`。
 多 DUT 报告用 `truth_map[test].instances` 区分实例，缺项写“未提供”；单 DUT 旧报告保持不变。
-完整白名单、上限与错误码见 [工具参考](docs/tool-reference.md#create_testbench)。版本号仍为 1.9.0，工具数仍是 54/42。
+完整白名单、上限与错误码见 [工具参考](docs/tool-reference.md#create_testbench)。版本号为 1.10.0，工具数仍是 54/42。
+
+语义 TB 可用模型根参数默认值解析 `N-1:0`，无法静态解析的位宽仍拒绝，不猜测。
+exp7 QA 使用 Robei 官方[带符号位小数加法规格](http://www.robei.com/lessons/Robei_singed_float_add.pdf)
+独立重写的原码组合加法器，非课程原题；官方资料 © Robei、无已知开源许可，仓库不转载 PDF 或其源码。
 
 ## 1.6 根参数与服务生命周期
 
