@@ -20,7 +20,7 @@ from typing import Any
 
 from .config import SETTINGS
 from .model import _attr_ci, parse_endpoint, parse_robei_model
-from .security import is_within, resolve_project_path
+from .security import is_within, require_within_workspace, resolve_project_path
 
 PIN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,15}$")
 MODEL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -73,8 +73,7 @@ def create_const(
 ) -> dict[str, Any]:
     """Write a pin-constraint canvas: ``pins = {"swt": ["G15","P15","W13","T16"], "led": [...]}``."""
     proj = resolve_project_path(proj_path)
-    if not is_within(proj, SETTINGS.workspace):
-        raise ValueError("refusing to modify a project outside the workspace")
+    require_within_workspace(proj, SETTINGS.workspace, "modify", "project")
     if not MODEL_NAME_RE.match(name):
         raise ValueError(f"invalid constraint name: {name!r}")
     if kind not in {"constrain", "const"}:
@@ -262,8 +261,7 @@ def export_xdc(
     Robei build needs that exact spelling.
     """
     proj = resolve_project_path(proj_path)
-    if not is_within(proj, SETTINGS.workspace):
-        raise ValueError("refusing to write a project outside the workspace")
+    require_within_workspace(proj, SETTINGS.workspace, "write", "project")
     if const_name is None:
         candidates = sorted((proj.parent / "const").glob("*.const"))
         if not candidates:

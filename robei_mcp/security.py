@@ -9,14 +9,23 @@ from .errors import PathEscape
 
 
 def is_within(path: Path, root: Path) -> bool:
+    """``path`` is ``root`` or below it, after resolving both (case-folded where the OS is)."""
     try:
         path = path.resolve()
         root = root.resolve()
     except OSError:
         return False
-    p = os.path.normcase(str(path))
-    r = os.path.normcase(str(root))
-    return p == r or p.startswith(r + os.sep)
+    return Path(os.path.normcase(str(path))).is_relative_to(Path(os.path.normcase(str(root))))
+
+
+def require_within_workspace(path: Path, workspace: Path, verb: str, noun: str, *,
+                             legacy_code: str = "invalid_argument") -> None:
+    """Refuse (``PathEscape`` -> code ``path_escape``) to write ``path`` outside ``workspace``."""
+    if not is_within(path, workspace):
+        raise PathEscape(
+            f"refusing to {verb} a {noun} outside the workspace: {path}",
+            legacy_code=legacy_code,
+        )
 
 
 def _strip_base_prefix(value: Path, base: Path) -> Path | None:

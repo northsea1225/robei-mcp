@@ -17,6 +17,7 @@ from .errors import BadRequest
 from .model import model_to_verilog, parse_robei_model
 from .security import (
     is_within,
+    require_within_workspace,
     resolve_project_path,
     resolve_source_files,
     resolve_vcd_path,
@@ -166,8 +167,7 @@ def import_verilog_canvas(
     if mode not in {"auto", "structural", "behavioral"}:
         raise ValueError("mode must be 'auto', 'structural' or 'behavioral'")
     proj = resolve_project_path(proj_path)
-    if not is_within(proj, SETTINGS.workspace):
-        raise ValueError("refusing to write a project outside the workspace")
+    require_within_workspace(proj, SETTINGS.workspace, "write", "project")
     source = resolve_workspace_path(verilog_path)
     text = source.read_text(encoding="utf-8", errors="replace")
     module, classification, evidence, behavior_blocks, body = _classify_verilog_module(text, name)
