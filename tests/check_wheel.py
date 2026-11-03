@@ -17,6 +17,7 @@ REQUIRED = [
     "robei_mcp/__init__.py",
     "robei_mcp/__main__.py",
     "robei_mcp/server_app.py",
+    "robei_mcp/data/fpga_capacity.yaml",
     "robei_mcp/gui.py",
     "robei_mcp/gui_agent/__init__.py",
     "robei_mcp/gui_agent/paths.py",

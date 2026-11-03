@@ -32,6 +32,9 @@ robei-mcp = "robei_mcp.__main__:main"
 [tool.setuptools]
 packages = ["robei_mcp", "robei_mcp.gui_agent"]
 
+[tool.setuptools.package-data]
+robei_mcp = ["data/*.yaml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
