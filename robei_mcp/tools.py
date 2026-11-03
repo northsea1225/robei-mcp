@@ -2423,7 +2423,11 @@ def create_testbench(
         raise PathEscape(f"project path escapes workspace: {proj}")
     if mode not in {"combinational", "timed"}:
         raise BadRequest("mode must be combinational or timed", "pass mode='combinational' or mode='timed'")
-    context = tb_dut.Context(proj, model_path, duts, comparisons)
+    context = tb_dut.Context(
+        proj, model_path, duts, comparisons,
+        width_resolver=lambda model, port: _effective_width_for_datasize(
+            port.get("datasize"), _parameter_values(model.get("parameter_list") or [])),
+    )
     widths = context.widths
     input_ports = list(context.inputs)
     input_bits = context.input_bits

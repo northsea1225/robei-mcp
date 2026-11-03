@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Callable
 
 from .config import SETTINGS
 from .errors import BadRequest, PathEscape
@@ -43,7 +43,8 @@ class Target:
 
 class Context:
     def __init__(self, proj: Path, model_path: str | None, duts: list[dict] | None,
-                 comparisons: list[dict] | None):
+                 comparisons: list[dict] | None, *,
+                 width_resolver: Callable[[dict, dict], int | None] | None = None):
         self.single = duts is None
         if (model_path is None) == (duts is None):
             raise bad("duts", "pass exactly one of model_path or duts")
@@ -97,6 +98,8 @@ class Context:
                 name = port["name"]
                 net = identifier(connections[name], field + f".connections.{name}")
                 width = robei_width(port.get("datasize"))
+                if width is None and width_resolver is not None:
+                    width = width_resolver(model, port)
                 if width is None:
                     raise BadRequest(f"cannot resolve parameterised width for port {name!r}",
                                      "use a model with concrete port widths")
