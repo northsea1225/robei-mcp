@@ -207,6 +207,50 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+class _Capture:
+    """Bounded capture of one child stream: the first and the last ``cap/2`` bytes.
+
+    The middle is dropped (and counted) so a runaway ``$display`` loop cannot exhaust
+    memory, while the head (compile errors) and the tail (SELFTEST verdict) survive.
+    """
+
+    def __init__(self, cap: int) -> None:
+        self.half = max(512, cap // 2)
+        self.head = bytearray()
+        self.tail = bytearray()
+        self.dropped = 0
+
+    def feed(self, chunk: bytes) -> None:
+        room = self.half - len(self.head)
+        if room > 0:
+            self.head += chunk[:room]
+            chunk = chunk[room:]
+        if not chunk:
+            return
+        self.tail += chunk
+        overflow = len(self.tail) - self.half
+        if overflow > 0:
+            del self.tail[:overflow]
+            self.dropped += overflow
+
+    def value(self) -> bytes:
+        if not self.dropped:
+            return bytes(self.head) + bytes(self.tail)
+        marker = f"\n... [capture truncated, {self.dropped} bytes dropped] ...\n".encode()
+        return bytes(self.head) + marker + bytes(self.tail)
+
+
+def _pump(stream, capture: _Capture) -> None:
+    try:
+        while True:
+            chunk = stream.read1(65536) if hasattr(stream, "read1") else stream.read(65536)
+            if not chunk:
+                break
+            capture.feed(chunk)
+    except (OSError, ValueError):
+        pass
+
+
 def _run_impl(
     args: list[str | Path],
     cwd: Path,
@@ -236,6 +280,8 @@ def _run_impl(
             stderr=subprocess.PIPE,
             shell=False,
             env=env,
+            # Own process group on POSIX so a timeout can kill the whole tree.
+            start_new_session=(os.name != "nt"),
         )
     except FileNotFoundError as exc:
         return {
@@ -248,17 +294,39 @@ def _run_impl(
         }
     if token is not None:
         token.register(proc)
+    cap = max(1024, int(SETTINGS.max_capture_bytes))
+    out_cap, err_cap = _Capture(cap), _Capture(cap)
+    readers = [
+        threading.Thread(target=_pump, args=(proc.stdout, out_cap), daemon=True),
+        threading.Thread(target=_pump, args=(proc.stderr, err_cap), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+
+    def collect() -> tuple[bytes, bytes, dict[str, Any]]:
+        for reader in readers:
+            reader.join(timeout=5)  # a grandchild holding the pipe must not hang us
+        out, err = out_cap.value(), err_cap.value()
+        extra: dict[str, Any] = {}
+        if out_cap.dropped or err_cap.dropped:
+            extra = {
+                "output_truncated": True,
+                "truncated_bytes": {"stdout": out_cap.dropped, "stderr": err_cap.dropped},
+            }
+        return out, err, extra
+
     try:
         deadline = started + timeout_s
         while True:
             try:
-                stdout_b, stderr_b = proc.communicate(timeout=0.1)
+                proc.wait(timeout=0.1)
                 break
             except subprocess.TimeoutExpired:
                 # Client cancelled the MCP request: kill and report, do not wait out the timeout.
                 if token is not None and token.aborted():
-                    proc.kill()
-                    out, err = proc.communicate()
+                    runstate.kill_tree(proc)
+                    proc.wait()
+                    out, err, extra = collect()
                     return {
                         "ok": False,
                         "returncode": None,
@@ -267,10 +335,12 @@ def _run_impl(
                         "stdout": _clip(_decode(out)),
                         "stderr": _clip(_decode(err)) + "\nCANCELLED by client; child process killed",
                         "cancelled": True,
+                        **extra,
                     }
                 if time.monotonic() >= deadline:
-                    proc.kill()
-                    out, err = proc.communicate()
+                    runstate.kill_tree(proc)
+                    proc.wait()
+                    out, err, extra = collect()
                     return {
                         "ok": False,
                         "returncode": None,
@@ -279,7 +349,9 @@ def _run_impl(
                         "stdout": _clip(_decode(out)),
                         "stderr": _clip(_decode(err)) + f"\nTIMEOUT after {timeout_s}s",
                         "timeout": True,
+                        **extra,
                     }
+        stdout_b, stderr_b, extra = collect()
         cancelled = token is not None and token.aborted()
         stdout_text, stderr_text = _decode(stdout_b), _decode(stderr_b)
         return {
@@ -292,8 +364,10 @@ def _run_impl(
             + ("\nCANCELLED by client; child process killed" if cancelled else ""),
             "selftest": _selftest_status(stdout_text + "\n" + stderr_text),
             **({"cancelled": True} if cancelled else {}),
+            **extra,
         }
     finally:
+        runstate.kill_tree(proc)  # no-op once the child has exited
         if token is not None:
             token.unregister(proc)
 
@@ -845,7 +919,11 @@ def simulate(
     top = _valid_top(top)
     if not top:
         raise ValueError("simulate requires top")
-    scan = scan_source_paths(sources)
+    # iverilog and vvp run inside the (not yet created) run directory, not next to
+    # the sources: relative $fopen/$readmem*/`include paths must stay inside the
+    # workspace when read from there, so scan with the directory the run will use.
+    scan_root = ((SETTINGS.workspace / "build") if base is None else Path(base)).resolve()
+    scan = scan_source_paths(sources, run_cwd=scan_root / "sim-pending")
     if not scan["ok"]:
         return {
             "ok": False,
@@ -3042,7 +3120,7 @@ def set_port(
         insert_at = module_match.end()
         new_text = text[:insert_at] + "\n " + replacement + text[insert_at:]
 
-    ET.fromstring(new_text)  # raises on malformed XML
+    xmlsafe.fromstring(new_text)  # raises on malformed XML
 
     sha_before = _sha256(path)
     backup = _backup_file(path)
@@ -3141,7 +3219,7 @@ def _register_entry_in_project(proj_path: Path, folder: str, name: str, extensio
         if close == -1:
             raise ValueError(f"unterminated <{folder}> folder")
         new_text = text[:close] + "  " + entry + "\n " + text[close:]
-    ET.fromstring(new_text)
+    xmlsafe.fromstring(new_text)
     with proj_path.open("w", encoding="utf-8", newline="") as handle:
         handle.write(new_text)
     return "created"
@@ -3939,7 +4017,7 @@ def create_robei_canvas_model(
         "wires": cleaned_wires,
     }
     xml_text = _render_canvas(state)
-    ET.fromstring(xml_text)
+    xmlsafe.fromstring(xml_text)
 
     target = model_dir / f"{name}.model"
     if target.exists() and not overwrite:
@@ -5158,7 +5236,7 @@ def create_robei_test(
         raise FileExistsError(f"test already exists: {target}")
 
     xml_text = _test_xml(name, code, timescale)
-    ET.fromstring(xml_text)
+    xmlsafe.fromstring(xml_text)
     backup = _backup_file(target)
     target.write_text(xml_text, encoding="utf-8", newline="\n")
     registration = _register_entry_in_project(proj, "test", name, "test", "test")
@@ -5250,7 +5328,7 @@ def create_robei_project(
     )
     proj_path = root / f"{leaf}.proj"
     proj_path.write_text(proj_text, encoding="utf-8", newline="\n")
-    ET.fromstring(proj_text)
+    xmlsafe.fromstring(proj_text)
 
     created = []
     for model in models:
@@ -5330,7 +5408,7 @@ def create_robei_model(
         cleaned.append(entry)
 
     xml_text = _model_xml(name, cleaned, code, comment, parameters_text)
-    ET.fromstring(xml_text)
+    xmlsafe.fromstring(xml_text)
     backup = None
     if target.exists():
         backup = _backup_file(target)
@@ -5371,7 +5449,7 @@ def _project_model_entry_replace(text: str, old: str, new: str | None) -> tuple[
         replacement = replacement.replace(f'name="{old}.model"', f'name="{new}.model"', 1)
         status = "renamed"
     updated = text[:match.start()] + replacement + text[match.end():]
-    ET.fromstring(updated)
+    xmlsafe.fromstring(updated)
     return updated, status
 
 
@@ -5473,7 +5551,7 @@ def manage_robei_model(
             backups[item] = _backup_file(item)
         if op == "rename":
             rewritten = _rewrite_root_attr(source.read_text(encoding="utf-8"), "Name", new_name or "")
-            ET.fromstring(rewritten)
+            xmlsafe.fromstring(rewritten)
             target.write_text(rewritten, encoding="utf-8", newline="\n")
             source.unlink()
             proj.write_text(project_preview, encoding="utf-8", newline="\n")
@@ -5482,7 +5560,7 @@ def manage_robei_model(
             proj.write_text(project_preview, encoding="utf-8", newline="\n")
         else:
             rewritten = _rewrite_root_attr(source.read_text(encoding="utf-8"), "Name", new_name or "")
-            ET.fromstring(rewritten)
+            xmlsafe.fromstring(rewritten)
             target.write_text(rewritten, encoding="utf-8", newline="\n")
             registration = _register_model_in_project(proj, new_name or "")
     except Exception:

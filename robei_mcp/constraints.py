@@ -163,9 +163,9 @@ def create_const(
     lines.append("</Module>")
     text = "\n".join(lines) + "\n"
 
-    from xml.etree import ElementTree as ET
+    from . import xmlsafe
 
-    ET.fromstring(text)
+    xmlsafe.fromstring(text, "generated .const")  # well-formed and entity-free
 
     target_dir = proj.parent / "const"
     target_dir.mkdir(parents=True, exist_ok=True)

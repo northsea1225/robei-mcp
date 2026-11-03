@@ -41,11 +41,33 @@ def check_text(text: str, source: str = "<string>") -> None:
             )
 
 
+# expat honours a BOM or the declared encoding, so the guard must look at the text the
+# parser will see, not only at the UTF-8 reading of the bytes (a UTF-16 document hides
+# "<!ENTITY" from a UTF-8 decode). Every reading below is checked; garbage readings of
+# a plain UTF-8 file cannot contain the markers, so there is no false positive.
+_READINGS = ("utf-8", "latin-1", "utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-32-le", "utf-32-be")
+
+
+def check_bytes(data: bytes, source: str = "<bytes>") -> None:
+    """Run :func:`check_text` over every encoding the XML parser could apply."""
+    for encoding in _READINGS:
+        check_text(data.decode(encoding, errors="replace"), source)
+
+
 def parse_bytes(data: bytes, source: str = "<bytes>") -> ET.Element:
     if len(data) > MAX_BYTES:
         raise UnsafeXml(f"{source}: XML is larger than {MAX_BYTES} bytes")
-    check_text(data.decode("utf-8", errors="replace"), source)
+    check_bytes(data, source)
     return ET.fromstring(data)
+
+
+def fromstring(text: str | bytes, source: str = "<string>") -> ET.Element:
+    """``ET.fromstring`` for text this package built or edited, behind the same guard."""
+    if isinstance(text, bytes):
+        check_bytes(text, source)
+    else:
+        check_text(text, source)
+    return ET.fromstring(text)
 
 
 def load(path: Path) -> ET.Element:

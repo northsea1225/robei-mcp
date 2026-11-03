@@ -247,6 +247,7 @@ def _scan_text(
     unresolved: list[dict],
     strict: bool,
     depth: int,
+    run_cwd: Path | None = None,
 ) -> None:
     """Scan one source and every `include it pulls in from the workspace."""
     clean = strip_comments(text)
@@ -283,8 +284,22 @@ def _scan_text(
         }
         findings.append(item)
         if not inside:
-            rejected.append(item)
+            rejected.append({**item, "base": "source"})
             continue
+        if run_cwd is not None and not Path(raw).is_absolute():
+            # The simulator does not run next to the source: iverilog/vvp start in
+            # the run directory, so a relative path must also stay inside the
+            # workspace when read from there.
+            at_run, at_run_inside = _resolve_checked(raw, run_cwd)
+            if not at_run_inside:
+                rejected.append({
+                    **item,
+                    "resolved": str(at_run),
+                    "inside_workspace": False,
+                    "base": "run_cwd",
+                    "reason": "relative path leaves the workspace when resolved from the simulator's working directory",
+                })
+                continue
         if kind != "include":
             continue
         if depth >= 8:
@@ -304,16 +319,22 @@ def _scan_text(
         except OSError as exc:
             unresolved.append({**item, "reason": f"unreadable: {exc}"})
             continue
-        _scan_text(resolved, nested, visited, findings, rejected, unresolved, strict, depth + 1)
+        _scan_text(resolved, nested, visited, findings, rejected, unresolved, strict, depth + 1, run_cwd)
 
 
-def scan_source_paths(sources: list[Path], strict: bool | None = None) -> dict:
+def scan_source_paths(
+    sources: list[Path], strict: bool | None = None, run_cwd: Path | None = None
+) -> dict:
     """Reject simulation inputs that point at files outside the workspace.
 
     Scans `include and $fopen/$readmemh/$readmemb/$writememh/$writememb/$dumpfile
     in the given files *and* in every workspace-local file they include.
     Non-literal expressions cannot be verified statically; strict mode (the
     default) rejects them instead of compiling code it could not inspect.
+
+    ``run_cwd`` is the directory the simulator will really run in. When given,
+    every relative path is checked against it as well as against the source's
+    own directory (the simulator never runs next to the source).
     """
     strict = SETTINGS.strict_path_scan if strict is None else strict
     findings: list[dict] = []
@@ -327,7 +348,7 @@ def scan_source_paths(sources: list[Path], strict: bool | None = None) -> dict:
         except OSError as exc:
             rejected.append({"file": str(source), "reason": f"unreadable: {exc}"})
             continue
-        _scan_text(source, text, visited, findings, rejected, unresolved, strict, 0)
+        _scan_text(source, text, visited, findings, rejected, unresolved, strict, 0, run_cwd)
 
     return {
         "ok": not rejected,
