@@ -28,13 +28,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .config import SETTINGS
-from .errors import DeviceUnsupported, FpgaStepFailed, UnconstrainedIO
+from .errors import BadRequest, DeviceUnsupported, FpgaStepFailed, UnconstrainedIO, PathEscape
 from .model import model_to_verilog_with_warnings, parse_robei_model
 from .security import is_within, resolve_project_path
 from .verilog import parse_module_ports, robei_width
 
 PART_RE = re.compile(r"^[a-z][a-z0-9]*-[0-9][a-z0-9]*$")
-STAGES = ("synth", "route", "package")
+STAGES = ("synth", "route", "package", "download")
+DEFAULT_STAGES = STAGES[:3]
 # 7-series bitstreams carry an ASCII header ('a' = .frame path, 'b' = part,
 # 'c'/'d' = date/time) before this sync word; only what follows it is configuration.
 BIT_SYNC_WORD = b"\xaa\x99\x55\x66"
@@ -93,6 +94,115 @@ def tool_paths() -> dict[str, Path]:
         found = shutil.which(exe) or shutil.which(stem)
         out[key] = Path(found) if found else bundled
     return out
+
+
+def _programmer_path() -> Path:
+    """Locate for a command PLAN only. Never execute or install this program."""
+    name = "openFPGALoader.exe" if os.name == "nt" else "openFPGALoader"
+    bundled = _bin_dir() / name
+    return bundled if bundled.is_file() else Path(shutil.which(name) or bundled)
+
+
+def doctor(part: str | None = None) -> dict[str, Any]:
+    """Read-only FPGA preflight; no subprocess, USB/JTAG probe or driver change."""
+    paths = {"yosys": SETTINGS.yosys, **tool_paths()}
+    checks = [{"name": name, "ok": path.is_file(), "path": str(path),
+               "hint": None if path.is_file() else "restore the configured toolchain externally; check ROBEI_FPGA_BIN / YOSYS_EXE"}
+              for name, path in paths.items()]
+    devices = device_table()
+    selected = [row for row in devices if row["part"] == part] if part else devices
+    device_ok = bool(selected) and (all(row["buildable"] for row in selected) if part else any(row["buildable"] for row in selected))
+    checks.append({"name": "device_database", "ok": device_ok, "path": str(db_root()),
+                   "hint": None if device_ok else "check ROBEI_FPGA_DB, chipdb/<part>.bin and <family>/<part>/part.yaml"})
+    programmer = _programmer_path()
+    return {"ok": all(item["ok"] for item in checks), "part": part, "checks": checks,
+            "failures": [item["name"] for item in checks if not item["ok"]],
+            "devices": selected, "available_parts": [row["part"] for row in devices if row["buildable"]],
+            "download": {"programmer": str(programmer), "exists": programmer.is_file(),
+                         "execution_supported": False, "hardware_verified": False,
+                         "hint": "dry-run plan only; this iteration has no hardware execution path"}}
+
+
+def _artifact(path: Path) -> dict[str, Any]:
+    exists = path.is_file()
+    return {"path": str(path), "exists": exists,
+            "size_bytes": path.stat().st_size if exists else None,
+            "sha256": _sha(path) if exists else None}
+
+
+def _validate_bitstream(path: Path, part: str) -> dict[str, Any]:
+    """Bounded Xilinx .bit framing/part/hash validation, not a board/CRC sign-off."""
+    if not is_within(path, SETTINGS.workspace):
+        raise PathEscape("bitstream must stay inside workspace")
+    if path.suffix.lower() != ".bit" or not path.is_file():
+        raise BadRequest("download requires an existing .bit file", "run Route/Package first", code="bitstream_invalid")
+    size = path.stat().st_size
+    if not 32 <= size <= 50_000_000:
+        raise BadRequest("bitstream size outside 32..50000000 bytes", "check the package output", code="bitstream_invalid")
+    with path.open('rb') as stream:
+        data = stream.read(50_000_001)
+    if len(data) != size:
+        raise BadRequest("bitstream changed while reading", "retry with a stable package output", code="bitstream_invalid")
+    cursor = 0
+
+    def take(length: int) -> bytes:
+        nonlocal cursor
+        if length < 0 or cursor + length > len(data):
+            raise ValueError("truncated .bit header/payload")
+        result = data[cursor:cursor + length]
+        cursor += length
+        return result
+
+    def number(size: int) -> int:
+        return int.from_bytes(take(size), "big")
+
+    try:
+        if number(2) != 9 or take(9) != b"\x0f\xf0" * 4 + b"\0" or number(2) != 1:
+            raise ValueError("invalid Xilinx .bit preamble")
+        fields = {}
+        for expected in b"abcd":
+            if take(1) != bytes([expected]):
+                raise ValueError("invalid .bit field order")
+            length = number(2)
+            if not 1 <= length <= 4096:
+                raise ValueError("invalid .bit field length")
+            fields[chr(expected)] = take(length).rstrip(b"\0")
+        if take(1) != b"e":
+            raise ValueError("missing .bit payload field")
+        payload_size = number(4)
+        payload_start = cursor
+        if payload_size < 8 or payload_size % 4 or payload_size != len(data) - cursor:
+            raise ValueError(".bit payload length mismatch")
+        sync = data.find(BIT_SYNC_WORD, payload_start, min(len(data), payload_start + 1024))
+        if sync < 0 or (sync - payload_start) % 4 or sync + 8 > len(data):
+            raise ValueError("missing/misaligned .bit sync word")
+        header_part = fields["b"].decode("ascii")
+        canonical = lambda value: re.sub(r"-[0-9][a-z0-9]*$", "", value.lower().removeprefix("xc"))
+        if canonical(header_part) != canonical(part):
+            raise ValueError(".bit header part does not match the requested part")
+    except (ValueError, UnicodeError) as exc:
+        raise BadRequest(str(exc), "rebuild the bitstream for the requested part; do not download", code="bitstream_invalid") from exc
+    return {"path": str(path), "size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+            "part": header_part, "payload_bytes": payload_size, "payload_offset": sync,
+            "payload_sha256": hashlib.sha256(data[sync:]).hexdigest(), "validated": True,
+            "validation_scope": "header, declared length, part, sync and hashes; not configuration CRC, timing or hardware"}
+
+
+def _download_plan(bit: Path, part: str) -> dict[str, Any]:
+    artifact = _validate_bitstream(bit, part)
+    programmer = _programmer_path()
+    if not programmer.is_file():
+        raise FpgaStepFailed("download command planner cannot find the programmer; inspect robei_doctor(fpga=True)",
+                             stage="download", record={"stage": "download", "doctor": doctor(part)})
+    # Fixed SRAM-only argv, never passed to subprocess (including --help/--detect).
+    command = [str(programmer), "--write-sram", "--file-type", "bit", str(bit)]
+    if any("\0" in arg or "\n" in arg or "\r" in arg for arg in command):
+        raise BadRequest("invalid command path", "use ordinary filesystem paths", code="bad_argument")
+    return {"stage": "download", "ok": True, "dry_run": True, "executed": False,
+            "returncode": None, "argv": command, "command": command, "command_validated": True,
+            "command_validation": "fixed allowlisted syntax and executable/bitstream existence; no program invocation",
+            "hardware_verified": False, "hardware_target": None, "bitstream": artifact,
+            "note": "no board/cable/serial selected; hardware execution is unavailable"}
 
 
 def _part_yaml(root: Path, part: str) -> tuple[str | None, Path | None]:
@@ -577,6 +687,14 @@ def _run_stage(
 ) -> dict[str, Any]:
     from . import tools
 
+    backups = {}
+    for name, path in outputs.items():
+        if not is_within(path, SETTINGS.workspace):
+            raise PathEscape("FPGA artifact path escapes workspace")
+        if path.exists():
+            backup = tools._backup_file(path)
+            backups[name] = str(backup)
+            path.unlink()  # an old artifact must never satisfy a new stage
     result = tools._run(args, cwd=cwd, timeout_s=timeout_s)
     text = (result.get("stdout") or "") + (result.get("stderr") or "")
     log_path = None
@@ -596,16 +714,16 @@ def _run_stage(
         "log_path": log_path,
         "run_dir": str(run_dir) if run_dir is not None else None,
         "outputs": {},
+        "backups": backups,
     }
     for name, path in outputs.items():
-        record["outputs"][name] = {
-            "path": str(path),
-            "exists": path.is_file(),
-            "size_bytes": path.stat().st_size if path.is_file() else None,
-        }
+        record["outputs"][name] = _artifact(path)
     record["ok"] = bool(result.get("ok")) and all(
-        item["exists"] for item in record["outputs"].values()
+        item["exists"] and item["size_bytes"] > 0 for item in record["outputs"].values()
     )
+    if run_dir is not None:
+        record["record_path"] = str(run_dir / f"{stage}.json")
+        _write_summary(Path(record["record_path"]), record)
     if not record["ok"]:
         code = "timeout" if record["timeout"] else "fpga_step_failed"
         raise FpgaStepFailed.from_record(record, code=code)
@@ -641,11 +759,11 @@ def _rel(path: Path) -> str:
         return path.as_posix()
 
 
-def _new_run_dir() -> Path:
+def _new_run_dir(proj: Path | None = None) -> Path:
     """One directory per FPGA call: stage logs, summary.json, error pointers."""
     from . import tools
 
-    return tools._new_run_dir("fpga")
+    return tools._new_run_dir("fpga", base=proj.parent / "build" if proj else None)
 
 
 def _write_summary(run_dir_file: Path, payload: dict[str, Any]) -> str:
@@ -676,13 +794,13 @@ def synthesize_project(
     device = _device(part) if part else None
     const = _const_path(proj, None)
     preferred = top or _const_model(const)
+    run_dir = _new_run_dir(proj)
     exported = _export_build_verilog(proj)
     chosen, resolved_top = _pick_sources(exported, preferred)
     if not chosen:
         raise FileNotFoundError("project has no models to synthesise")
     filelist = _write_filelist(_project_paths(proj)["build"], chosen)
     json_out = _project_paths(proj)["build"] / f"{const.stem}.json"
-    run_dir = _new_run_dir()
 
     info = _common(proj, part)
     info.update(
@@ -806,8 +924,8 @@ def _missing_io(proj: Path, const: Path, exported: dict[str, Any], top: str | No
     return missing
 
 
-def _normalize_steps(steps: list[Literal["synth", "route", "package"]] | None) -> list[str]:
-    chosen = [str(step).strip().lower() for step in (steps or STAGES)]
+def _normalize_steps(steps: list[Literal["synth", "route", "package", "download"]] | None) -> list[str]:
+    chosen = [str(step).strip().lower() for step in (steps or DEFAULT_STAGES)]
     unknown = [step for step in chosen if step not in STAGES]
     if unknown:
         raise ValueError(f"unknown step(s) {unknown}; expected a subset of {list(STAGES)}")
@@ -821,8 +939,9 @@ def build_bitstream(
     proj_path: str,
     part: str,
     const_name: str | None = None,
-    steps: list[Literal["synth", "route", "package"]] | None = None,
+    steps: list[Literal["synth", "route", "package", "download"]] | None = None,
     timeout_s: int = 120,
+    dry_run: bool = True,
 ) -> dict[str, Any]:
     """Run yosys -> Roplace -> fasm2frames -> xc7frames2bit and report every stage.
 
@@ -834,6 +953,8 @@ def build_bitstream(
     from . import constraints, tools
 
     started = time.monotonic()
+    if dry_run is not True:
+        raise BadRequest("hardware execution is disabled in this iteration", "use dry_run=true; no board/cable/serial execution interface is provided", code="hardware_execution_disabled")
     proj = resolve_project_path(proj_path)
     if not is_within(proj, SETTINGS.workspace):
         raise ValueError("refusing to build a project outside the workspace")
@@ -846,6 +967,9 @@ def build_bitstream(
             available=available,
         )
     wanted = _normalize_steps(steps)
+    if "download" in wanted and wanted not in (["download"], list(STAGES)):
+        raise ValueError("download accepts the complete synth/route/package/download chain, or download alone for an existing bitstream")
+    preflight = doctor(part)
     binaries = tool_paths()
     missing_tools = [key for key, path in binaries.items() if not path.is_file()]
     if missing_tools:
@@ -853,13 +977,26 @@ def build_bitstream(
             f"missing FPGA binaries {missing_tools} next to Robei ({_bin_dir()}); "
             "set ROBEI_FPGA_BIN to the folder holding Roplace.exe",
             stage=wanted[0],
+            record={"stage": wanted[0], "doctor": preflight},
         )
+    if not preflight["ok"] or ("download" in wanted and not preflight["download"]["exists"]):
+        raise FpgaStepFailed("FPGA doctor failed; inspect the recorded checks and configured tool paths",
+                             stage=wanted[0], record={"stage": wanted[0], "doctor": preflight})
 
     const = _const_path(proj, const_name)
+    if wanted == ["download"]:
+        plan = _download_plan(_project_paths(proj)["build"] / f"{const.stem}.bit", part)
+        run_dir = _new_run_dir(proj)
+        payload = {**_common(proj, part), "ok": True, "requested_steps_ok": True,
+                   "bitstream_built": False, "run_dir": str(run_dir), "doctor": preflight,
+                   "steps_run": ["download"], "stages": [plan], "download": plan,
+                   "artifacts": {"bit": {**plan["bitstream"], "from_this_run": False}}}
+        payload["summary_path"] = _write_summary(run_dir / "summary.json", payload)
+        return payload
+    run_dir = _new_run_dir(proj)
     exported = _export_build_verilog(proj)
     sources, top = _pick_sources(exported, _const_model(const))
     build = _project_paths(proj)["build"]
-    run_dir = _new_run_dir()
     _write_filelist(build, sources)
     xdc_path = build / f"{const.stem}.xdc"
     xdc_generated = False
@@ -976,14 +1113,21 @@ def build_bitstream(
             )
         )
 
+    plan = _download_plan(bit_out, part) if "download" in wanted else None
+    if plan:
+        records.append(plan)
     stat = _stat_pass(json_out, budget["effective_s"]) if json_out.is_file() else {"counts": {}}
-    bit_payload = _bit_payload(bit_out) if bit_out.is_file() else {"offset": None, "sha256": None}
+    bit_payload = _bit_payload(bit_out) if bit_out.is_file() and ("package" in wanted or plan is not None) else {"offset": None, "sha256": None}
     utilization = _utilization(stat["counts"], _io_bits(sources, top))
     capacity, capacity_source, capacity_warnings = _capacity_for_device(device)
     payload = _common(proj, part)
     payload.update(
         {
-            "ok": bit_out.is_file(),
+            "ok": ("package" in wanted and bit_out.is_file()) or plan is not None,
+            "requested_steps_ok": True,
+            "bitstream_built": "package" in wanted,
+            "doctor": preflight,
+            **({"download": plan} if plan is not None else {}),
             "family": family,
             "top": top,
             "const": str(const),
@@ -993,17 +1137,17 @@ def build_bitstream(
             "steps_run": [record["stage"] for record in records],
             "stages": records,
             "artifacts": {
-                "json": {"path": str(json_out), "size_bytes": json_out.stat().st_size} if json_out.is_file() else None,
-                "fasm": {"path": str(fasm_out), "size_bytes": fasm_out.stat().st_size} if fasm_out.is_file() else None,
-                "frame": {"path": str(frame_out), "size_bytes": frame_out.stat().st_size} if frame_out.is_file() else None,
+                **{name: {**_artifact(path), "from_this_run": (name == "xdc" and xdc_generated) or any(name in record.get("outputs", {}) for record in records)} if path.is_file() else None
+                   for name, path in (("json", json_out), ("fasm", fasm_out), ("frame", frame_out), ("routed_json", routed_out), ("xdc", xdc_path))},
                 "bit": {
                     "path": str(bit_out),
                     "size_bytes": bit_out.stat().st_size,
                     "sha256": _sha(bit_out),
                     "payload_sha256": bit_payload["sha256"],
                     "payload_offset": bit_payload["offset"],
+                    "from_this_run": "package" in wanted,
                 }
-                if bit_out.is_file()
+                if bit_out.is_file() and ("package" in wanted or plan is not None)
                 else None,
             },
             "bit_payload_sha256": bit_payload["sha256"],

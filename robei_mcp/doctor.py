@@ -74,10 +74,12 @@ def _deep_sim() -> dict[str, Any]:
     return {"ok": "DOCTOR_OK" in text and run.returncode == 0, "stage": "vvp", "output": text[-400:]}
 
 
-def run(deep: bool = False) -> dict[str, Any]:
+def run(deep: bool = False, fpga: bool = False, part: str | None = None) -> dict[str, Any]:
     from . import gui  # imported lazily: doctor must work even if the bridge cannot start
 
     checks: list[dict[str, Any]] = []
+    if part is not None and not fpga:
+        raise ValueError("part requires fpga=true")
 
     version = sys.version_info
     checks.append(
@@ -212,6 +214,12 @@ def run(deep: bool = False) -> dict[str, Any]:
             )
         )
 
+    fpga_result = None
+    if fpga:
+        from .fpga import doctor as fpga_doctor
+        fpga_result = fpga_doctor(part)
+        checks.append(_check("fpga", fpga_result["ok"], fpga_result,
+                             "check the FPGA doctor paths, chipdb and part.yaml; no installer/programmer is run"))
     required_failures = [c["name"] for c in checks if c["required"] and not c["ok"]]
     warnings = [c["name"] for c in checks if not c["required"] and not c["ok"]]
     return {
@@ -219,6 +227,7 @@ def run(deep: bool = False) -> dict[str, Any]:
         "failures": required_failures,
         "warnings": warnings,
         "checks": checks,
+        **({"fpga": fpga_result} if fpga_result is not None else {}),
         "paths": {
             "project_root": str(PROJECT_ROOT),
             "workspace": str(SETTINGS.workspace),

@@ -236,7 +236,7 @@ def payload(exc: BaseException, **extra: Any) -> dict[str, Any]:
         data["record"] = record
         # A failed FPGA stage is only actionable if the caller can see what ran
         # and where the full log sits; keep both at the top level.
-        for key in ("argv", "returncode", "log_tail", "log_path", "run_dir"):
+        for key in ("argv", "returncode", "log_tail", "log_path", "run_dir", "doctor"):
             if record.get(key) not in (None, "", []):
                 data[key] = record[key]
     data.update(extra)

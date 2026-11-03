@@ -352,13 +352,14 @@ def read_robei_model(path: str) -> dict[str, Any]:
 
 
 @tool(annotations=ANALYZE)
-def robei_doctor(deep: bool = False) -> dict[str, Any]:
+def robei_doctor(deep: bool = False, fpga: bool = False, part: str | None = None) -> dict[str, Any]:
     """Self-check the whole stack: python/venv, mcp+matplotlib, workspace, Robei, iverilog/vvp/yosys, GUI task.
 
     Set deep=True to also compile and run a two-line testbench with the configured iverilog/vvp.
+    Set fpga=True (optionally part=...) for read-only binary/database checks, never USB/JTAG probes.
     """
     try:
-        return doctor.run(deep=deep)
+        return doctor.run(deep=deep, **({"fpga": fpga, "part": part} if fpga or part is not None else {}))
     except Exception as exc:
         return _error(exc)
 
@@ -867,11 +868,12 @@ async def build_bitstream(
     proj_path: str,
     part: str,
     const_name: str | None = None,
-    steps: list[Literal["synth", "route", "package"]] | None = None,
+    steps: list[Literal["synth", "route", "package", "download"]] | None = None,
     timeout_s: int = 120,
+    dry_run: bool = True,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Roplace -> fasm2frames -> xc7frames2bit, the three steps behind Build > Route/Package.
+    """Roplace -> fasm2frames -> xc7frames2bit, optionally followed by a download PLAN only.
 
     Each stage reports rc, seconds, log tail and its artifact; the first failure stops the
     run with code=fpga_step_failed and that stage name. Parts without a chipdb return
@@ -879,12 +881,14 @@ async def build_bitstream(
     missing list. Roplace's Fmax is a reference only - this is not a timing sign-off.
     ``timeout_s`` defaults to 120 s (== ROBEI_MAX_TIMEOUT_S); the payload also carries
     bit_payload_sha256, the bitstream hash from the 0xAA995566 sync word on.
+    Download defaults to dry_run=True; False is always rejected. No hardware execution
+    interface exists. dry_run applies ONLY to Download: Route/Package produce real files.
     """
     try:
         return await _invoke(
             fpga.build_bitstream, ctx, "build_bitstream",
             proj_path=proj_path, part=part, const_name=const_name,
-            steps=steps, timeout_s=timeout_s,
+            steps=steps, timeout_s=timeout_s, dry_run=dry_run,
         )
     except Exception as exc:
         return _error(exc)

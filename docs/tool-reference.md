@@ -3,7 +3,7 @@
 1.11.0 共 54 个工具（文件级 42 + GUI 12）；ROBEI_MCP_GUI=0 时为 42 个。
 工具名、参数名、返回字段保持英文。
 
-当前版本：**1.11.0**，工具数不变（54/42）。
+开发变更：**1.12.0（Unreleased）** 分段记录；当前版本 1.11.0，工具数不变（54/42）。
 
 > 这份文件是从早期 README 拆出来的，示例里的时间戳/路径是当时的真实输出，不要当成当前默认值。
 
@@ -191,6 +191,11 @@ FAIL 优先于 PASS，输出裁剪不会丢失这个判定。`simulate_project`�
 
 `deep=true` 时会在 `workspace/build/doctor/` 编译并运行一个两行 testbench，
 只有拿到 `DOCTOR_OK` 才算通过——用来区分"路径对"和"真的能跑"。
+
+1.12 可传 `fpga=true, part="xc7a50tfgg484-1"`，增加 `checks[name=fpga]` 和顶层 `fpga`。
+该项只读核对 Yosys/Roplace/fasm2frames/xc7frames2bit、chipdb/part.yaml；缺失项含路径与修复 hint。
+`fpga.download` 只表示程序路径是否存在，`execution_supported=false`、`hardware_verified=false`；不调用程序，不探测 USB/JTAG。
+不传 fpga 保持旧自检范围；part 必须与 fpga=true 同用。路径存在不等于工具真实运行通过。
 
 ### `list_projects`
 
@@ -823,12 +828,13 @@ xc7frames2bit --part_file <db>/<family>/<part>/part.yaml --part_name <part>
               --frm_file <frame> --output_file <bit>
 ```
 
-- `steps` 是枚举，只接受 `"synth"` / `"route"` / `"package"` 三个值（schema 里就是
+- `steps` 是枚举，接受 `"synth"` / `"route"` / `"package"` / `"download"`（schema 里就是
   `enum`，写错值在 MCP 层就被拒，不会跑到一半才失败）。
+  默认仍为前三段；download 仅接受完整四段链路，或单独 `["download"]` 校验一个已有 bitstream。
 - 每段返回 `{stage, command, returncode, duration_s, timeout, log_tail, log_path,
   run_dir, argv, outputs}`；`package` 拆成 `package.frames` 与 `package.bit` 两个 stage。
-  每一步的完整 stdout+stderr 落在 `run_dir/<stage>.log`，`log_path` 就是那个文件的绝对
-  路径，可以直接喂给 `read_run_log`。
+  每一步捕获的 stdout+stderr 落在 `run_dir/<stage>.log`（仍受 max_output_chars 裁剪限制），
+  同名 JSON 保存 rc 与文件事实，log_path 可直接喂给 `read_run_log`。
 - 第一个失败就停下：`code=fpga_step_failed`，`stage` 指出是哪一段。返回的**顶层**直接带
   `stage` / `argv`（已脱敏）/ `returncode` / `log_tail` / `log_path` / `run_dir`，
   完整的 stage 记录仍在 `record` 里。1.2.2 之前这条路径实际抛
@@ -840,9 +846,9 @@ xc7frames2bit --part_file <db>/<family>/<part>/part.yaml --part_name <part>
 - 器件没有 chipdb（或没有 part.yaml）→ `device_unsupported`，`error` 里带原因。
 - `.const` 没把某个端口位绑到引脚 → `unconstrained_io`，
   `missing: [{port, direction, missing_bits}]`，此时不会启动 Roplace。
-- 三件套二进制找不到 → `fpga_step_failed`，`hint` 提示用 `ROBEI_FPGA_BIN` 指目录。
+- 二进制找不到 → `fpga_step_failed`，顶层和 record 中的 doctor 给出缺失项、配置路径与 hint，不编造成功。
 - `steps` 可以只要前几段（例如 `["synth"]`），此时 `ok=false`、`artifacts.bit=null`，
-  其余产物照常返回。
+  其余产物照常返回；`requested_steps_ok=true` 表示请求的子步骤已完成，不代表生成了 bit。
 - 已知限制：IDE 打开工程会把 `.const` 根节点的 `Family` / `Device` 清空，所以 GUI 侧的
   Route/Package 无法复现（本工具的 `.fasm` 与 IDE 侧同 json 时逐字节一致，差异不在工具链）。
 - `timeout_s` 默认 **120**（就是 `ROBEI_MAX_TIMEOUT_S`），默认调用不带 warning；
@@ -854,6 +860,31 @@ xc7frames2bit --part_file <db>/<family>/<part>/part.yaml --part_name <part>
 - `fmax_reference` 是 Roplace 自己打印的 `Max frequency for clock ...`，**仅供参考**；
   组合逻辑设计没有时钟，Roplace 只打印 `Warning: No clocks found in design`，该字段为 `null`。
   `timing_note` 会写明本工具不做时序签核。
+
+#### 1.12.0（Unreleased）：真实产物与仅计划 Download
+
+```json
+{"proj_path":"_qa_runs/m6_112/exp6_counter/exp6_counter.proj",
+ "part":"xc7a50tfgg484-1","const_name":"dec_counter",
+ "steps":["synth","route","package","download"],"dry_run":true,"timeout_s":120}
+```
+
+验收顺序：先让 Session 1 的 `gui_doctor` 通过，再调用 `robei_doctor(fpga=true, part=...)`。
+本工具里的 FPGA doctor 还会再次核对路径；Route/Package 仍使用后端程序，不等于 GUI 菜单实现。
+
+- `dry_run=true` **只影响 Download**；综合/布线/打包始终产生真实文件，不能用于模拟整条链路。
+- `artifacts` 含 json、routed_json、fasm、frame、bit、xdc 的 path/size_bytes/sha256；from_this_run 标明本次生成还是复用输入。
+  bitstream_built 仅在本次 package 执行后为 true。旧输出留备份后移开，rc=0 但输出缺失/为空仍返回失败。
+- `download` 返回固定白名单 argv、command_validated、bitstream 校验结果、dry_run=true、executed=false、hardware_verified=false、returncode=null。
+  只核对程序路径存在与静态语法，**不调用 openFPGALoader**，也不执行 --help/--detect，不安装/改写该程序，不使用 zadig。
+- `.bit` 校验上限 50 MB，要求标准 a/b/c/d/e 文件头、声明长度匹配、器件匹配与对齐同步字；返回完整及 payload SHA256。
+  不校验配置 CRC、时序或实际板卡。**Download 未在真机验证**；没有 board/cable/serial 参数，不提供真机路径。
+- `dry_run=false` 在读取工程/启动子进程前无条件返回 `hardware_execution_disabled`。
+  损坏、截断、错误器件的 bitstream 返回 bitstream_invalid；程序缺失给出 doctor 诊断。
+- `["download"]` 只检查既有文件并生成计划；bitstream_built=false，不会冒充本次 Route/Package 的产物。
+
+命令语法参考上游 [openFPGALoader main.cpp](https://github.com/trabucayre/openFPGALoader/blob/e3d8d947a3df36b5dedbfe720cd3d242aa7ca232/src/main.cpp)，
+文件头字段参考 [bitparser.cpp](https://github.com/trabucayre/openFPGALoader/blob/e3d8d947a3df36b5dedbfe720cd3d242aa7ca232/src/bitparser.cpp)。仅使用公开格式/参数名，不复制其实现，不新增依赖。
 
 ### `read_run_log`
 

@@ -26,6 +26,21 @@
 - **画布可增量改**：`edit_robei_canvas` 用 `add_instance` / `connect` / `rename_wire` 这组
   操作改画布，整批校验通过才落盘；`set_robei_code` / `set_robei_parameter` 改行为与参数。
 
+## 1.12.0（Unreleased）：FPGA 产物与 Download dry-run
+
+沿用现有工具，不增加工具数：`gui_doctor` → `robei_doctor(fpga=true, part=...)` →
+`build_bitstream(steps=["synth","route","package","download"], dry_run=true)`。
+
+- **Route/Package 真实执行**，产物和逐阶段记录保存在 QA 工程 `build/`，给出路径、大小、SHA256。
+  旧产物先备份并移开，rc=0 但没有生成非空文件也算失败；工具链缺失返回 doctor 诊断。
+- **dry_run 只修饰 Download，不修饰综合/布线/打包。** Download 只检查 bit 文件头、长度、器件、同步字与哈希，并生成白名单命令计划。
+  不运行 openFPGALoader（包括探测命令），不装驱动、不使用 zadig、不接触板卡。
+- `dry_run=false` 无条件拒绝；本迭代没有 board/cable/serial 真机执行入口，也不测试真机路径。
+  `download.executed=false`、`hardware_verified=false`、`returncode=null` 不得解读成下载成功。
+- Download **未在真机验证**，bit 校验不是配置 CRC/时序签核；Roplace Fmax 仍仅供参考。
+
+包版本为 **1.11.0**；1.12.0 的 bump 另行提交，未发布变更不代表推送、tag 或 Release。
+
 ## 1.11.0（2026-11-03）：有界 sweep 与自检语义
 
 - `create_testbench(parameters=..., sweep=...)` 支持显式参数分组，生成 `<name>_s1`、`_s2` 等独立 TB；

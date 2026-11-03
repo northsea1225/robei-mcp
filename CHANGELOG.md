@@ -2,6 +2,17 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.12.0 — Unreleased
+
+- 扩展现有 `robei_doctor(fpga=true, part=...)`，只读报告 FPGA 二进制、chipdb/part.yaml 与下载计划器路径；不探测 USB/JTAG、不安装工具。
+- 扩展 `build_bitstream.steps` 的 download 枚举；默认仍是 synth/route/package，不隐式添加新阶段。
+  显式完整链路先检查 doctor，再真实 Route/Package，最后生成 Download dry-run 计划。
+- Route/Package 的逐阶段 outputs 与汇总 artifacts 增加 SHA256、大小、路径及本次/复用标记，逐阶段 JSON/log 写入工程 build。
+  旧输出先备份并移开；成功 rc 不能掩盖缺失/空产物，不再把旧 bit 当作本次 synth 的完成证明。
+- Download 默认 dry_run=true；验证 Xilinx .bit 文件头、长度、器件、同步字和哈希，只生成固定 SRAM 命令 argv，程序从不执行。
+  dry_run=false 无条件拒绝；不提供、不测试真机入口。**Download 未在真机验证**。
+- 无新增 MCP 工具（54/42），无新增依赖；包版本为 1.11.0，1.12.0 的 bump 另行提交。
+
 ## 1.11.0 — 2026-11-03
 
 **有界参数 sweep、参数化真值表与统一的自检失败语义。** 工具数保持 54/42。
