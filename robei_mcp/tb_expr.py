@@ -183,13 +183,14 @@ def expected(value, width: int, inputs: dict[str, int], field: str) -> tuple[str
         return f"{width}'b{value:0{width}b}", False
     if not isinstance(value, str):
         raise invalid(field, 0, "expected value must be an integer, bit string or expression")
-    if len(value) > MAX_LENGTH:
-        raise invalid(field, MAX_LENGTH, f"expected value length exceeds {MAX_LENGTH}")
     text = value.strip()
     if re.fullmatch(r"[01xXzZ]+", text):
         if len(text) > width:
             raise invalid(field, 0, f"bit literal does not fit in {width} bits")
         return f"{width}'b{text.lower().rjust(width, '0')}", False
     if re.fullmatch(r"[0-9]+", text):
-        return expected(int(text), width, inputs, field)
+        digits = text.lstrip("0") or "0"
+        if len(digits) > width:
+            raise invalid(field, 0, f"decimal literal does not fit in {width} bits")
+        return expected(int(digits), width, inputs, field)
     return compile_expression(value, inputs, field).text, True

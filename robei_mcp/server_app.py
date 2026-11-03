@@ -646,7 +646,7 @@ def set_robei_parameter(
 def create_testbench(
     proj_path: str,
     name: str,
-    model_path: str,
+    model_path: str | None = None,
     vectors: list[dict[str, Any]] | None = None,
     timescale: str = "1ns/1ps",
     overwrite: bool = False,
@@ -657,6 +657,8 @@ def create_testbench(
     stimuli: list[dict[str, Any]] | None = None,
     assertions: list[dict[str, Any]] | None = None,
     allow_wide_vectors: bool = False,
+    duts: list[dict[str, Any]] | None = None,
+    comparisons: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Create a bounded combinational or timed test/*.test with safe expected expressions."""
     try:
@@ -665,6 +667,7 @@ def create_testbench(
             timescale=timescale, overwrite=overwrite, run=run, mode=mode,
             clock=clock, reset=reset, stimuli=stimuli, assertions=assertions,
             allow_wide_vectors=allow_wide_vectors,
+            duts=duts, comparisons=comparisons,
         )
     except Exception as exc:
         return _error(exc)

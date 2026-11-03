@@ -39,7 +39,7 @@ from .errors import (
     UnknownParameter,
     WidthMismatch,
 )
-from . import lifecycle, runstate, tb_expr, xmlsafe
+from . import lifecycle, runstate, tb_dut, tb_expr, xmlsafe
 from .security import (
     is_within,
     resolve_model_path,
@@ -2350,7 +2350,7 @@ def export_robei_verilog(
 def create_testbench(
     proj_path: str,
     name: str,
-    model_path: str,
+    model_path: str | None = None,
     vectors: list[dict[str, Any]] | None = None,
     timescale: str = "1ns/1ps",
     overwrite: bool = False,
@@ -2361,44 +2361,30 @@ def create_testbench(
     stimuli: list[dict[str, Any]] | None = None,
     assertions: list[dict[str, Any]] | None = None,
     allow_wide_vectors: bool = False,
+    duts: list[dict[str, Any]] | None = None,
+    comparisons: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Create a bounded literal/expression-vector or timed ``test/*.test`` model."""
     proj = resolve_project_path(proj_path)
     if not is_within(proj, SETTINGS.workspace):
         raise PathEscape(f"project path escapes workspace: {proj}")
-    model = resolve_model_path(model_path)
-    if not is_within(model, proj.parent / "model"):
-        raise PathEscape("model_path must be a model in the selected project")
     if mode not in {"combinational", "timed"}:
         raise BadRequest("mode must be combinational or timed", "pass mode='combinational' or mode='timed'")
-    tb_expr.reject_signed_ports(model)
-    parsed = parse_robei_model(model)
-    ports = parsed.get("ports") or []
-    if not ports:
-        raise BadRequest("DUT has no ports", "pass a model with at least one input/output port")
-    widths: dict[str, int] = {}
-    directions: dict[str, str] = {}
-    for port in ports:
-        port_name = str(port.get("name") or "")
-        width = robei_width(port.get("datasize"))
-        if width is None:
-            raise BadRequest(
-                f"cannot resolve parameterised width for port {port_name!r}",
-                "export the model with concrete parameter values before creating a testbench",
-            )
-        widths[port_name] = int(width)
-        directions[port_name] = str(port.get("inout") or "input").lower()
-    input_ports = [port for port, direction in directions.items() if direction == "input"]
-    output_ports = [port for port, direction in directions.items() if direction == "output"]
-    if any(direction not in {"input", "output"} for direction in directions.values()):
-        raise BadRequest("inout ports are not supported", "use input/output ports")
-    input_bits = sum(widths[port] for port in input_ports)
+    context = tb_dut.Context(proj, model_path, duts, comparisons)
+    widths = context.widths
+    input_ports = list(context.inputs)
+    input_bits = context.input_bits
+    targets: dict[str, tb_dut.Target] = {}
     expression_count = 0
+    expression_bytes = 0
 
     def expectation(value: Any, port: str, field: str) -> tuple[str, bool]:
-        nonlocal expression_count
-        result = tb_expr.expected(value, widths[port], {p: widths[p] for p in input_ports}, field)
+        nonlocal expression_count, expression_bytes
+        result = tb_expr.expected(value, targets[port].width, context.inputs, field)
         expression_count += int(result[1])
+        expression_bytes += len(result[0].encode("utf-8"))
+        if expression_bytes > SETTINGS.max_source_bytes:
+            raise BadRequest("expected expressions exceed source size limit", "split the test", code="limit_exceeded")
         return result
 
     def literal(value: Any, width: int, field: str) -> str:
@@ -2429,12 +2415,11 @@ def create_testbench(
                 )
         return f"{width}'b{bits.lower()}"
 
-    def declaration(kind: str, port: str) -> str:
-        width = widths[port]
-        suffix = "" if width == 1 else f" [{width - 1}:0]"
-        return f"{kind}{suffix} {port};"
-
     def finish(code: str, semantic: dict[str, Any]) -> dict[str, Any]:
+        # Leave room for simulate_project's module/timescale/dump wrapper too.
+        wrapper_budget = 512 + 3 * len(name.encode("utf-8")) + len(timescale.encode("utf-8"))
+        if len(code.encode("utf-8")) + wrapper_budget > SETTINGS.max_source_bytes:
+            raise BadRequest("generated testbench exceeds source size limit", "split the test or reduce vectors", code="limit_exceeded")
         if re.search(r"(?i)\bmodule\b|\$dump", code):
             raise RuntimeError("generated semantic testbench contains a forbidden module/dump token")
         created = create_robei_test(
@@ -2453,7 +2438,12 @@ def create_testbench(
         return {
             **created,
             "ok": bool(created.get("ok")) and (run_result is None or run_result.get("ok") is True),
-            "semantic": semantic,
+            "semantic": {
+                **semantic,
+                "dut": context.duts[0]["model"] if context.single else None,
+                "model_path": context.duts[0]["model_path"] if context.single else None,
+                "duts": context.duts,
+            },
             "run": run_result,
         }
 
@@ -2485,35 +2475,28 @@ def create_testbench(
                 )
             if set(drive) - set(input_ports):
                 raise BadRequest(f"vectors[{index}] drives non-input ports: {sorted(set(drive) - set(input_ports))}", "drive only DUT input ports")
-            if set(expect) - set(output_ports):
-                raise BadRequest(f"vectors[{index}] expects non-output ports: {sorted(set(expect) - set(output_ports))}", "expect only DUT output ports")
             if set(drive) != set(input_ports):
                 raise BadRequest(f"vectors[{index}] is missing inputs: {sorted(set(input_ports) - set(drive))}", "drive every DUT input in every vector")
-            if set(expect) != set(output_ports):
-                raise BadRequest(f"vectors[{index}] is missing outputs: {sorted(set(output_ports) - set(expect))}", "provide an expected value for every DUT output")
+            targets.update(context.targets(expect, f"vectors[{index}].expect", require_all=True))
             assignments.append((
                 {port: literal(value, widths[port], f"vectors[{index}].drive.{port}") for port, value in drive.items()},
                 {port: expectation(value, port, f"vectors[{index}].expect.{port}") for port, value in expect.items()},
             ))
-        lines: list[str] = []
-        lines.extend(declaration("reg", port) for port in input_ports)
-        lines.extend(declaration("wire", port) for port in output_ports)
+        lines = context.declarations()
         expression_ports = {port for _, expected_values in assignments for port, (_, is_expr) in expected_values.items() if is_expr}
-        lines.extend(f"reg [{widths[port]-1}:0] __robei_expected_{port};" for port in sorted(expression_ports))
-        lines.extend(["integer fail, vector;", "", f"{parsed['name']} dut("])
-        lines.append(",\n".join(f"  .{port['name']}({port['name']})" for port in ports))
-        lines.extend([");", "", "initial begin", "  fail = 0;", "  vector = 0;"])
+        lines.extend(f"reg [{targets[port].width-1}:0] __robei_expected_{targets[port].slot};" for port in sorted(expression_ports))
+        lines.extend(["integer fail, vector;", "", *context.instances(), "", "initial begin", "  fail = 0;", "  vector = 0;"])
         for drive_literals, expect_literals in assignments:
             lines.append("  vector = vector + 1;")
             lines.extend(f"  {port} = {value};" for port, value in drive_literals.items())
             lines.append("  #1;")
             for port, (value, is_expr) in expect_literals.items():
                 if is_expr:
-                    lines.append(f"  __robei_expected_{port} = {value};")
-            mismatch = " || ".join(
-                f"({port} !== __robei_expected_{port})" if is_expr else f"!({port} === {value})"
+                    lines.append(f"  __robei_expected_{targets[port].slot} = {value};")
+            mismatch = " || ".join([
+                f"({targets[port].text} !== __robei_expected_{targets[port].slot})" if is_expr else f"!({targets[port].text} === {value})"
                 for port, (value, is_expr) in expect_literals.items()
-            )
+            ] + context.mismatches())
             lines.extend([f"  if ({mismatch}) begin", "    fail = fail + 1;", '    $display("FAIL vector=%0d", vector);', "  end"])
         lines.extend([
             f'  if (fail == 0) $display("SELFTEST PASS: {name} %0d/%0d vectors", vector, vector);',
@@ -2521,9 +2504,10 @@ def create_testbench(
             "  $finish;", "end",
         ])
         return finish("\n".join(lines) + "\n", {
-            "mode": "combinational", "dut": parsed["name"], "model_path": str(model),
+            "mode": "combinational",
             "input_bits": input_bits, "vector_count": len(assignments),
-            "assertion_count": len(assignments) * len(output_ports), "literal_expectations": expression_count == 0,
+            "assertion_count": sum(len(expected_values) for _, expected_values in assignments), "literal_expectations": expression_count == 0,
+            "comparison_count": len(context.comparisons) * len(assignments),
             "expression_count": expression_count,
             "allow_wide_vectors": bool(allow_wide_vectors),
         })
@@ -2599,9 +2583,8 @@ def create_testbench(
         if (at_value is None) == (after is None):
             raise BadRequest(f"assertions[{index}] needs exactly one of at or after_edge", "choose absolute or edge-relative sampling")
         expected = {}
+        targets.update(context.targets(item["expect"], f"assertions[{index}].expect"))
         for port, value in item["expect"].items():
-            if port not in output_ports:
-                raise BadRequest(f"assertions[{index}] expects non-output port {port!r}", "assert only DUT outputs")
             expected[port] = expectation(value, port, f"assertions[{index}].expect.{port}")
         if after is not None:
             if isinstance(after, bool) or not isinstance(after, int) or after < 1:
@@ -2617,12 +2600,9 @@ def create_testbench(
     if duration_ticks > max_ticks:
         raise BadRequest("timed testbench duration exceeds the 1 ms simulation limit", "reduce event/edge times", code="limit_exceeded")
 
-    lines = ["integer fail, assertion_count;", "", *[declaration("reg", port) for port in input_ports], *[declaration("wire", port) for port in output_ports], "", f"{parsed['name']} dut("]
-    lines.append(",\n".join(f"  .{port['name']}({port['name']})" for port in ports))
-    lines.append(");")
-    lines.append("")
+    lines = ["integer fail, assertion_count;", "", *context.declarations(), "", *context.instances(), ""]
     for index, spec in enumerate(assertion_specs, 1):
-        lines.extend(f"reg [{widths[port]-1}:0] __robei_expected_{index}_{port};"
+        lines.extend(f"reg [{targets[port].width-1}:0] __robei_expected_{index}_{targets[port].slot};"
                      for port, (_, is_expr) in spec["expect"].items() if is_expr)
     lines.append(f"initial {clock_signal} = 1'b0;")
     lines.append(f"always #{max(1, period // 2)} {clock_signal} = ~{clock_signal};")
@@ -2653,11 +2633,11 @@ def create_testbench(
         lines.append("  #1;")
         for port, (value, is_expr) in spec["expect"].items():
             if is_expr:
-                lines.append(f"  __robei_expected_{index}_{port} = {value};")
-        mismatch = " || ".join(
-            f"({port} !== __robei_expected_{index}_{port})" if is_expr else f"!({port} === {value})"
+                lines.append(f"  __robei_expected_{index}_{targets[port].slot} = {value};")
+        mismatch = " || ".join([
+            f"({targets[port].text} !== __robei_expected_{index}_{targets[port].slot})" if is_expr else f"!({targets[port].text} === {value})"
             for port, (value, is_expr) in spec["expect"].items()
-        )
+        ] + context.mismatches())
         lines.extend([
             "  assertion_count = assertion_count + 1;",
             f"  if ({mismatch}) begin",
@@ -2667,10 +2647,11 @@ def create_testbench(
             "end",
         ])
     return finish("\n".join(lines) + "\n", {
-        "mode": "timed", "dut": parsed["name"], "model_path": str(model),
+        "mode": "timed",
         "timescale": timescale, "duration_ticks": duration_ticks,
         "clock": {"signal": clock_signal, "period": period, "edge": edge},
         "stimuli_count": len(stimuli or []), "assertion_count": len(assertion_specs),
+        "comparison_count": len(context.comparisons) * len(assertion_specs),
         "simulation_limit": "1ms", "literal_expectations": expression_count == 0,
         "expression_count": expression_count,
     })

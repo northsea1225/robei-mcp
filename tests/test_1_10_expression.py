@@ -94,6 +94,9 @@ def test_literal_precedence_padding_and_range_compatibility():
                                ("10", 4, "4'b0010"), (10, 4, "4'b1010"),
                                ("15", 4, "4'b1111"), (" xZ ", 4, "4'b00xz")]:
         assert tb_expr.expected(value, width, {}, "expected") == (want, False)
+    long_bits = "1" * (tb_expr.MAX_LENGTH + 1)
+    assert tb_expr.expected(long_bits, len(long_bits), {}, "expected") == (f"{len(long_bits)}'b{long_bits}", False)
+    assert tb_expr.expected("0" * 5000 + "2", 4, {}, "expected") == ("4'b0010", False)
     for value in [-1, 16, "10000", None, {}, "-1"]:
         with pytest.raises(errors.BadRequest) as caught:
             tb_expr.expected(value, 4, {}, "expected")
