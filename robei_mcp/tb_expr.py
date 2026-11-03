@@ -174,7 +174,22 @@ def compile_expression(source: str, inputs: dict[str, int], field: str) -> Expre
 
 
 def expected(value, width: int, inputs: dict[str, int], field: str) -> tuple[str, bool]:
-    """Keep the 1.9 literal precedence; only the final branch parses an AST."""
+    """Turn one ``expected`` value into Verilog text; returns ``(text, is_expression)``.
+
+    Precedence (unchanged since 1.9):
+
+    * JSON integer -> decimal value (``10`` is ``4'b1010`` on a 4-bit port);
+    * string of ``0/1/x/z`` -> *binary* bit literal, zero-extended on the left
+      (``"10"`` is ``4'b0010``, ``"x"`` is ``4'b000x``);
+    * other digit string -> decimal (``"12"`` is ``4'b1100``);
+    * ``N'b...`` -> sized binary literal, ``N`` must equal the port width;
+    * anything else -> expression over the DUT inputs.
+
+    A bare string made only of ``0/1/x/z`` that is *also* the name of a DUT input
+    (an input called ``x``, ``z`` or ``x0``) is ambiguous and is refused instead of
+    silently picking one reading: write ``N'b...`` for the literal or ``(name)``
+    for the port.
+    """
     if isinstance(value, bool):
         value = int(value)
     if isinstance(value, int):
@@ -185,9 +200,22 @@ def expected(value, width: int, inputs: dict[str, int], field: str) -> tuple[str
         raise invalid(field, 0, "expected value must be an integer, bit string or expression")
     text = value.strip()
     if re.fullmatch(r"[01xXzZ]+", text):
+        if text in inputs:
+            raise invalid(
+                field, 0, f"{text!r} is both a bit literal and the name of a DUT input",
+                f"write {width}'b{text.lower().rjust(width, '0')} for the literal, or ({text}) for the input port",
+            ).with_reason("ambiguous_literal_or_port")
         if len(text) > width:
             raise invalid(field, 0, f"bit literal does not fit in {width} bits")
         return f"{width}'b{text.lower().rjust(width, '0')}", False
+    sized = re.fullmatch(r"([0-9]+)'[bB]([01xXzZ]+)", text)
+    if sized:
+        if int(sized.group(1)) != width:
+            raise invalid(field, 0, f"sized literal must be {width} bits wide to match the port",
+                          f"write {width}'b followed by exactly {width} digit(s)")
+        if len(sized.group(2)) > width:
+            raise invalid(field, 0, f"bit literal does not fit in {width} bits")
+        return f"{width}'b{sized.group(2).lower().rjust(width, '0')}", False
     if re.fullmatch(r"[0-9]+", text):
         digits = text.lstrip("0") or "0"
         if len(digits) > width:

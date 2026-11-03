@@ -7,7 +7,20 @@ from .xmlsafe import UnsafeXml
 
 
 class PathEscape(ValueError):
-    """A supplied path resolved outside every root the tool is allowed to touch."""
+    """A supplied path resolved outside every root the tool is allowed to touch.
+
+    ``legacy_code`` is only set by the write guards that used to raise a bare
+    ``ValueError`` (``invalid_argument``) or ``PermissionError``
+    (``permission_denied``); it is echoed in the payload so a client that
+    branched on the old code can still recognise the case.
+    """
+
+    legacy_code: str | None = None
+
+    def __init__(self, *args: object, legacy_code: str | None = None) -> None:
+        super().__init__(*args)
+        if legacy_code is not None:
+            self.legacy_code = legacy_code
 
 
 class LogPathEscape(PathEscape):
@@ -30,6 +43,11 @@ class BadRequest(ValueError):
         self.hint = hint
         self.code_override = code
         self.field, self.offset, self.reason = field, offset, reason
+
+    def with_reason(self, reason: str) -> "BadRequest":
+        """Same error, with a machine-readable ``reason`` (returned for ``raise``)."""
+        self.reason = reason
+        return self
 
 
 class WidthMismatch(ValueError):
@@ -216,6 +234,9 @@ def payload(exc: BaseException, **extra: Any) -> dict[str, Any]:
         "hint": getattr(exc, "hint", None) or HINTS.get(code),
     }
     stage = getattr(exc, "stage", None)
+    legacy = getattr(exc, "legacy_code", None)
+    if legacy:
+        data["legacy_code"] = legacy
     for key in ("field", "offset", "reason"):
         value = getattr(exc, key, None)
         if value is not None:

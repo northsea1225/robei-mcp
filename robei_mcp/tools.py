@@ -42,6 +42,7 @@ from .errors import (
 from . import lifecycle, runstate, tb_dut, tb_expr, xmlsafe
 from .security import (
     is_within,
+    require_within_workspace,
     resolve_model_path,
     resolve_project_path,
     resolve_source_files,
@@ -1017,8 +1018,7 @@ def simulate_project(
     UIA bridge is dead.
     """
     proj = resolve_project_path(proj_path)
-    if not is_within(proj, SETTINGS.workspace):
-        raise ValueError("refusing to simulate a project outside the workspace")
+    require_within_workspace(proj, SETTINGS.workspace, "simulate", "project")
     project_dir = proj.parent
     stem = test_name[:-5] if test_name.lower().endswith(".test") else test_name
     if not MODEL_NAME_RE.match(stem):
@@ -1118,8 +1118,7 @@ def run_all_tests(
 
     batch_started = time.monotonic()
     proj = resolve_project_path(proj_path)
-    if not is_within(proj, SETTINGS.workspace):
-        raise ValueError("refusing to simulate a project outside the workspace")
+    require_within_workspace(proj, SETTINGS.workspace, "simulate", "project")
     if isinstance(max_parallel, bool) or not isinstance(max_parallel, int) or not 1 <= max_parallel <= 2:
         raise ValueError("max_parallel must be an integer between 1 and 2")
     if total_timeout_s is not None and (
@@ -1568,8 +1567,7 @@ def build_report(
     if unknown:
         raise ValueError(f"unknown include section(s): {unknown}; expected {sorted(allowed)}")
     proj = resolve_project_path(proj_path)
-    if not is_within(proj, SETTINGS.workspace):
-        raise PathEscape(f"refusing to report a project outside the workspace: {proj}")
+    require_within_workspace(proj, SETTINGS.workspace, "report", "project", legacy_code=None)
     project_dir = proj.parent
     stems = [str(item).removesuffix(".test") for item in (tests or [])]
     if tests is None:
@@ -2231,8 +2229,8 @@ def render_waveform(
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         out_path = base / f"{path.stem}-{stamp}-{uuid.uuid4().hex[:8]}.png"
     out_path = out_path.resolve()
-    if not str(out_path).startswith(str(SETTINGS.workspace.resolve()) + os.sep):
-        raise ValueError(f"output path escapes workspace: {out_path}")
+    if not is_within(out_path, SETTINGS.workspace):
+        raise PathEscape(f"output path escapes workspace: {out_path}", legacy_code="invalid_argument")
     if out_path.exists():
         raise FileExistsError(f"refusing to overwrite existing file: {out_path}")
     # matplotlib keeps process-global state; concurrent renders in the MCP
@@ -2989,8 +2987,8 @@ def generate_testbench(
         if not target.is_absolute():
             target = SETTINGS.workspace / target
         target = target.resolve()
-        if not str(target).startswith(str(SETTINGS.workspace.resolve()) + os.sep):
-            raise ValueError(f"output path escapes workspace: {target}")
+        if not is_within(target, SETTINGS.workspace):
+            raise PathEscape(f"output path escapes workspace: {target}", legacy_code="invalid_argument")
     else:
         target = SETTINGS.workspace / "testbench" / f"{tb_name}.v"
     if target.suffix.lower() not in {".v", ".sv"}:
@@ -3074,8 +3072,7 @@ def set_port(
     drive; editing the port node directly is deterministic and Robei reloads it.
     """
     path = resolve_model_path(model_path)
-    if not is_within(path, SETTINGS.workspace):
-        raise ValueError("refusing to modify a .model outside the workspace")
+    require_within_workspace(path, SETTINGS.workspace, "modify", ".model")
     if not PORT_NAME_RE.match(name):
         raise ValueError(f"invalid port name: {name!r}")
     direction = direction.strip().lower()
@@ -3251,8 +3248,7 @@ def sync_robei_verilog(proj_path: str, overwrite: bool = True) -> dict[str, Any]
     ``Unable to open input file`` at run time.
     """
     proj = resolve_project_path(proj_path)
-    if not is_within(proj, SETTINGS.workspace):
-        raise ValueError("refusing to modify a project outside the workspace")
+    require_within_workspace(proj, SETTINGS.workspace, "modify", "project")
     model_dir = proj.parent / "model"
     if not model_dir.is_dir():
         raise FileNotFoundError(f"project has no model folder: {model_dir}")
@@ -3809,8 +3805,7 @@ def create_robei_canvas_model(
     so a hierarchical design can be generated without touching the canvas.
     """
     proj = resolve_project_path(proj_path)
-    if not is_within(proj, SETTINGS.workspace):
-        raise ValueError("refusing to modify a project outside the workspace")
+    require_within_workspace(proj, SETTINGS.workspace, "modify", "project")
     if not MODEL_NAME_RE.match(name):
         raise ValueError(f"invalid model name: {name!r}")
     if not instances:
@@ -4855,8 +4850,8 @@ def edit_robei_canvas(
 ) -> dict[str, Any]:
     """Apply canvas ops atomically, including coordinate moves and port renames."""
     path = resolve_model_path(model_path)
-    if not dry_run and not is_within(path, SETTINGS.workspace):
-        raise PermissionError(f"refusing to modify a model outside the workspace: {path}")
+    if not dry_run:
+        require_within_workspace(path, SETTINGS.workspace, "modify", "model", legacy_code="permission_denied")
     raw_text = path.read_text(encoding="utf-8")
     model = parse_robei_model(path)
     if not isinstance(ops, list) or not ops:
@@ -4941,8 +4936,8 @@ def edit_robei_canvas(
 def set_robei_code(model_path: str, code: str, dry_run: bool = False) -> dict[str, Any]:
     """Rewrite the ``Code`` attribute of a *behavioural* model (no instances/wires)."""
     path = resolve_model_path(model_path)
-    if not dry_run and not is_within(path, SETTINGS.workspace):
-        raise PermissionError(f"refusing to modify a model outside the workspace: {path}")
+    if not dry_run:
+        require_within_workspace(path, SETTINGS.workspace, "modify", "model", legacy_code="permission_denied")
     model = parse_robei_model(path)
     if model["instances"] or model["wires"]:
         raise NotBehavioral(
@@ -5024,8 +5019,8 @@ def set_robei_parameter(
 
 def _h2_core(model_path, name, value, dry_run, action, new_name, rename_in_parents):
     path = resolve_model_path(model_path)
-    if not dry_run and not is_within(path, SETTINGS.workspace):
-        raise PermissionError(f"refusing to modify a model outside the workspace: {path}")
+    if not dry_run:
+        require_within_workspace(path, SETTINGS.workspace, "modify", "model", legacy_code="permission_denied")
     model = parse_robei_model(path)
     if model["parameter_bad"]:
         raise ValueError(f"{model['name']}: root Parameters contain unparsable chunks {model['parameter_bad']}")
@@ -5151,8 +5146,8 @@ def _set_robei_parameter_h2(
 ) -> dict[str, Any]:
     return _h2_core(model_path, name, value, dry_run, action, new_name, rename_in_parents)
     path = resolve_model_path(model_path)
-    if not dry_run and not is_within(path, SETTINGS.workspace):
-        raise PermissionError(f"refusing to modify a model outside the workspace: {path}")
+    if not dry_run:
+        require_within_workspace(path, SETTINGS.workspace, "modify", "model", legacy_code="permission_denied")
     model = parse_robei_model(path)
     if model["parameter_bad"]:
         raise ValueError(
@@ -5223,8 +5218,7 @@ def create_robei_test(
     ``verilog/<model>.v`` so the instantaneous submodules resolve through ``-y``.
     """
     proj = resolve_project_path(proj_path)
-    if not is_within(proj, SETTINGS.workspace):
-        raise ValueError("refusing to modify a project outside the workspace")
+    require_within_workspace(proj, SETTINGS.workspace, "modify", "project")
     if not MODEL_NAME_RE.match(name):
         raise ValueError(f"invalid test name: {name!r}")
     if not timescale or any(ch in timescale for ch in '"<>&'):
@@ -5364,8 +5358,7 @@ def create_robei_model(
     (``width: "LEN"`` -> ``Datasize="LEN-1:0"``).
     """
     proj = resolve_project_path(proj_path)
-    if not is_within(proj, SETTINGS.workspace):
-        raise ValueError("refusing to modify a project outside the workspace")
+    require_within_workspace(proj, SETTINGS.workspace, "modify", "project")
     if not MODEL_NAME_RE.match(name):
         raise ValueError(f"invalid model name: {name!r}")
     model_dir = proj.parent / "model"
@@ -5798,8 +5791,7 @@ def import_library_model(
             '{"name": "and2", "project": "work/a.proj"} (alias: proj_path)'
         )
     proj = resolve_project_path(target_project)
-    if not is_within(proj, SETTINGS.workspace):
-        raise ValueError("refusing to modify a project outside the workspace")
+    require_within_workspace(proj, SETTINGS.workspace, "modify", "project")
     source = _find_library_file(name)
     if source is None:
         raise FileNotFoundError(

@@ -30,7 +30,7 @@ from typing import Any, Literal
 from .config import SETTINGS
 from .errors import BadRequest, DeviceUnsupported, FpgaStepFailed, UnconstrainedIO, PathEscape
 from .model import model_to_verilog_with_warnings, parse_robei_model
-from .security import is_within, resolve_project_path
+from .security import is_within, require_within_workspace, resolve_project_path
 from .verilog import parse_module_ports, robei_width
 
 PART_RE = re.compile(r"^[a-z][a-z0-9]*-[0-9][a-z0-9]*$")
@@ -789,8 +789,7 @@ def synthesize_project(
     request is clamped (and reported in ``timeout.clamped``) rather than silently cut.
     """
     proj = resolve_project_path(proj_path)
-    if not is_within(proj, SETTINGS.workspace):
-        raise ValueError("refusing to synthesise a project outside the workspace")
+    require_within_workspace(proj, SETTINGS.workspace, "synthesise", "project")
     device = _device(part) if part else None
     const = _const_path(proj, None)
     preferred = top or _const_model(const)
@@ -956,8 +955,7 @@ def build_bitstream(
     if dry_run is not True:
         raise BadRequest("hardware execution is disabled in this iteration", "use dry_run=true; no board/cable/serial execution interface is provided", code="hardware_execution_disabled")
     proj = resolve_project_path(proj_path)
-    if not is_within(proj, SETTINGS.workspace):
-        raise ValueError("refusing to build a project outside the workspace")
+    require_within_workspace(proj, SETTINGS.workspace, "build", "project")
     device = _device(part)
     if not device["buildable"]:
         available = [row["part"] for row in device_table() if row["buildable"]]
