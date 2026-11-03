@@ -1,0 +1,14 @@
+## 改了什么 / What
+
+<!-- 一两句话说明改动和原因 -->
+
+## 检查清单 / Checklist
+
+- [ ] 新行为或修复有对应测试（修复类先有能复现问题的失败测试）
+- [ ] `python -m pytest -q -m "not needs_robei and not needs_windows"` 通过
+- [ ] 工具名与返回结构保持兼容（只新增字段）；工具数仍是 54/42，或已同步文档
+- [ ] 新增路径读写已接入 `security` 的白名单检查；不新增"执行任意命令"的入口
+- [ ] 文档（`docs/tool-reference.md`、`CHANGELOG.md`）已更新
+- [ ] 测试没有修改被跟踪的夹具（跑完 `git status` 干净）
+
+## 备注 / Notes
