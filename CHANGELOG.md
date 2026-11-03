@@ -2,7 +2,9 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
-## 1.12.0 — Unreleased
+## 1.12.0 — 2026-11-03
+
+**真实 FPGA 产物与只生成计划的 Download。** 工具数保持 54/42。
 
 - 扩展现有 `robei_doctor(fpga=true, part=...)`，只读报告 FPGA 二进制、chipdb/part.yaml 与下载计划器路径；不探测 USB/JTAG、不安装工具。
 - 扩展 `build_bitstream.steps` 的 download 枚举；默认仍是 synth/route/package，不隐式添加新阶段。
@@ -11,11 +13,12 @@
   旧输出先备份并移开；成功 rc 不能掩盖缺失/空产物，不再把旧 bit 当作本次 synth 的完成证明。
 - Download 默认 dry_run=true；验证 Xilinx .bit 文件头、长度、器件、同步字和哈希，只生成固定 SRAM 命令 argv，程序从不执行。
   dry_run=false 无条件拒绝；不提供、不测试真机入口。**Download 未在真机验证**。
+- Lab 2 `exp6_counter` 的原始 `.const` 引脚表（M14 等）与已安装的 `xc7a50tfgg484-1` chipdb 不匹配，Route 阶段如实失败；同一设计换用该 chipdb 可布通的 QA 引脚后全链路通过。未修改 Lab 2 工程。
 - `gui_doctor` 新增 `allow_battery`（bool，默认 false，默认行为不变）：为 true 且电量 ≥ 20% 时
   不再把"未接交流电"算失败，改为 warning，并返回 `power={on_battery, allowed_by, charge_percent}`；
   电量 < 20% 仍拒绝（`code=battery_too_low`），读不到电量也拒绝（`code=battery_charge_unknown`）。
   stage10/11/12/18 与验收脚本可通过 `--allow-battery` 或 `ROBEI_MCP_ALLOW_BATTERY=1` 传递，默认关闭。
-- 无新增 MCP 工具（54/42），无新增依赖；包版本为 1.11.0，1.12.0 的 bump 另行提交。
+- 无新增 MCP 工具（54/42），无新增依赖。
 
 ## 1.11.0 — 2026-11-03
 

@@ -1,9 +1,9 @@
 # 工具参考
 
-1.11.0 共 54 个工具（文件级 42 + GUI 12）；ROBEI_MCP_GUI=0 时为 42 个。
+1.12.0 共 54 个工具（文件级 42 + GUI 12）；ROBEI_MCP_GUI=0 时为 42 个。
 工具名、参数名、返回字段保持英文。
 
-开发变更：**1.12.0（Unreleased）** 分段记录；当前版本 1.11.0，工具数不变（54/42）。
+当前版本：**1.12.0**，工具数不变（54/42）。
 
 > 这份文件是从早期 README 拆出来的，示例里的时间戳/路径是当时的真实输出，不要当成当前默认值。
 
@@ -872,7 +872,7 @@ xc7frames2bit --part_file <db>/<family>/<part>/part.yaml --part_name <part>
   组合逻辑设计没有时钟，Roplace 只打印 `Warning: No clocks found in design`，该字段为 `null`。
   `timing_note` 会写明本工具不做时序签核。
 
-#### 1.12.0（Unreleased）：真实产物与仅计划 Download
+#### 1.12.0：真实产物与仅计划 Download
 
 ```json
 {"proj_path":"_qa_runs/m6_112/exp6_counter/exp6_counter.proj",

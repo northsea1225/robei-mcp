@@ -3,7 +3,7 @@
 > An MCP server that turns Robei EDA into AI-callable tools: Verilog lint, simulation,
 > waveform analysis, project XML, and optional GUI automation. Docs are in Chinese.
 
-**状态：1.11.0**（54 个工具，GUI=0 时 42 个）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
+**状态：1.12.0**（54 个工具，GUI=0 时 42 个）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
 
 > **升级注意（1.0.2 起）**：`simulate` 默认开启**严格路径扫描**。像
 > `$readmemh(PATH, mem)` 这种无法静态判定路径的写法，以前能跑，现在会直接返回
@@ -26,7 +26,7 @@
 - **画布可增量改**：`edit_robei_canvas` 用 `add_instance` / `connect` / `rename_wire` 这组
   操作改画布，整批校验通过才落盘；`set_robei_code` / `set_robei_parameter` 改行为与参数。
 
-## 1.12.0（Unreleased）：FPGA 产物与 Download dry-run
+## 1.12.0（2026-11-03）：FPGA 产物与 Download dry-run
 
 沿用现有工具，不增加工具数：`gui_doctor` → `robei_doctor(fpga=true, part=...)` →
 `build_bitstream(steps=["synth","route","package","download"], dry_run=true)`。
@@ -38,11 +38,13 @@
 - `dry_run=false` 无条件拒绝；本迭代没有 board/cable/serial 真机执行入口，也不测试真机路径。
   `download.executed=false`、`hardware_verified=false`、`returncode=null` 不得解读成下载成功。
 - Download **未在真机验证**，bit 校验不是配置 CRC/时序签核；Roplace Fmax 仍仅供参考。
+- **Lab 2 exp6 原始引脚表与本机 chipdb 不匹配**（`M14` 不在 `xc7a50tfgg484-1` 里），Route 如实失败；
+  同一设计换 QA 引脚后全链路通过，Lab 2 工程未改动。
 - `gui_doctor(allow_battery=true)`：只在电量 ≥ 20% 时把"必须接交流电"降级为 warning，
   结果带 `power={on_battery, allowed_by, charge_percent}`；默认仍是接电才放行，
   低于 20% 或读不到电量依旧拒绝（`battery_too_low` / `battery_charge_unknown`）。
 
-包版本为 **1.11.0**；1.12.0 的 bump 另行提交，未发布变更不代表推送、tag 或 Release。
+包版本 **1.12.0**。未发布变更不代表推送、tag 或 Release。
 
 ## 1.11.0（2026-11-03）：有界 sweep 与自检语义
 
@@ -115,7 +117,7 @@ create_testbench(
 内联表达式先赋给输出宽度的临时 reg，再用四态比较检查。`?:` 遇到 X/Z 时保留 Verilog 逐位合并语义。
 `semantic` 返回 `duts`、`comparison_count`、`expression_count`。
 多 DUT 报告用 `truth_map[test].instances` 区分实例，缺项写“未提供”；单 DUT 旧报告保持不变。
-完整白名单、上限与错误码见 [工具参考](docs/tool-reference.md#create_testbench)。版本号为 1.11.0，工具数仍是 54/42。
+完整白名单、上限与错误码见 [工具参考](docs/tool-reference.md#create_testbench)。版本号为 1.12.0，工具数仍是 54/42。
 
 语义 TB 可用模型根参数默认值解析 `N-1:0`，无法静态解析的位宽仍拒绝，不猜测。
 exp7 QA 使用 Robei 官方[带符号位小数加法规格](http://www.robei.com/lessons/Robei_singed_float_add.pdf)
