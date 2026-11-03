@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import SETTINGS
-from .model import _attr_ci, parse_endpoint, parse_robei_model
-from .security import is_within, require_within_workspace, resolve_project_path
+from .model import parse_robei_model
+from .security import require_within_workspace, resolve_project_path
 
 PIN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,15}$")
 MODEL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

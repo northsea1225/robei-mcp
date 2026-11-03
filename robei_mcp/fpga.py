@@ -949,7 +949,7 @@ def build_bitstream(
     """
     import time
 
-    from . import constraints, tools
+    from . import constraints
 
     started = time.monotonic()
     if dry_run is not True:

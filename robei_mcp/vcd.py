@@ -47,7 +47,7 @@ class VcdData:
 
 
 def _decode(data: bytes) -> str:
-    for encoding in ("utf-8-sig", "utf-8", "gbk", "cp936"):
+    for encoding in ("utf-8-sig", "utf-8", "gbk"):
         try:
             return data.decode(encoding)
         except UnicodeDecodeError:

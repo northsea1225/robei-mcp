@@ -15,7 +15,6 @@ import sys
 import threading
 import time
 import uuid
-import xml.etree.ElementTree as ET
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
@@ -192,7 +191,7 @@ def _clip(text: str, limit: int | None = None) -> str:
 def _decode(data: bytes | None) -> str:
     if not data:
         return ""
-    for encoding in ("utf-8-sig", "utf-8", "gbk", "cp936"):
+    for encoding in ("utf-8-sig", "utf-8", "gbk"):
         try:
             return data.decode(encoding)
         except UnicodeDecodeError:
@@ -4422,7 +4421,6 @@ def _rename_canvas_endpoint(ref: str, old: str, new: str) -> str:
 
 def _direct_model_references(model_path: Path, model_name: str, port_name: str) -> list[dict[str, Any]]:
     """Find direct canvas and Code references to a child port in sibling models."""
-    project_dir = model_path.parent.parent
     references: list[dict[str, Any]] = []
     for parent_path in sorted(model_path.parent.glob("*.model")):
         if parent_path.resolve() == model_path.resolve():
@@ -5145,61 +5143,6 @@ def _set_robei_parameter_h2(
     rename_in_parents: bool,
 ) -> dict[str, Any]:
     return _h2_core(model_path, name, value, dry_run, action, new_name, rename_in_parents)
-    path = resolve_model_path(model_path)
-    if not dry_run:
-        require_within_workspace(path, SETTINGS.workspace, "modify", "model", legacy_code="permission_denied")
-    model = parse_robei_model(path)
-    if model["parameter_bad"]:
-        raise ValueError(
-            f"{model['name']}: root Parameters contain unparsable chunks {model['parameter_bad']}; "
-            "fix them before editing a single parameter"
-        )
-    wanted = (name or "").strip()
-    match = next(
-        (param for param in model["parameter_list"] if param["name"].lower() == wanted.lower()),
-        None,
-    )
-    if match is None:
-        declared = [param["name"] for param in model["parameter_list"]]
-        raise UnknownParameter(f"{model['name']}: unknown parameter {name!r}; declared: {declared}")
-    new_value = str(value).strip()
-    if not new_value or any(char in new_value for char in ';"<>'):
-        raise ValueError(f"invalid parameter value: {value!r}")
-
-    updated_list = [
-        {**param, "default": new_value if param["name"] == match["name"] else param["default"]}
-        for param in model["parameter_list"]
-    ]
-    new_text = _rewrite_root_attr(path.read_text(encoding="utf-8"), "Parameters", _parameter_text(updated_list))
-    updated = parse_robei_model_text(new_text, path)
-    landed = next(
-        (param for param in updated["parameter_list"] if param["name"] == match["name"]), None
-    )
-    if landed is None or landed["default"] != new_value:
-        raise ValueError(
-            f"parameter {match['name']} did not update (got {landed['default'] if landed else None!r})"
-        )
-    result: dict[str, Any] = {
-        "ok": True,
-        "dry_run": bool(dry_run),
-        "model": updated["name"],
-        "path": str(path),
-        "relative_path": _rel(path),
-        "parameter": match["name"],
-        "old_value": match["default"],
-        "new_value": new_value,
-        "parameters": updated["parameter_list"],
-        "parameters_text": updated["parameters"],
-        "width_info": _param_width_report(updated, match["name"], new_value),
-        "sha256_before": _sha256(path),
-    }
-    if dry_run:
-        result["sha256"] = None
-        return result
-    backup = _backup_file(path)
-    path.write_text(new_text, encoding="utf-8", newline="\n")
-    result.update({"backup": str(backup) if backup else None, "sha256": _sha256(path)})
-    return result
 
 
 def create_robei_test(
@@ -5538,7 +5481,7 @@ def manage_robei_model(
     if target is not None and target.exists():
         originals[target] = target.read_bytes()
     backups: dict[Path, Path | None] = {}
-    created_target = target is not None and not target.exists()
+    target is not None and not target.exists()
     try:
         for item in originals:
             backups[item] = _backup_file(item)

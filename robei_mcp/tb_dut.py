@@ -6,7 +6,6 @@ from pathlib import Path
 import re
 from typing import Any, Callable
 
-from .config import SETTINGS
 from .errors import BadRequest, PathEscape
 from .model import parse_robei_model
 from .security import is_within, resolve_model_path, resolve_workspace_path
