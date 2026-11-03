@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -18,6 +19,11 @@ PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 WS = ROOT / "workspace"
 COUNTER = WS / "counter4_scratch" / "counter4_scratch.proj"
 TWO_LEVEL = WS / "robei_samples" / "two_level" / "two_level.proj"
+
+
+def allow_battery() -> bool:
+    """GUI stages may run on a charged battery when the runner says so."""
+    return os.environ.get("ROBEI_MCP_ALLOW_BATTERY", "").strip().lower() in {"1", "true", "yes", "on"}
 
 results: list[tuple[str, bool]] = []
 
@@ -49,10 +55,10 @@ async def main() -> int:
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            doctor = payload(await session.call_tool("gui_doctor", {}))
+            doctor = payload(await session.call_tool("gui_doctor", {"allow_battery": allow_battery()}))
             print("GUI_DOCTOR", json.dumps(doctor, ensure_ascii=True))
             if not doctor.get("ok"):
-                print("GUI_DOCTOR_FAILED", json.dumps(doctor.get("failed_checks") or [], ensure_ascii=False))
+                print("GUI_DOCTOR_FAILED", json.dumps(doctor.get("failed_checks") or [], ensure_ascii=False), doctor.get("code"))
                 return 2
             names = [t.name for t in (await session.list_tools()).tools]
             print("TOOL_COUNT=", len(names))

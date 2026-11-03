@@ -7,6 +7,7 @@ read_waveform / find_events / render_waveform.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import traceback
 from pathlib import Path
@@ -21,11 +22,16 @@ if str(ROOT) not in sys.path:
 from robei_mcp import gui, tools
 
 
+def allow_battery() -> bool:
+    """GUI stages may run on a charged battery when the runner says so."""
+    return os.environ.get('ROBEI_MCP_ALLOW_BATTERY', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
 def gui_preflight() -> dict:
-    data = gui.gui_doctor()
+    data = gui.gui_doctor(allow_battery=allow_battery())
     print("GUI_DOCTOR", json.dumps(data, ensure_ascii=True))
     if not data.get("ok"):
-        print("GUI_DOCTOR_FAILED", json.dumps(data.get("failed_checks") or [], ensure_ascii=False))
+        print("GUI_DOCTOR_FAILED", json.dumps(data.get("failed_checks") or [], ensure_ascii=False), data.get("code"))
         raise RuntimeError("gui_doctor failed before stage10")
     return data
 

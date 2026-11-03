@@ -61,6 +61,8 @@ def main():
     parser.add_argument('--phase', choices=['m5_111', 'm6_112'], required=True)
     parser.add_argument('--lane', choices=['core', 'gui'], required=True)
     parser.add_argument('--stage')
+    parser.add_argument('--allow-battery', action='store_true',
+                        help='let the GUI lane run on a charged battery (>=20%); passed to every stage')
     args = parser.parse_args()
     phase = ROOT/'workspace/_qa_runs'/args.phase
     workspace = phase/'regression/workspace'
@@ -73,6 +75,12 @@ def main():
     os.environ['PYTHONIOENCODING'] = 'utf-8'
     # tmp_path must act as a non-repository even though QA lives under this repo.
     os.environ['GIT_CEILING_DIRECTORIES'] = str(workspace)
+    # Stage 10/11/12/18 each gate on gui_doctor; the flag travels as an env var
+    # so a nested stage process inherits the same decision.  Default stays off.
+    if args.allow_battery:
+        os.environ['ROBEI_MCP_ALLOW_BATTERY'] = '1'
+    else:
+        os.environ.pop('ROBEI_MCP_ALLOW_BATTERY', None)
     sys.path.insert(0, str(ROOT))
     if args.stage:
         raise SystemExit(run_stage(args.stage, workspace))
@@ -98,7 +106,7 @@ def main():
     logs.mkdir(parents=True, exist_ok=False)
     if args.lane == 'gui':
         from robei_mcp import gui
-        preflight = gui.gui_doctor()
+        preflight = gui.gui_doctor(allow_battery=args.allow_battery)
         (logs/'gui_doctor.json').write_text(json.dumps(preflight, indent=2), encoding='utf-8')
         if not preflight.get('ok') or preflight.get('session', {}).get('process_session') != 1:
             raise RuntimeError('Session 1 gui_doctor failed; GUI stages not started')
@@ -107,6 +115,10 @@ def main():
     results = []
     for stage in stages:
         cmd = [sys.executable, '-u', str(Path(__file__).resolve()), '--phase', args.phase, '--lane', args.lane, '--stage', stage]
+        if args.allow_battery:
+            # The child re-parses its own argv, so pass the flag explicitly: the
+            # env var alone would be dropped by the child's own default reset.
+            cmd.append('--allow-battery')
         if stage == 'pytest':
             cmd = [sys.executable, '-m', 'pytest', '-o', 'addopts=', '-q',
                    '--junitxml=' + str(logs/'pytest.xml'), '--basetemp=' + str(workspace/'pytest_tmp')]

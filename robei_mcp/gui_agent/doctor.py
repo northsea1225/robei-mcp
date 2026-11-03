@@ -9,6 +9,7 @@ from typing import Any
 
 BUILTIN_BLOCKED_FOREGROUND = frozenset({"endfield.exe", "hyp.exe"})
 POWERSHELL = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+MIN_BATTERY_PERCENT = 20
 
 
 def _object_name(handle: int | None) -> str | None:
@@ -38,6 +39,7 @@ def _cim_probe(timeout_s: int = 20) -> dict[str, Any]:
     command = (
         "@{"
         "battery=@(Get-CimInstance Win32_Battery | ForEach-Object {[int]$_.BatteryStatus});"
+        "charge=@(Get-CimInstance Win32_Battery | ForEach-Object {[int]$_.EstimatedChargeRemaining});"
         "explorer_session1=@((Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1}).Count);"
         "lockscreen_processes=@(Get-CimInstance Win32_Process | Where-Object {$_.Name -in @('LockApp.exe','LogonUI.exe') -and $_.SessionId -eq 1} | ForEach-Object {$_.Name})"
         "} | ConvertTo-Json -Compress"
@@ -57,6 +59,10 @@ def _cim_probe(timeout_s: int = 20) -> dict[str, Any]:
     battery = data.get("battery") or []
     if isinstance(battery, int):
         battery = [battery]
+    charge = data.get("charge") or []
+    if isinstance(charge, int):
+        charge = [charge]
+    charge_values = [int(value) for value in charge if value is not None]
     lockscreen = data.get("lockscreen_processes") or []
     if isinstance(lockscreen, str):
         lockscreen = [lockscreen]
@@ -65,6 +71,7 @@ def _cim_probe(timeout_s: int = 20) -> dict[str, Any]:
         explorer = explorer[0] if explorer else 0
     return {
         "battery_status": [int(value) for value in battery],
+        "charge_percent": min(charge_values) if charge_values else None,
         "explorer_session1": int(explorer or 0),
         "lockscreen_processes": list(lockscreen),
     }
@@ -124,8 +131,15 @@ def run(
     screenshot: bool = False,
     label: str = "gui-doctor",
     timeout_s: int = 20,
+    allow_battery: bool = False,
 ) -> dict[str, Any]:
-    """Collect desktop facts without focusing, injecting input, or killing processes."""
+    """Collect desktop facts without focusing, injecting input, or killing processes.
+
+    ``allow_battery=True`` downgrades the AC-power check to a warning so GUI
+    stages can run on a charged battery.  It never overrides a low charge: under
+    ``MIN_BATTERY_PERCENT`` the preflight still refuses, with ``code`` naming the
+    power reason instead of the generic ``gui_preflight_failed``.
+    """
     warnings: list[str] = []
     try:
         desktop = _desktop_probe()
@@ -135,7 +149,7 @@ def run(
     try:
         cim = _cim_probe(timeout_s)
     except Exception as exc:
-        cim = {"battery_status": [], "explorer_session1": 0, "lockscreen_processes": []}
+        cim = {"battery_status": [], "charge_percent": None, "explorer_session1": 0, "lockscreen_processes": []}
         warnings.append(f"cim_probe: {type(exc).__name__}: {exc}")
     try:
         foreground = _foreground_probe()
@@ -154,6 +168,31 @@ def run(
     lockscreen = bool(cim.get("lockscreen_processes")) or input_desktop != "Default"
     clip_rect = input_state.get("clip_rect")
     screen_rect = input_state.get("screen_rect")
+    charge = cim.get("charge_percent")
+    on_battery = bool(cim.get("battery_status")) and not all(
+        value == 2 for value in cim["battery_status"]
+    )
+    allowed_by: str | None = None
+    power_block: str | None = None
+    if allow_battery and on_battery:
+        if charge is None:
+            power_block = "battery_charge_unknown"
+            warnings.append(
+                "allow_battery was requested but the charge level could not be read; "
+                "GUI stages are not started on an unknown battery level"
+            )
+        elif charge < MIN_BATTERY_PERCENT:
+            power_block = "battery_too_low"
+            warnings.append(
+                f"allow_battery was requested but the battery is at {charge}% "
+                f"(< {MIN_BATTERY_PERCENT}%); GUI stages are not started"
+            )
+        else:
+            allowed_by = "allow_battery"
+            warnings.append(
+                f"running on battery at {charge}% because allow_battery=True; "
+                "keep the charger handy"
+            )
     checks = {
         "battery": bool(cim.get("battery_status")) and all(value == 2 for value in cim["battery_status"]),
         "explorer_session1": cim.get("explorer_session1") == 1,
@@ -165,14 +204,36 @@ def run(
         "session": desktop.get("process_session") == 1,
     }
     failed_checks = [name for name, passed in checks.items() if not passed]
+    if allowed_by and "battery" in failed_checks:
+        failed_checks = [name for name in failed_checks if name != "battery"]
+    if failed_checks:
+        code = power_block or "gui_preflight_failed"
+    else:
+        code = None
+    error = None
+    if power_block == "battery_too_low":
+        error = f"battery at {charge}% is below the {MIN_BATTERY_PERCENT}% floor; connect AC power"
+    elif power_block == "battery_charge_unknown":
+        error = "battery level could not be read; connect AC power or retry once CIM reports a charge"
     payload: dict[str, Any] = {
         "ok": not failed_checks,
-        "code": None if not failed_checks else "gui_preflight_failed",
+        "code": code,
+        "error": error,
         "session": {
             "process_session": desktop.get("process_session"),
             "explorer_session1": cim.get("explorer_session1"),
         },
-        "battery": {"status": cim.get("battery_status", []), "ac": checks["battery"]},
+        "battery": {
+            "status": cim.get("battery_status", []),
+            "ac": checks["battery"],
+            "charge_percent": charge,
+        },
+        "power": {
+            "on_battery": on_battery,
+            "allowed_by": allowed_by,
+            "charge_percent": charge,
+            "min_charge_percent": MIN_BATTERY_PERCENT,
+        },
         "desktop": {
             "window_station": desktop.get("window_station"),
             "thread_desktop_name": desktop.get("thread_desktop_name"),

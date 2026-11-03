@@ -38,6 +38,9 @@
 - `dry_run=false` 无条件拒绝；本迭代没有 board/cable/serial 真机执行入口，也不测试真机路径。
   `download.executed=false`、`hardware_verified=false`、`returncode=null` 不得解读成下载成功。
 - Download **未在真机验证**，bit 校验不是配置 CRC/时序签核；Roplace Fmax 仍仅供参考。
+- `gui_doctor(allow_battery=true)`：只在电量 ≥ 20% 时把"必须接交流电"降级为 warning，
+  结果带 `power={on_battery, allowed_by, charge_percent}`；默认仍是接电才放行，
+  低于 20% 或读不到电量依旧拒绝（`battery_too_low` / `battery_charge_unknown`）。
 
 包版本为 **1.11.0**；1.12.0 的 bump 另行提交，未发布变更不代表推送、tag 或 Release。
 

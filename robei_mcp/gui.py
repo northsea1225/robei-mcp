@@ -139,6 +139,7 @@ def _run_direct(op: str, args: dict[str, Any]) -> dict[str, Any]:
             screenshot=bool(args.get("screenshot", False)),
             label=str(args.get("label", "gui-doctor")),
             timeout_s=int(args.get("timeout_s", 20)),
+            allow_battery=bool(args.get("allow_battery", False)),
         )
     elif op == "open_project":
         payload = module.open_project(args["path"])
@@ -292,8 +293,14 @@ def gui_doctor(
     screenshot: bool = False,
     label: str = "gui-doctor",
     timeout_s: int = 20,
+    allow_battery: bool = False,
 ) -> dict[str, Any]:
-    """Read-only Session-1 desktop preflight."""
+    """Read-only Session-1 desktop preflight.
+
+    ``allow_battery=True`` keeps GUI stages usable on a charged battery: the AC
+    check becomes a warning and ``power`` reports the reason.  A charge under
+    20% is still refused (``code=battery_too_low``).
+    """
     return call(
         "doctor",
         {
@@ -301,6 +308,7 @@ def gui_doctor(
             "screenshot": screenshot,
             "label": label,
             "timeout_s": timeout_s,
+            "allow_battery": bool(allow_battery),
         },
         timeout_s=max(30, timeout_s + 10),
     )

@@ -17,6 +17,7 @@ OPS = {
         screenshot=bool(a.get("screenshot", False)),
         label=str(a.get("label", "gui-doctor")),
         timeout_s=int(a.get("timeout_s", 20)),
+        allow_battery=bool(a.get("allow_battery", False)),
     ),
     "status": lambda a: robei_ui.status(int(a.get("output_lines", 20))),
     "open_project": lambda a: robei_ui.open_project(

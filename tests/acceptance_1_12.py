@@ -5,6 +5,7 @@ as a failure, and the independent second experiment still gets its own record.
 """
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -15,6 +16,9 @@ from robei_mcp import constraints, doctor, errors, fpga, gui, tools
 from robei_mcp.config import SETTINGS
 
 PART = 'xc7a50tfgg484-1'
+# Opt-in: run the GUI gate on a charged battery (ROBEI_MCP_ALLOW_BATTERY=1).
+# Under 20% the doctor still refuses, so this can never mask a flat battery.
+ALLOW_BATTERY = os.environ.get('ROBEI_MCP_ALLOW_BATTERY', '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def save(path, value):
@@ -24,10 +28,10 @@ def save(path, value):
 def main():
     phase = SETTINGS.workspace/'_qa_runs/m6_112'
     phase.mkdir(parents=True, exist_ok=True)
-    preflight = gui.gui_doctor(label='m6_112_acceptance')
+    preflight = gui.gui_doctor(label='m6_112_acceptance', allow_battery=ALLOW_BATTERY)
     save(phase/'doctor_gui.json', preflight)
     if not preflight.get('ok') or preflight.get('session', {}).get('process_session') != 1:
-        print('GUI_PREFLIGHT_BLOCKED: Route/Package were not started')
+        print('GUI_PREFLIGHT_BLOCKED:', preflight.get('code'), 'Route/Package were not started')
         return 2
     environment = doctor.run(fpga=True, part=PART)
     save(phase/'doctor_fpga.json', environment)

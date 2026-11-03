@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -17,6 +18,11 @@ ROOT = Path(r"C:\dev\robei-mcp")
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 PROJ = ROOT / "workspace" / "counter4_scratch" / "counter4_scratch.proj"
 TEST = "tb_counter4.test"
+
+
+def allow_battery() -> bool:
+    """GUI stages may run on a charged battery when the runner says so."""
+    return os.environ.get("ROBEI_MCP_ALLOW_BATTERY", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def payload(result) -> dict:
@@ -44,10 +50,10 @@ async def main() -> int:
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            doctor = payload(await session.call_tool("gui_doctor", {}))
+            doctor = payload(await session.call_tool("gui_doctor", {"allow_battery": allow_battery()}))
             print("GUI_DOCTOR", json.dumps(doctor, ensure_ascii=True))
             if not doctor.get("ok"):
-                print("GUI_DOCTOR_FAILED", json.dumps(doctor.get("failed_checks") or [], ensure_ascii=False))
+                print("GUI_DOCTOR_FAILED", json.dumps(doctor.get("failed_checks") or [], ensure_ascii=False), doctor.get("code"))
                 return 2
             tools = await session.list_tools()
             names = [t.name for t in tools.tools]

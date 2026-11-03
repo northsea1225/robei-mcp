@@ -663,7 +663,7 @@ PASS/FAIL 汇总出现 `SELFTEST FAIL`，返回 `ok=false`、`run.code=selftest_
 ### `gui_doctor`
 
 ```json
-{"blocked_foreground": ["my-game.exe"], "screenshot": false}
+{"blocked_foreground": ["my-game.exe"], "screenshot": false, "allow_battery": false}
 ```
 
 只读地通过 Session-1 `RobeiMCP_GuiAgent` 检查 GUI 前置条件：BatteryStatus 全为 2、
@@ -674,6 +674,17 @@ Session-1 的 explorer 恰为 1、input desktop 为 `Default`、未锁屏、前�
 返回完整的 `session`、`battery`、`desktop`、`foreground`、`input`、`checks` 和
 `failed_checks`；任何硬门槛失败都返回 `ok=false`、`code=gui_preflight_failed`。`screenshot=true`
 时才在 `workspace/gui_shots/` 留截图元数据。
+
+`allow_battery`（默认 `false`）只放宽"必须接交流电"这一项，默认行为完全不变：
+
+- `allow_battery=false`：电池不在充电即 `ok=false`、`code=gui_preflight_failed`，`battery` 进 `failed_checks`。
+- `allow_battery=true` 且电量 ≥ 20%：`battery` 从 `failed_checks` 移除，改为 `warnings[]` 里的一条提示，
+  结果带 `power: {"on_battery": true, "allowed_by": "allow_battery", "charge_percent": N, "min_charge_percent": 20}`。
+- 电量 < 20%：仍然拒绝，`ok=false`、`code=battery_too_low`、`error` 写明下限；`power.allowed_by` 为 `null`。
+- 读不到电量（CIM 没给 `EstimatedChargeRemaining`）：同样拒绝，`code=battery_charge_unknown`。
+- 已接交流电时该参数无副作用：`power.on_battery=false`、`power.allowed_by=null`。
+
+`battery` 块新增 `charge_percent` 字段（读不到时为 `null`）；`power` 是新增的顶层块，旧字段语义未变。
 
 ### `create_robei_const`
 
@@ -974,8 +985,17 @@ workspace 下 `logs/`、`build/` 目录里的文件（工程自带的 `<proj>/bu
 ### GUI stage preflight
 
 stage10、stage11、stage12、stage18 都在开始时调用 `gui_doctor`；失败打印 `failed_checks`
-并停止，成功则把完整返回写入 stage 日志。旧的 `generate_testbench` 和 `simulate_project`
-接口语义不变。
+（以及 `code`）并停止，成功则把完整返回写入 stage 日志。旧的 `generate_testbench` 和
+`simulate_project` 接口语义不变。
+
+电源门控默认保持"必须接交流电"。要在电量 ≥ 20% 的电池上跑 GUI 阶段，用其中一种方式显式打开：
+
+- 运行器：`python tests/run_scoped_regression.py --phase m6_112 --lane gui --allow-battery`
+  （该标志同时设置 `ROBEI_MCP_ALLOW_BATTERY=1` 给每个子阶段）；
+- 环境变量：`ROBEI_MCP_ALLOW_BATTERY=1`；
+- 直接调用：`gui_doctor(allow_battery=true)`。
+
+三者默认都是关闭的；低于 20% 或读不到电量时仍然拒绝，所以这个开关不会把没电当成通过。
 
 ### `robei_gui_open_project`
 

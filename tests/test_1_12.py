@@ -180,3 +180,87 @@ def test_real_full_chain_records_artifacts_but_never_runs_download(monkeypatch):
         assert partial['artifacts']['bit'] is None and partial['bit_payload_sha256'] is None
     finally:
         shutil.rmtree(root)
+
+
+# --- gui_doctor power policy: allow_battery is opt-in, never a low-charge bypass
+
+def _patch_gui_probes(monkeypatch, battery=(1,), charge=91, desktop='Default', fullscreen=False):
+    from robei_mcp.gui_agent import doctor as gui_doctor
+
+    monkeypatch.setattr(gui_doctor, '_cim_probe', lambda timeout_s=20: {
+        'battery_status': list(battery), 'charge_percent': charge,
+        'explorer_session1': 1, 'lockscreen_processes': []})
+    monkeypatch.setattr(gui_doctor, '_desktop_probe', lambda: {
+        'window_station': 'WinSta0', 'thread_desktop_name': 'Default',
+        'input_desktop': desktop, 'process_session': 1})
+    monkeypatch.setattr(gui_doctor, '_foreground_probe', lambda: {
+        'hwnd': 1, 'pid': 2, 'exe': 'explorer.exe', 'title': '',
+        'rect': [0, 0, 100, 100], 'monitor_rect': [0, 0, 100, 100], 'fullscreen': fullscreen})
+    monkeypatch.setattr(gui_doctor, '_clip_probe', lambda: {
+        'ok': True, 'clip_rect': [0, 0, 2560, 1440],
+        'screen_rect': [0, 0, 2560, 1440], 'screen_resolution': [2560, 1440]})
+    return gui_doctor
+
+
+def test_gui_doctor_still_refuses_battery_by_default(monkeypatch):
+    gui_doctor = _patch_gui_probes(monkeypatch)
+    result = gui_doctor.run()
+    assert result['ok'] is False
+    assert result['code'] == 'gui_preflight_failed'
+    assert 'battery' in result['failed_checks']
+    assert result['power'] == {'on_battery': True, 'allowed_by': None,
+                               'charge_percent': 91, 'min_charge_percent': 20}
+
+
+def test_gui_doctor_allow_battery_downgrades_to_warning(monkeypatch):
+    gui_doctor = _patch_gui_probes(monkeypatch)
+    result = gui_doctor.run(allow_battery=True)
+    assert result['ok'] is True
+    assert result['code'] is None
+    assert result['failed_checks'] == []
+    assert result['power'] == {'on_battery': True, 'allowed_by': 'allow_battery',
+                               'charge_percent': 91, 'min_charge_percent': 20}
+    assert any('allow_battery=True' in line for line in result['warnings'])
+    assert result['battery']['charge_percent'] == 91
+
+
+def test_gui_doctor_allow_battery_still_refuses_low_charge(monkeypatch):
+    gui_doctor = _patch_gui_probes(monkeypatch, charge=12)
+    result = gui_doctor.run(allow_battery=True)
+    assert result['ok'] is False
+    assert result['code'] == 'battery_too_low'
+    assert 'battery' in result['failed_checks']
+    assert result['power']['allowed_by'] is None
+    assert 'below the 20% floor' in result['error']
+
+
+def test_gui_doctor_allow_battery_refuses_unknown_charge(monkeypatch):
+    gui_doctor = _patch_gui_probes(monkeypatch, charge=None)
+    result = gui_doctor.run(allow_battery=True)
+    assert result['ok'] is False
+    assert result['code'] == 'battery_charge_unknown'
+    assert result['power']['charge_percent'] is None
+
+
+def test_gui_doctor_allow_battery_is_inert_on_ac(monkeypatch):
+    gui_doctor = _patch_gui_probes(monkeypatch, battery=(2,), charge=100)
+    result = gui_doctor.run(allow_battery=True)
+    assert result['ok'] is True
+    assert result['power']['on_battery'] is False
+    assert result['power']['allowed_by'] is None
+
+
+def test_gui_doctor_wrapper_forwards_allow_battery(monkeypatch):
+    from robei_mcp import gui
+
+    seen = {}
+
+    def fake_call(op, args=None, timeout_s=None):
+        seen.update(op=op, args=args or {})
+        return {'ok': True}
+
+    monkeypatch.setattr(gui, 'call', fake_call)
+    gui.gui_doctor(allow_battery=True)
+    assert seen['op'] == 'doctor' and seen['args']['allow_battery'] is True
+    gui.gui_doctor()
+    assert seen['args']['allow_battery'] is False

@@ -11,6 +11,10 @@
   旧输出先备份并移开；成功 rc 不能掩盖缺失/空产物，不再把旧 bit 当作本次 synth 的完成证明。
 - Download 默认 dry_run=true；验证 Xilinx .bit 文件头、长度、器件、同步字和哈希，只生成固定 SRAM 命令 argv，程序从不执行。
   dry_run=false 无条件拒绝；不提供、不测试真机入口。**Download 未在真机验证**。
+- `gui_doctor` 新增 `allow_battery`（bool，默认 false，默认行为不变）：为 true 且电量 ≥ 20% 时
+  不再把"未接交流电"算失败，改为 warning，并返回 `power={on_battery, allowed_by, charge_percent}`；
+  电量 < 20% 仍拒绝（`code=battery_too_low`），读不到电量也拒绝（`code=battery_charge_unknown`）。
+  stage10/11/12/18 与验收脚本可通过 `--allow-battery` 或 `ROBEI_MCP_ALLOW_BATTERY=1` 传递，默认关闭。
 - 无新增 MCP 工具（54/42），无新增依赖；包版本为 1.11.0，1.12.0 的 bump 另行提交。
 
 ## 1.11.0 — 2026-11-03

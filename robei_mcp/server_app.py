@@ -1081,14 +1081,22 @@ def gui_doctor(
     screenshot: bool = False,
     label: str = "gui-doctor",
     timeout_s: int = 20,
+    allow_battery: bool = False,
 ) -> dict[str, Any]:
-    """Read-only Session-1 desktop/power/input preflight for GUI stages."""
+    """Read-only Session-1 desktop/power/input preflight for GUI stages.
+
+    Set ``allow_battery=True`` to run the GUI stages on a charged battery: the
+    AC-power check becomes a warning, ``power`` records
+    ``{on_battery, allowed_by, charge_percent}``, and a charge below 20% is
+    still refused with ``code=battery_too_low``.
+    """
     try:
         return gui.gui_doctor(
             blocked_foreground=blocked_foreground,
             screenshot=screenshot,
             label=label,
             timeout_s=timeout_s,
+            allow_battery=allow_battery,
         )
     except Exception as exc:
         return _error(exc)
