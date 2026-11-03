@@ -91,7 +91,7 @@ def _git_commit(directory: Path) -> str | None:
 
 def _source_mtime(directory: Path) -> float | None:
     stamps = []
-    for path in directory.glob("*.py"):
+    for path in directory.rglob("*.py"):
         try:
             stamps.append(path.stat().st_mtime)
         except OSError:
@@ -109,7 +109,7 @@ def stale_warning() -> str | None:
     return (
         f"the MCP server loaded {server_version} at "
         f"{datetime.fromtimestamp(PROCESS_STARTED).isoformat(timespec='seconds')}, but "
-        f"{_source_dir()}/*.py changed at "
+        f"{_source_dir()}/**/*.py changed at "
         f"{datetime.fromtimestamp(newest).isoformat(timespec='seconds')}: restart the "
         "server (or reopen Codex) to run the new code"
     )
@@ -281,14 +281,16 @@ def _run_impl(
                         "timeout": True,
                     }
         cancelled = token is not None and token.aborted()
+        stdout_text, stderr_text = _decode(stdout_b), _decode(stderr_b)
         return {
             "ok": proc.returncode == 0 and not cancelled,
             "returncode": proc.returncode,
             "duration_ms": round((time.monotonic() - started) * 1000),
             "command": cmd,
-            "stdout": _clip(_decode(stdout_b)),
-            "stderr": _clip(_decode(stderr_b))
+            "stdout": _clip(stdout_text),
+            "stderr": _clip(stderr_text)
             + ("\nCANCELLED by client; child process killed" if cancelled else ""),
+            "selftest": _selftest_status(stdout_text + "\n" + stderr_text),
             **({"cancelled": True} if cancelled else {}),
         }
     finally:
@@ -468,6 +470,13 @@ def runtime_status() -> dict[str, Any]:
         "newest_source_mtime": check["newest_source_mtime"],
         "stale": check["stale"],
         "stale_warning": stale_warning(),
+        "restart_required": check["stale"],
+        "restart_guidance": ([
+            "Save pending work, then reconnect only the robei_remote MCP server in the client (or reopen Codex).",
+            "Do not start another detached stdio server: the client must own its stdin/stdout connection.",
+            "Call runtime_status again; require stale=false and git_commit equal to the intended HEAD.",
+            "This status call only reports staleness; it does not stop or restart any process.",
+        ] if check["stale"] else []),
         "lifecycle": lifecycle.status(),
         "server_version": server_version,
         "mcp_version": mcp_version,
@@ -803,6 +812,28 @@ def lint_verilog(
     }
 
 
+def _selftest_status(text: str) -> str | None:
+    # FAIL always wins, including contradictory or clipped PASS/FAIL output.
+    for status in ("FAIL", "PASS"):
+        if re.search(rf"(?m)^\s*SELFTEST {status}(?=[:\s]|$)", text):
+            return status
+    return None
+
+
+def _semantic_verdict(result: dict[str, Any]) -> dict[str, Any]:
+    """Separate semantic failure from the actual subprocess return code."""
+    process = result.get("simulation") or {}
+    status = process.get("selftest") or result.get("selftest") or _selftest_status(str(result.get("display_output") or ""))
+    if status is None:
+        return result
+    result["selftest"] = status
+    if status == "FAIL":
+        result.update(ok=False, code="selftest_failed")
+    result["run"] = {"ok": result.get("ok"), "code": result.get("code"),
+                     "returncode": process.get("returncode"), "selftest": status}
+    return result
+
+
 def simulate(
     files: list[str],
     top: str,
@@ -872,7 +903,7 @@ def simulate(
     vcd_files = sorted(run_dir.rglob("*.vcd"))
     vcd_paths = [str(p) for p in vcd_files]
     vcd_rel_paths = [_rel(p) for p in vcd_files]
-    return {
+    return _semantic_verdict({
         "ok": sim_result["ok"],
         "code": _failure_code(sim_result, "run_failed"),
         "stage": "run",
@@ -889,7 +920,7 @@ def simulate(
         "vcd_paths": vcd_paths,
         "vcd_rel_paths": vcd_rel_paths,
         "warning": None if vcd_files else "simulation completed but no .vcd file was produced",
-    }
+    })
 
 
 def simulate_project(
@@ -1092,6 +1123,8 @@ def run_all_tests(
             _row_warnings(row, stem)
             return row
 
+        if isinstance(result, dict):
+            result = _semantic_verdict(result)
         compile_result = result.get("compile") if isinstance(result, dict) else None
         simulation_result = result.get("simulation") if isinstance(result, dict) else None
         stage = simulation_result if isinstance(simulation_result, dict) else compile_result
@@ -1127,7 +1160,7 @@ def run_all_tests(
             "display_output": result.get("display_output") if isinstance(result, dict) else None,
         }
         if isinstance(result, dict):
-            for key in ("code", "stage", "run_dir"):
+            for key in ("code", "stage", "run_dir", "selftest"):
                 if key in result:
                     row[key] = result[key]
             if result.get("plot") is not None:
@@ -1236,6 +1269,8 @@ def run_all_tests(
     _notify(progress, len(rows), max(1, len(stems)), "done")
     return {
         "ok": bool(rows) and passed == len(rows),
+        **({"code": "selftest_failed", "run": {"ok": False, "code": "selftest_failed"}}
+           if any(row.get("selftest") == "FAIL" for row in rows) else {}),
         "project": str(proj),
         "project_relative": _rel(proj),
         "total": len(rows),
@@ -1486,7 +1521,13 @@ def build_report(
     missing: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     testbench_by_name: dict[str, dict[str, Any]] = {}
-    for item in testbench_results or []:
+    expanded = []
+    for result in testbench_results or []:
+        if isinstance(result, dict) and isinstance(result.get("sweep"), list):
+            expanded.extend(result["sweep"])
+        else:
+            expanded.append(result)
+    for item in expanded:
         if not isinstance(item, dict):
             continue
         key = item.get("test") or item.get("name")
@@ -1513,6 +1554,7 @@ def build_report(
             "display_output": display_output,
             "display_truncated": display_truncated,
             "headless": result.get("headless") or {},
+            "selftest": result.get("selftest") or _selftest_status(display_output),
         }
         rows.append(test_row)
         unavailable = [field for field in ("returncode", "duration_ms") if test_row[field] is None]
@@ -1535,6 +1577,11 @@ def build_report(
         run_item = item.get("run") if isinstance(item.get("run"), dict) else {}
         run_tests = run_item.get("tests") if isinstance(run_item.get("tests"), list) else []
         run_row = run_tests[0] if run_tests and isinstance(run_tests[0], dict) else {}
+        supplied_status = run_row.get("selftest") or _selftest_status(str(run_row.get("display_output") or ""))
+        statuses = {row["selftest"], supplied_status}
+        if "PASS" in statuses and "FAIL" in statuses:
+            warnings.append({"code": "selftest_evidence_conflict", "test": row["test"],
+                             "current": row["selftest"], "supplied": supplied_status})
         facts = {
             "test": row["test"],
             "vector_count": semantic.get("vector_count"),
@@ -1542,7 +1589,7 @@ def build_report(
             "mode": semantic.get("mode"),
             "ok": item.get("ok"),
             "run_ok": run_item.get("ok"),
-            "selftest": "PASS" if "SELFTEST PASS" in str(run_row.get("display_output") or "") else ("FAIL" if "SELFTEST FAIL" in str(run_row.get("display_output") or "") else None),
+            "selftest": "FAIL" if "FAIL" in statuses else supplied_status,
             "log_path": run_row.get("run_dir") or item.get("log_path"),
         }
         duts = semantic.get("duts")
@@ -1558,6 +1605,9 @@ def build_report(
             for key in ("comparison_count", "expression_count"):
                 value = semantic.get(key)
                 facts[key] = value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+        if isinstance(semantic.get("sweep"), dict):
+            facts["sweep"] = semantic["sweep"]
+            facts["returncode"] = run_row.get("returncode") if row["reused"] else row["returncode"]
         facts["_evidence"] = {
             key: fact("testbench", f"{row['test']}.{key}", value, facts.get("log_path"), None)
             for key, value in facts.items()
@@ -1598,7 +1648,8 @@ def build_report(
                     continue
                 from . import p1
                 try:
-                    table = p1.truth_table(verilog_path=str(verilog), top=top, deps=target_map.get("deps"))
+                    options = {key: target_map[key] for key in ("parameters", "vectors", "max_inputs") if key in target_map}
+                    table = p1.truth_table(verilog_path=str(verilog), top=top, deps=target_map.get("deps"), **options)
                 except (ValueError, FileNotFoundError) as exc:
                     if isinstance(exc, PathEscape):
                         raise
@@ -1636,6 +1687,9 @@ def build_report(
                     "_row_count_evidence": row_count_evidence,
                     "_expected_evidence": expected_evidence,
                     "_row_evidence": row_evidence,
+                    "_coverage_evidence": fact("truth_table", f"{label}.coverage", {
+                        key: table.get(key) for key in ("mode", "exhaustive", "parameters", "total_possible_rows")
+                    }, table.get("testbench"), None) if "exhaustive" in table else None,
                 })
         truth_result = truth_rows
     else:
@@ -1719,6 +1773,11 @@ def build_report(
                 f"`expected_rows={_report_value(table.get('expected_rows'))}` "
                 f"([evidence:{table.get('_expected_evidence')}])"
             )
+            if table.get("_coverage_evidence") is not None:
+                lines.append(f"  - mode=`{table['mode']}`, exhaustive=`{table['exhaustive']}`, "
+                             f"parameters=`{_report_value(table.get('parameters'))}`, "
+                             f"total_possible_rows=`{table.get('total_possible_rows')}` "
+                             f"([evidence:{table['_coverage_evidence']}])")
             for index, item in enumerate(table.get("rows", [])):
                 evidence_id = (table.get("_row_evidence") or [None] * len(table.get("rows", [])))[index]
                 lines.append(f"  - `{_report_value(item)}` ([evidence:{evidence_id}])")
@@ -1754,6 +1813,15 @@ def build_report(
                 values = [f"`{_report_value(item.get(key))}` ([evidence:{ev[key]}])" for key in ("duts", "comparison_count", "expression_count")]
                 lines.append(f"| `{item['test']}` | " + " | ".join(values) + " |")
             lines.append("")
+        sweep_rows = [item for item in testbench_rows if "sweep" in item]
+        if sweep_rows:
+            lines += ["## Parameter sweep facts", "", "| test | case / parameters | SELFTEST | process rc |", "| --- | --- | --- | ---: |"]
+            for item in sweep_rows:
+                ev = item["_evidence"]
+                values = [f"`{_report_value(item.get(key))}` ([evidence:{ev[key]}])"
+                          for key in ("sweep", "selftest", "returncode")]
+                lines.append(f"| `{item['test']}` | " + " | ".join(values) + " |")
+            lines.append("")
     if "synthesis" in sections:
         lines += ["## Synthesis facts", "", "| field | value | evidence |", "| --- | --- | --- |"]
         if synthesis and synthesis.get("ok"):
@@ -1776,8 +1844,12 @@ def build_report(
     evidence_path.parent.mkdir(parents=True, exist_ok=True)
     evidence_path.write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in evidence), encoding="utf-8", newline="\n")
     target.write_text(report_text, encoding="utf-8", newline="\n")
+    semantic_failed = any(row.get("selftest") == "FAIL" for row in rows) or any(
+        (row.get("testbench") or {}).get("selftest") == "FAIL" for row in rows)
     return {
-        "ok": True,
+        "ok": not semantic_failed,
+        "report_written": True,
+        **({"run": {"ok": False, "code": "selftest_failed"}} if semantic_failed else {}),
         "project": str(proj),
         "project_relative": _rel(proj),
         "report_path": str(target),
@@ -2416,17 +2488,109 @@ def create_testbench(
     allow_wide_vectors: bool = False,
     duts: list[dict[str, Any]] | None = None,
     comparisons: list[dict[str, Any]] | None = None,
+    parameters: dict[str, int] | None = None,
+    sweep: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Generate a single semantic TB, or preflight a bounded explicit parameter sweep."""
+    common = dict(proj_path=proj_path, name=name, model_path=model_path, vectors=vectors,
+                  timescale=timescale, overwrite=overwrite, run=run, mode=mode,
+                  clock=clock, reset=reset, stimuli=stimuli, assertions=assertions,
+                  allow_wide_vectors=allow_wide_vectors, duts=duts,
+                  comparisons=comparisons, parameters=parameters)
+    if sweep is None:
+        return _create_testbench(**common)
+    if not isinstance(sweep, list) or not 1 <= len(sweep) <= 16:
+        raise BadRequest("sweep must contain 1..16 explicit cases", "no Cartesian products; split larger sweeps", code="limit_exceeded")
+    if parameters is not None:
+        raise tb_dut.bad("parameters", "put parameter overrides in each sweep case, not also at the top level")
+    if not isinstance(name, str) or not MODEL_NAME_RE.fullmatch(name) or len(name) > 100:
+        raise tb_dut.bad("name", "use a legal test name of at most 100 characters")
+    proj = resolve_project_path(proj_path)
+    prepared = []
+    total_events = total_bytes = 0
+    allowed = {"parameters", "vectors", "stimuli", "assertions", "allow_wide_vectors"}
+    for index, case in enumerate(sweep):
+        if not isinstance(case, dict) or not case:
+            raise tb_dut.bad(f"sweep[{index}]", "must be a non-empty object")
+        explicit = "parameters" in case
+        if explicit and set(case) - allowed:
+            raise tb_dut.bad(f"sweep[{index}]", "unknown case fields")
+        overrides = case["parameters"] if explicit else case
+        if not isinstance(overrides, dict) or not overrides:
+            raise tb_dut.bad(f"sweep[{index}].parameters", "must be a non-empty object of scalar integers")
+        opts = {**common, **({k: v for k, v in case.items() if k != "parameters"} if explicit else {}),
+                "parameters": overrides, "name": f"{name}_s{index + 1}", "run": False}
+        for field in ("vectors", "stimuli", "assertions"):
+            value = opts[field]
+            if value is not None and not isinstance(value, list):
+                raise tb_dut.bad(field, "must be a list")
+            total_events += len(value or [])
+        if total_events > 8192:
+            raise BadRequest("sweep exceeds 8192 total vectors/events/assertions", "split the sweep", code="limit_exceeded")
+        if (proj.parent / "test" / (opts["name"] + ".test")).exists() and not overwrite:
+            raise FileExistsError(f"test already exists: {opts['name']}")
+        item = _create_testbench(**opts, _prepare_only=True)
+        item["semantic"]["sweep"] = {"name": name, "index": index, "parameters": dict(overrides)}
+        total_bytes += len(item["code"].encode("utf-8"))
+        if total_bytes > SETTINGS.max_source_bytes:
+            raise BadRequest("sweep exceeds aggregate source size limit", "split the sweep", code="limit_exceeded")
+        prepared.append((opts, item))
+    # All cases, widths, vector values and target names are validated before writes.
+    cases = []
+    for opts, item in prepared:
+        created = create_robei_test(str(proj), opts["name"], item["code"], timescale,
+                                    overwrite=overwrite, sync_deps=True)
+        cases.append({**created, "parameters": opts["parameters"], "semantic": item["semantic"], "run": None})
+    batch = run_all_tests(str(proj), tests=[item["test"] for item in cases], timeout_s=60,
+                          total_timeout_s=SETTINGS.max_timeout_s) if run else None
+    if batch is not None:
+        by_name = {row["test"]: row for row in batch["tests"]}
+        for item in cases:
+            row = by_name[item["test"]]
+            item["ok"] = row.get("ok") is True
+            item["run"] = {"ok": item["ok"], "tests": [row], "total": 1,
+                           "passed": int(item["ok"]), "failed": int(not item["ok"]),
+                           **({"code": row["code"]} if row.get("code") else {})}
+    return {"ok": all(item["ok"] for item in cases), "name": name, "sweep": cases,
+            "case_count": len(cases), "run": batch,
+            "limits": {"cases": 16, "total_events": 8192, "total_source_bytes": SETTINGS.max_source_bytes,
+                       "run_budget_s": SETTINGS.max_timeout_s}}
+
+
+def _create_testbench(
+    proj_path: str,
+    name: str,
+    model_path: str | None = None,
+    vectors: list[dict[str, Any]] | None = None,
+    timescale: str = "1ns/1ps",
+    overwrite: bool = False,
+    run: bool = False,
+    mode: str = "combinational",
+    clock: dict[str, Any] | None = None,
+    reset: dict[str, Any] | None = None,
+    stimuli: list[dict[str, Any]] | None = None,
+    assertions: list[dict[str, Any]] | None = None,
+    allow_wide_vectors: bool = False,
+    duts: list[dict[str, Any]] | None = None,
+    comparisons: list[dict[str, Any]] | None = None,
+    parameters: dict[str, int] | None = None,
+    _prepare_only: bool = False,
 ) -> dict[str, Any]:
     """Create a bounded literal/expression-vector or timed ``test/*.test`` model."""
     proj = resolve_project_path(proj_path)
     if not is_within(proj, SETTINGS.workspace):
         raise PathEscape(f"project path escapes workspace: {proj}")
+    if not isinstance(name, str) or not MODEL_NAME_RE.fullmatch(name):
+        raise ValueError(f"invalid test name: {name!r}")
+    if not timescale or any(ch in timescale for ch in '"<>&'):
+        raise ValueError("invalid timescale")
     if mode not in {"combinational", "timed"}:
         raise BadRequest("mode must be combinational or timed", "pass mode='combinational' or mode='timed'")
     context = tb_dut.Context(
         proj, model_path, duts, comparisons,
         width_resolver=lambda model, port: _effective_width_for_datasize(
             port.get("datasize"), _parameter_values(model.get("parameter_list") or [])),
+        parameters=parameters,
     )
     widths = context.widths
     input_ports = list(context.inputs)
@@ -2479,6 +2643,12 @@ def create_testbench(
             raise BadRequest("generated testbench exceeds source size limit", "split the test or reduce vectors", code="limit_exceeded")
         if re.search(r"(?i)\bmodule\b|\$dump", code):
             raise RuntimeError("generated semantic testbench contains a forbidden module/dump token")
+        semantic = {**semantic,
+                    "dut": context.duts[0]["model"] if context.single else None,
+                    "model_path": context.duts[0]["model_path"] if context.single else None,
+                    "duts": context.duts}
+        if _prepare_only:
+            return {"code": code, "semantic": semantic}
         created = create_robei_test(
             str(proj), name, code=code, timescale=timescale,
             overwrite=overwrite, sync_deps=True,
@@ -2495,12 +2665,7 @@ def create_testbench(
         return {
             **created,
             "ok": bool(created.get("ok")) and (run_result is None or run_result.get("ok") is True),
-            "semantic": {
-                **semantic,
-                "dut": context.duts[0]["model"] if context.single else None,
-                "model_path": context.duts[0]["model_path"] if context.single else None,
-                "duts": context.duts,
-            },
+            "semantic": semantic,
             "run": run_result,
         }
 
@@ -2650,7 +2815,8 @@ def create_testbench(
             assertion_specs.append({"after_edge": after, "expect": expected})
         else:
             when = tick(at_value, f"assertions[{index}].at")
-            max_assert_tick = max(max_assert_tick, when + 1)
+            # Sampling occurs at at+1; leave another tick before PASS/$finish.
+            max_assert_tick = max(max_assert_tick, when + 2)
             assertion_specs.append({"at": when, "expect": expected})
     edge_duration = max_after_edges * period + 2
     duration_ticks = max(reset_end, max_assert_tick, edge_duration, max((when for when, _ in events), default=0) + 2)

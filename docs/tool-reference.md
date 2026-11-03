@@ -3,6 +3,8 @@
 1.10.0 共 54 个工具（文件级 42 + GUI 12）；ROBEI_MCP_GUI=0 时为 42 个。
 工具名、参数名、返回字段保持英文。
 
+开发变更：**1.11.0（Unreleased）**，包版本暂留 1.10.0，工具数不变。
+
 > 这份文件是从早期 README 拆出来的，示例里的时间戳/路径是当时的真实输出，不要当成当前默认值。
 
 **路径约定**：所有文件参数都相对 `workspace/` 解析。开头的 `workspace/`（大小写不敏感，
@@ -10,6 +12,11 @@
 和 `Workspace\counter4\counter4.v` 等价；去掉前缀后仍然做逃逸检查
 （`workspace/../x` 直接被拒）。若工作区里确实存在 `workspace/` 子目录且与根目录同名路径
 同时存在，返回 `ambiguous path`。绝对路径必须落在 workspace / 模型根目录之内。
+
+新例统一省略 `workspace/` 前缀，以 `runtime_status.workspace` 为基准。QA 工程例如
+`_qa_runs/m5_111/exp7_qadd/exp7_qadd.proj`，模型为 `_qa_runs/m5_111/exp7_qadd/model/qadd.model`；
+`test_name` 只传 `tb_exp7_sweep_s1`，VCD 原样使用返回的 workspace 相对路径，不手拼第二层 workspace。
+`build_report.out="exp7_sweep.md"` 是工程 `report/` 内文件名，这类输出名不是输入文件路径。
 
 ## 工具清单
 
@@ -30,10 +37,12 @@
   - `git_commit`（源码目录的 HEAD 短 hash；不是 git 仓库或取不到时为 `null`，不报错）
   - `source_dir`（**正在运行**的 `robei_mcp` 目录，用来确认服务加载的是哪份代码）
   - `process_started_at` / `process_age_s`（进程加载本模块的时间）
-  - `newest_source_mtime`（`robei_mcp/*.py` 的最大 mtime）
+  - `newest_source_mtime`（`robei_mcp/**/*.py` 的最大 mtime，含 GUI 子包）
   - `stale` / `stale_warning`：源码比进程新时为 `true`，`stale_warning` 说明"要重启服务或重开
     Codex"。`stale=true` 时**每个工具**的返回都会多一条 `warnings`（错误结果也带），不需要
     额外轮询
+  - 1.11 增加 `restart_required` 与 `restart_guidance`。过期时提示保存工作、重连指定 MCP 服务（或重开 Codex），
+    再核对 `stale=false`、`git_commit=目标 HEAD`；不会自动杀进程，也不建议另起脱离客户端的 stdio 服务。
 - 生命周期块（H1）：`path`、`pid`、`current_run_id`、`recent_events`（最近 5 条）、`previous_exit`；日志不可读时返回 `available=false`，不影响其它运行态字段。
 - `recent_events` 中 `stdin_closed` 表示客户端断开：正常关闭与 SSH 断开不做服务端来源区分，health 统一显示“客户端断开”。外层 cmd 与 Python 同时被强杀且没有 `exit` 时，health 显示“未观察到终止”。
 - `tools/mcp_health.sh` 是 Mac 侧只读检查。命令行 server 标记认 `robei_mcp/server`、`robei_mcp\server`、
@@ -96,6 +105,11 @@ Robei 版本从 PE 文件版本资源读取。Yosys 这个厂商构建的 `-V` �
 
 放宽时设 `ROBEI_MCP_STRICT_PATHS=0`，第 3 类只记进 `security.unresolved`。
 返回值里 `security.strict` 会标出本次用的是哪一档。
+
+**1.11 自检失败语义**：完整进程输出出现行首 `SELFTEST FAIL` 时，顶层 `ok=false`、`code=selftest_failed`，
+并提供 `run.code=selftest_failed`；`simulation.returncode` 仍是实际进程 rc（生成的 `$finish` 通常是 0），不伪造非零。
+FAIL 优先于 PASS，输出裁剪不会丢失这个判定。`simulate_project`、`run_all_tests` 与语义 TB 保持相同语义。
+客户端须读 `ok/run.code` 而不是仅看 rc；semantic TB 顶层 `code` 仍为源码。
 
 ### `simulate_project`
 
@@ -531,7 +545,7 @@ create_testbench(proj_path, name, model_path=None, vectors=None,
                  timescale="1ns/1ps", overwrite=False, run=False,
                  mode="combinational", clock=None, reset=None,
                  stimuli=None, assertions=None, allow_wide_vectors=False,
-                 duts=None, comparisons=None)
+                 duts=None, comparisons=None, parameters=None, sweep=None)
 ```
 
 ```json
@@ -562,10 +576,36 @@ create_testbench(proj_path, name, model_path=None, vectors=None,
 vectors（字面量或安全表达式）可显式传 `allow_wide_vectors=true`；仍受 4096 vectors 上限约束，不自动穷举。
 端口位宽会代入模型根参数默认值（含安全的参数依赖表达式），单/多 DUT 均适用，不改写模型；
 存在循环、未声明标识符或仍无法解析的参数化位宽时返回 `invalid_argument`，解析后仍受 4096 位上限约束。
-这不改变 `truth_table` 的参数化位宽限制。默认 `run=false`；传 `run=true` 会调用 `run_all_tests`，若生成的
+1.11 的 `truth_table` 也支持有界参数位宽解析。默认 `run=false`；传 `run=true` 会调用 `run_all_tests`，若生成的
 PASS/FAIL 汇总出现 `SELFTEST FAIL`，返回 `ok=false`、`run.code=selftest_failed`。
 顶层 `code` 仍保存生成的 TB 源码，不会被错误码覆盖。生成代码不包含 `module`、
 `$dumpfile` 或 `$dumpvars`，Robei 外层负责测试模块和 VCD dump。
+
+#### 1.11.0（Unreleased）：参数与 sweep
+
+`parameters={"N":8}` 覆盖单次调用的全部 DUT；`duts[].parameters` 可设置实例专属值，公共覆盖优先。
+参数名大小写敏感、必须已声明；仅接受有符号 32 位整数，不接受 bool、字符串、数组或表达式覆盖；模型自身的安全默认表达式仍可解析。
+覆盖只写到生成 TB 的 `#(.N(8))`，不修改源 `.model`。
+
+`sweep=[{"N":4},{"N":8}]` 是两组标量赋值，复用顶部 vectors；不会自动计算期望值、抽样或生成笛卡尔积。
+需要不同向量时用以下形状（仅示意结构，完整 256/32 组见验收脚本）：
+
+```json
+{"proj_path":"_qa_runs/m5_111/exp7_qadd/exp7_qadd.proj","name":"tb_example",
+ "model_path":"_qa_runs/m5_111/exp7_qadd/model/qadd.model",
+ "sweep":[
+   {"parameters":{"N":4},"vectors":[{"drive":{"a":0,"b":0},"expect":{"c":0}}]},
+   {"parameters":{"N":8},"allow_wide_vectors":true,"vectors":[{"drive":{"a":0,"b":0},"expect":{"c":0}}]}
+ ],"run":true}
+```
+
+- 最多 16 组，合计 vectors/stimuli/assertions 不超过 8192，生成源码合计不超过 `max_source_bytes`；每端口 4096 位和原有单组上限仍生效。
+- 分组扩展对象只接受 parameters、vectors、stimuli、assertions、allow_wide_vectors；不与顶层 parameters 同用。
+- 全部分组参数/位宽/向量/目标名先校验再写文件；生成 `<name>_s1`、`_s2` 等独立 test，沿用 overwrite/备份规则。
+- 返回 `sweep[]` 的每项含 parameters、semantic、code、run.tests[0].selftest/returncode；顶层 run 汇总批量结果。
+  运行仍为有界串行批量，单 test 60 s，整批 `SETTINGS.max_timeout_s`（默认 120 s），超时不冒充通过。
+- 不改变进程 rc。若未来把 `$finish` 换成 `$fatal(1)`，会破坏“进程成功/语义失败”的旧调用、改变批量 fail-fast/CI 分支和错误类别；**待用户决定**。
+- timed 的绝对时刻断言在 at+1 采样，汇总至少再晚一个 tick，保证最后一条断言已计入。
 
 #### 1.10 安全表达式与位宽
 
@@ -1048,14 +1088,17 @@ Build → Synthesis 并等到 `Synthesis complete`（内部是 yosys 的 Xilinx 
 
 穷举输入（`2^n` 行，`n ≤ max_inputs`）生成 testbench → `simulate` → 解析 `TT` 行，
 返回 `rows`（每行是 `{输入: 二进制串, 输出: 二进制串}`）、`expected_rows`、`row_count`。
-`ok` 要求仿真成功且行数等于 `2^n`。
+`ok` 要求仿真成功且行数等于 `expected_rows`，不是设计功能正确性的独立证明。
 
 - `n` 是**输入总位数**，不是端口个数：`input [1:0] a` + `input [3:0] b` 算 6 位（64 行），
   超过 `max_inputs` 返回 `invalid_argument`
 - 枚举按位打包：最后一个输入端口的位是最低位，`rows[1]` 只让最后一个端口 +1
-- 位宽支持常量表达式（`[4-1:0]` 按 4 位算）；`[WIDTH-1:0]` 这类参数化位宽**不支持**
-  （不会拿 `Parameters` 的默认值去代入），会返回 `invalid_argument` 而不是按 1 位枚举
-- 生成的 testbench 写在 `build/truth-<top>-<时间戳>-<uuid8>/`，每次调用独立
+- 1.11 支持 ANSI/non-ANSI 数字参数默认值与安全依赖表达式，`parameters={"N":8}` 使用整数实例覆盖；未知/循环/不支持的宽度仍拒绝。
+- `max_inputs` 默认 8，可显式设为 1..12；更宽输入用 `vectors=[{"a":0,"b":1}, ...]` 提供 1..4096 组有限输入。
+  每组必须给全输入；总输入最多 64 位、端口最多 128 个，每端口最多 4096 位，源码/输出仍受既有资源限制。
+- 返回 `mode=exhaustive|sampled`、`exhaustive`、`parameters`、`resolved_parameters`、`input_bits`、`total_possible_rows`。
+  抽样时 expected_rows 是请求行数，**不是**完整组合数；exp7 N=8 的 32/65536 必须标为抽样。
+- 生成的 testbench 与仿真写在所属工程 `build/` 的独立运行目录；独立 Verilog 无所属工程时写 workspace/build。
 
 ### `expect_waveform`
 
@@ -1193,9 +1236,9 @@ build_report(proj_path: str, tests: list[str] | None = None,
   `None` 或空列表启用全部；非空列表才按项选择。`Missing` 清单仍会输出。
 - 真值表默认从 `tb_<top>` 推导 top，并找工程 `verilog/<top>.v` 或 `build/<top>.v`；
   找不到时记“未提供”。`truth_map` 可把 test stem 映射到 top 字符串，或
-  `{top, verilog_path?, deps?}` 对象。不是从 testbench 自动推断期望真值表。
+  `{top, verilog_path?, deps?, parameters?, vectors?, max_inputs?}` 对象。不是从 testbench 自动推断期望真值表。
 - 1.10 多实例映射写成 `truth_map[test].instances[instance]`，每个值仍是 top 字符串或
-  `{top, verilog_path?, deps?}`。报告及 evidence 用 `test.instance` 区分；显式映射不等于自动验证了实例关系。
+  上述对象。报告及 evidence 用 `test.instance` 区分；显式映射不等于自动验证了实例关系。
   已知 DUT 未提供对应映射时，该实例写“未提供”；单实例无数据或真值表超限不打断其余实例。
   路径逃逸等安全拒绝仍会传播，不被降级隐藏。旧单 DUT 的字符串、对象和 `tb_<top>` 默认映射不变。
 - waveform 用首个 VCD 的前 16 个信号生成 PNG。assertions 只筛选 `$display` 中含
@@ -1218,7 +1261,8 @@ build_report(proj_path: str, tests: list[str] | None = None,
 
 | 字段 | 说明 |
 |---|---|
-| `ok` | 报告生成状态，不等于所有 test 自检通过，也不等于报告验收通过 |
+| `ok` | 报告生成成功且没有已报告的 SELFTEST FAIL；仍不等于全部设计验收通过 |
+| `report_written` | 报告已落盘；语义失败时此项仍为 true，顶层 ok=false、run.code=selftest_failed |
 | `project/project_relative` | 工程路径 |
 | `report_path/report_relative_path` | Markdown 路径 |
 | `evidence_path/evidence_relative_path` | JSON Lines 证据路径 |
@@ -1249,6 +1293,10 @@ JSON 返回与 JSONL 仍保留原始可空值，不伪造 rc/耗时。$display/�
 `semantic.duts` 含多项、显式 `truth_map.instances`，或新多 DUT 字段不完整时启用附加事实表；
 `duts`/`comparison_count`/`expression_count` 缺失或无效时显示“未提供”，计数 0 保留，报告不中断。
 旧单 DUT（含 `duts` 长度为 1 的现代返回）的表格和 evidence 编号不变。
+
+**1.11 sweep**：`testbench_results=[sweep_result]` 自动展开 `sweep[]`，按生成 test 名汇总参数、SELFTEST 和进程 rc。
+真值表映射仍按 `<name>_s1`/`_s2` 与实例指定；参数和 vectors 显式传入，不猜测宽 DUT 的穷举策略。
+覆盖方式与总体组合数有独立 evidence 引用。新的仿真与传入旧自检事实矛盾时返回 `selftest_evidence_conflict`，保留两者，保守返回失败。
 
 ```text
 build_report(..., testbench_results=[CREATE_TESTBENCH_RESULT],

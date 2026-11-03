@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path:
 
 from robei_mcp import tools  # noqa: E402
 
-WS = ROOT / "workspace"
+WS = tools.SETTINGS.workspace
 results: list[tuple[str, str]] = []
 
 

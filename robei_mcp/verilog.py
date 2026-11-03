@@ -119,6 +119,38 @@ def _port_paren(header: str) -> int:
     return -1
 
 
+def parse_module_parameters(source: str, top: str) -> list[dict[str, str]]:
+    """Read bounded numeric parameter declarations, without evaluating Verilog."""
+    text = strip_comments(source)
+    header = module_header(text, top)
+    if header is None:
+        raise ValueError(f"module {top} not found")
+    chunks: list[tuple[str, bool]] = []
+    if header.lstrip().startswith("#"):
+        start = header.index("(")
+        end = _match_paren(header, start)
+        if end < 0:
+            raise ValueError("unclosed parameter list")
+        chunks.extend((part, False) for part in _split_top_level(header[start + 1:end]))
+    match = re.search(rf"\bmodule\s+{re.escape(top)}\b", text)
+    body_start = match.end() + len(header) + 1
+    body = text[body_start:text.find("endmodule", body_start)]
+    for declaration in re.finditer(r"\b(parameter|localparam)\s+([^;]+);", body):
+        chunks.extend((part, declaration.group(1) == "localparam")
+                      for part in _split_top_level(declaration.group(2)))
+    if len(chunks) > 32:
+        raise ValueError("truth_table supports at most 32 parameters")
+    result: list[dict[str, str]] = []
+    for chunk, local in chunks:
+        item = re.fullmatch(rf"\s*(?:parameter\s+)?(?:(?:integer|int|signed|unsigned)\s+)*({IDENT})\s*=\s*(.+?)\s*", chunk)
+        if item is None or len(item.group(2)) > 512:
+            raise ValueError("unsupported parameter declaration; use scalar integer defaults")
+        if any(p["name"] == item.group(1) for p in result):
+            raise ValueError("duplicate parameter declaration")
+        result.append({"name": item.group(1), "default": item.group(2), "kind": "localparam" if local else "parameter"})
+    return result
+
+
 def parse_module_ports(source: str, top: str) -> list[dict[str, Any]]:
     """Parse ANSI-style ports (falls back to non-ANSI body declarations).
 

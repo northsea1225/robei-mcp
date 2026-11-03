@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/oniondas/Automation-SeqDetector-Verilog",
+  "commit": "4b448c563560087e3a8e2b3376f458f9a54ff588",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2025 Shounak Das",
+  "upstream_sha256": {
+    "LICENSE": "713a9ff73a49710ae01b086e60dee3583a951b6bcb1ca0a4e76353506c7e39de",
+    "seq100111_detector.v": "877412e1518ff01de37292631e1b07caeebe018ff57cc8fea9dee19862d37467"
+  },
+  "local_change": "Only add next_state = S0 at the start of the combinational always block."
+}

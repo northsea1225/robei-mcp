@@ -8,3 +8,6 @@
 *.pdf binary
 *.vcd binary
 *.vvp binary
+
+# Upstream reference copies keep their exact bytes: tests hash them verbatim.
+examples/seqdet/upstream/** -text

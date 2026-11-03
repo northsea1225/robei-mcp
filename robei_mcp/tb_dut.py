@@ -20,6 +20,21 @@ _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
 _RESERVED = {"fail", "vector", "assertion_count"}
 
 
+def parameter_overrides(value: Any, declared: list[dict], field: str = "parameters") -> dict[str, int]:
+    """Only explicit scalar cases: never expand arrays into a Cartesian product."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or len(value) > 32:
+        raise bad(field, "must be an object with at most 32 integer parameters")
+    names = {p["name"] for p in declared}
+    for name, number in value.items():
+        if not isinstance(name, str) or name not in names:
+            raise bad(field, f"unknown parameter {name!r}; declared: {sorted(names)}")
+        if isinstance(number, bool) or not isinstance(number, int) or not -(2**31) <= number < 2**31:
+            raise bad(field + "." + name, "must be a signed 32-bit integer; arrays/Cartesian products are not supported")
+    return dict(value)
+
+
 def bad(field: str, reason: str, hint: str = "check the declared DUT ports and connections"):
     return BadRequest(f"{field}: {reason}", hint, code="bad_argument", field=field,
                       offset=0, reason=reason)
@@ -44,7 +59,8 @@ class Target:
 class Context:
     def __init__(self, proj: Path, model_path: str | None, duts: list[dict] | None,
                  comparisons: list[dict] | None, *,
-                 width_resolver: Callable[[dict, dict], int | None] | None = None):
+                 width_resolver: Callable[[dict, dict], int | None] | None = None,
+                 parameters: dict[str, int] | None = None):
         self.single = duts is None
         if (model_path is None) == (duts is None):
             raise bad("duts", "pass exactly one of model_path or duts")
@@ -81,6 +97,13 @@ class Context:
             path = resolve_model_path(value)
             reject_signed_ports(path, field + ".model_path" if not self.single else field)
             model = parse_robei_model(path)
+            declared = model.get("parameter_list") or []
+            overrides = parameter_overrides(spec.get("parameters"), declared, field + ".parameters")
+            overrides.update(parameter_overrides(parameters, declared))
+            model = {**model, "parameter_list": [
+                {**p, "default": str(overrides[p["name"]])} if p["name"] in overrides else p
+                for p in declared
+            ]}
             module = identifier(model["name"], field + ".module")
             ports = model.get("ports") or []
             if not ports:
@@ -120,7 +143,8 @@ class Context:
                 else:
                     sinks.add(net)
             self.duts.append({"instance": instance, "model": module, "model_path": str(path),
-                              "connections": dict(connections)})
+                              "connections": dict(connections),
+                              **({"parameters": overrides} if overrides else {})})
         if instances.intersection(self.widths):
             raise bad("connections", "a TB net must not have the same name as a DUT instance")
         self.inputs = {net: self.widths[net] for net in self.widths if net in sinks and net not in drivers}
@@ -195,7 +219,9 @@ class Context:
     def instances(self) -> list[str]:
         lines = []
         for dut in self.duts:
-            lines.extend([f"{dut['model']} {dut['instance']}(",
+            parameters = dut.get("parameters") or {}
+            override = " #(" + ", ".join(f".{key}({value})" for key, value in parameters.items()) + ")" if parameters else ""
+            lines.extend([f"{dut['model']}{override} {dut['instance']}(",
                           ",\n".join(f"  .{port}({net})" for port, net in dut["connections"].items()), ");"])
         return lines
 

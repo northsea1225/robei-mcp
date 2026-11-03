@@ -659,6 +659,8 @@ def create_testbench(
     allow_wide_vectors: bool = False,
     duts: list[dict[str, Any]] | None = None,
     comparisons: list[dict[str, Any]] | None = None,
+    parameters: dict[str, Any] | None = None,
+    sweep: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Create a bounded combinational or timed test/*.test with safe expected expressions."""
     try:
@@ -667,7 +669,7 @@ def create_testbench(
             timescale=timescale, overwrite=overwrite, run=run, mode=mode,
             clock=clock, reset=reset, stimuli=stimuli, assertions=assertions,
             allow_wide_vectors=allow_wide_vectors,
-            duts=duts, comparisons=comparisons,
+            duts=duts, comparisons=comparisons, parameters=parameters, sweep=sweep,
         )
     except Exception as exc:
         return _error(exc)
@@ -737,11 +739,14 @@ def truth_table(
     max_inputs: int = 8,
     timeout_s: int = 30,
     deps: list[str] | None = None,
+    parameters: dict[str, Any] | None = None,
+    vectors: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Exhaustively simulate a combinational module and return its truth table rows."""
+    """Enumerate a parameterized module, or export explicitly labelled sampled rows."""
     try:
         return p1.truth_table(
-            verilog_path=verilog_path, top=top, max_inputs=max_inputs, timeout_s=timeout_s, deps=deps
+            verilog_path=verilog_path, top=top, max_inputs=max_inputs, timeout_s=timeout_s,
+            deps=deps, parameters=parameters, vectors=vectors
         )
     except Exception as exc:
         return _error(exc)

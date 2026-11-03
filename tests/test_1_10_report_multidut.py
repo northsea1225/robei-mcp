@@ -50,6 +50,9 @@ def _mock_sim(monkeypatch):
 
 def _rendered(result, proj):
     def normalise(text):
+        # Keep the golden schema/content comparison independent of QA workspace location.
+        text = text.replace(json.dumps(str(SETTINGS.workspace))[1:-1],
+                            json.dumps(r"C:\dev\robei-mcp\workspace")[1:-1])
         return (text.replace(result["evidence_relative_path"], "<EVIDENCE>")
                 .replace(str(proj), "<PROJ>").replace(result["project_relative"], "<PROJ>")
                 .replace(proj.parent.name, "<PROJECT>"))

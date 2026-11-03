@@ -26,6 +26,21 @@
 - **画布可增量改**：`edit_robei_canvas` 用 `add_instance` / `connect` / `rename_wire` 这组
   操作改画布，整批校验通过才落盘；`set_robei_code` / `set_robei_parameter` 改行为与参数。
 
+## 1.11.0（Unreleased）：有界 sweep 与自检语义
+
+- `create_testbench(parameters=..., sweep=...)` 支持显式参数分组，生成 `<name>_s1`、`_s2` 等独立 TB；
+  每组返回参数、SELFTEST 与真实 rc，`build_report(testbench_results=[sweep_result])` 汇总。
+- 扫描最多 16 组、合计 8192 个向量/事件/断言，全部源码合计不超过 `max_source_bytes`；数组参数和隐式笛卡尔积拒绝。
+  每组可提供自己的 vectors；公共整数覆盖使用 Verilog 实例参数，不改 `.model`。
+- `truth_table` 解析参数默认值/整数覆盖，宽输入可传有限 `vectors` 导出**抽样表**；
+  `mode=sampled, exhaustive=false` 不得写成全穷举通过。exp7 的 N=4/8 验收脚本在 `tests/acceptance_1_11.py`。
+- `simulate`、`simulate_project`、`run_all_tests`、语义 TB、报告遇到 SELFTEST FAIL 统一 `ok=false`、`run.code=selftest_failed`；
+  **进程 rc 不改**。`build_report.report_written=true` 只说明报告已写出。更改 rc 的兼容性待审，不在本迭代实施。
+- 新增 MIT [100111 序列检测器夹具](examples/seqdet/README.md)，保留上游原文、许可和提交；只修副本的组合默认赋值，测试含 X/Z 与原版负对照。
+- `runtime_status` 的 `restart_required/restart_guidance` 明确提示重连并复核，不自动杀进程；`simulate.rejected` 镜像保持兼容。
+
+本地开发仍保留包版本 **1.10.0**，工具数 **54/42**；以上是未发布变更，最终版本 bump 等待确认。
+
 ## 1.7 实验闭环与报告
 
 - `build_report` 输出事实型 Markdown 与 evidence.jsonl，支持选择 test/章节、truth_map 和运行复用。
@@ -328,8 +343,8 @@ python C:\dev\robei-mcp\tools\gui\register_task.py --remove   # 删除
 - Verilator 5.036 对"声明了但既不用也不驱动"的 net 不报 `UNUSEDSIGNAL`，这一项由 Yosys
   `opt_clean` 前后网表 diff 兜底；Icarus 12.0 的 `-Wall` 不报未使用信号。
 - Yosys 只做可综合性粗检，不做时序/面积签核；ERC 是教学级静态检查（不分析组合环）。
-- `truth_table` 上限是 8 个**输入位**（多个窄端口加起来算），超过会报
-  `invalid_argument`；`generate_testbench` 只生成骨架，不理解设计语义。
+- `truth_table` 默认穷举上限 8 个**输入位**，可显式设为 1..12；更宽输入只接受有限抽样（合计输入最多 64 位，最多 4096 行）。
+  参数未解析仍拒绝，不猜位宽；`generate_testbench` 仍只生成骨架，不理解设计语义。
 - 非 ASCII 路径（`C:\项目\验证\a.v`）在 Windows 上会先转成 8.3 短路径再交给
   `iverilog`/`vvp`/`yosys`/`verilator`；如果该盘关了 8.3 生成且路径又真的不可表示，
   会返回 `unsupported_path` 而不是让工具链报一堆乱码。

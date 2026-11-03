@@ -105,5 +105,8 @@ def test_build_report_records_selftest_fail_without_abort(project: str, monkeypa
             "run": {"ok": False, "tests": [{"display_output": "SELFTEST FAIL: 1 mismatches", "run_dir": "build/sim-bad"}]},
         }],
     )
-    assert report["ok"] is True
+    assert report["ok"] is False
+    assert report["report_written"] is True
+    assert report["run"]["code"] == "selftest_failed"
     assert report["testbench"][0]["selftest"] == "FAIL"
+    assert report["warnings"][0]["code"] == "selftest_evidence_conflict"

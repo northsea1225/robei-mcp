@@ -23,7 +23,8 @@ from .security import (
     resolve_workspace_path,
 )
 from .vcd import match_signals, parse_vcd, timescale_fs, value_at
-from .verilog import strip_comments, width_info
+from .verilog import strip_comments, width_info, parse_module_parameters
+from .tb_dut import parameter_overrides
 from .verilog_ast import is_plain_net, net_width, parse_module, parse_modules, port_map, width_of
 
 REL = tools._rel
@@ -313,10 +314,21 @@ def truth_table(
     max_inputs: int = 8,
     timeout_s: int = 30,
     deps: list[str] | None = None,
+    parameters: dict[str, int] | None = None,
+    vectors: list[dict[str, int]] | None = None,
 ) -> dict[str, Any]:
-    """Exhaustively simulate a combinational module and return its truth table."""
+    """Enumerate bounded inputs, or explicitly label a supplied finite sample."""
+    if isinstance(max_inputs, bool) or not isinstance(max_inputs, int) or not 1 <= max_inputs <= 12:
+        raise ValueError("max_inputs must be an integer between 1 and 12")
     source = resolve_workspace_path(verilog_path)
-    module = parse_module(source.read_text(encoding="utf-8", errors="replace"), top)
+    text = source.read_text(encoding="utf-8", errors="replace")
+    module = parse_module(text, top)
+    declared = parse_module_parameters(text, top)
+    overrides = parameter_overrides(parameters, [p for p in declared if p["kind"] == "parameter"])
+    values = tools._parameter_values([
+        {**p, "default": str(overrides[p["name"]])} if p["name"] in overrides else p
+        for p in declared
+    ])
     inputs = [port for port in module["ports"] if port["direction"] == "input"]
     outputs = [port for port in module["ports"] if port["direction"] == "output"]
     if not inputs or not outputs:
@@ -328,10 +340,13 @@ def truth_table(
         unresolved: list[str] = []
         for port in ports:
             info = width_info(port["width"])
-            if info["width"] is None:
+            width = info["width"] if info["width"] is not None else tools._effective_width_for_datasize(port["width"], values)
+            if width is None:
                 unresolved.append(f"{port['name']}[{info['expression']}]")
             else:
-                widths[port["name"]] = int(info["width"])
+                if not 1 <= width <= 4096:
+                    raise ValueError("truth_table port widths must be between 1 and 4096")
+                widths[port["name"]] = int(width)
         if unresolved:
             raise ValueError(
                 "cannot enumerate a parameterised width: "
@@ -343,7 +358,9 @@ def truth_table(
     widths = _concrete_widths(inputs)
     output_widths = _concrete_widths(outputs)
     total_bits = sum(widths.values())
-    if total_bits > max_inputs:
+    if len(module["ports"]) > 128 or total_bits > 64:
+        raise ValueError("truth_table exceeds port/width limits")
+    if vectors is None and total_bits > max_inputs:
         raise ValueError(
             f"too many input bits ({total_bits} over {len(inputs)} port(s) > max_inputs={max_inputs})"
         )
@@ -353,14 +370,24 @@ def truth_table(
     for port in outputs:
         width = output_widths[port["name"]]
         lines.append(f"    wire [{width - 1}:0] {port['name']};")
-    lines.append("    " + top + " dut (")
+    if vectors is not None:
+        if not isinstance(vectors, list) or not 1 <= len(vectors) <= 4096:
+            raise ValueError("truth_table vectors must contain 1..4096 input assignments")
+        for vector in vectors:
+            if not isinstance(vector, dict) or set(vector) != set(widths):
+                raise ValueError("truth_table vectors must assign every input exactly once")
+            for name, value in vector.items():
+                if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < (1 << widths[name]):
+                    raise ValueError(f"truth_table vector value does not fit input {name}")
+    override = " #(" + ", ".join(f".{key}({value})" for key, value in overrides.items()) + ")" if overrides else ""
+    lines.append("    " + top + override + " dut (")
     lines.append(",\n".join(f"        .{port['name']}({port['name']})" for port in module["ports"]))
     lines.append("    );")
     lines.append("    initial begin")
     lines.append(f'        $dumpfile("{top}_tb.vcd");')
     lines.append(f"        $dumpvars(0, {top}_tb);")
     order = [port["name"] for port in inputs]
-    total = 1 << total_bits
+    total = len(vectors) if vectors is not None else 1 << total_bits
     # Pack the enumeration index across the *bits* of every input, last port
     # in the lowest bits.  Using the port count here was wrong as soon as the
     # ports had different widths.
@@ -372,7 +399,7 @@ def truth_table(
     for index in range(total):
         assignments = []
         for name in order:
-            bit = (index >> offsets[name]) & ((1 << widths[name]) - 1)
+            bit = vectors[index][name] if vectors is not None else (index >> offsets[name]) & ((1 << widths[name]) - 1)
             assignments.append(f"{name} = {widths[name]}'b{_bits(bit, widths[name])};")
         lines.append("        " + " ".join(assignments) + " #10;")
         fmt = " ".join(f"{name}=%b" for name in order + [p["name"] for p in outputs])
@@ -384,14 +411,19 @@ def truth_table(
 
     # Per-run directory so concurrent truth tables for the same top cannot
     # overwrite each other's generated testbench.
-    out_dir = tools._new_run_dir(f"truth-{top}")
+    generated = "\n".join(lines) + "\n"
+    if len(generated.encode("utf-8")) > SETTINGS.max_source_bytes:
+        raise ValueError("truth_table generated source exceeds size limit; supply fewer vectors")
+    project = tools._project_for(source)
+    out_dir = tools._new_run_dir(f"truth-{top}", base=project / "build" if project else None)
     tb_path = out_dir / f"{top}_tb.v"
-    tb_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    tb_path.write_text(generated, encoding="utf-8", newline="\n")
 
     sim_files = [str(source), str(tb_path)]
     if deps:
         sim_files.extend(str(path) for path in resolve_source_files(deps))
-    result = tools.simulate(files=sim_files, top=f"{top}_tb", timeout_s=timeout_s)
+    result = tools.simulate(files=sim_files, top=f"{top}_tb", timeout_s=timeout_s,
+                            base=project / "build" if project else None)
     rows: list[dict[str, str]] = []
     for line in (result.get("display_output") or "").splitlines():
         line = line.strip()
@@ -406,6 +438,12 @@ def truth_table(
     return {
         "ok": bool(result.get("ok")) and len(rows) == total,
         "top": top,
+        "parameters": overrides,
+        "resolved_parameters": values,
+        "mode": "sampled" if vectors is not None else "exhaustive",
+        "exhaustive": vectors is None,
+        "input_bits": total_bits,
+        "total_possible_rows": 1 << total_bits,
         "inputs": [{"name": p["name"], "width": widths[p["name"]]} for p in inputs],
         "outputs": [{"name": p["name"], "width": output_widths[p["name"]]} for p in outputs],
         "expected_rows": total,
