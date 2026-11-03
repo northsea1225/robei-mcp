@@ -77,7 +77,7 @@ def test_create_testbench_rejects_bad_width_value(project: str):
         tools.create_testbench(project, "tb_bad_value", model, [{"drive": {"a": 2, "b": 0}, "expect": {"y": 0}}])
 
 
-def test_create_testbench_parameterised_width_is_rejected(project: str):
+def test_create_testbench_resolves_parameterised_width_default(project: str):
     name = f"pytest19_param_{uuid.uuid4().hex[:8]}"
     proj = tools.create_robei_project(name, models=["param"])["proj"]
     try:
@@ -89,8 +89,10 @@ def test_create_testbench_parameterised_width_is_rejected(project: str):
             code="assign y = a[0];",
             overwrite=True,
         )
-        with pytest.raises(errors.BadRequest):
-            tools.create_testbench(proj, "tb_param", str(Path(proj).parent / "model" / "param.model"), [{"drive": {"a": 0}, "expect": {"y": 0}}])
+        result = tools.create_testbench(proj, "tb_param", str(Path(proj).parent / "model" / "param.model"), [{"drive": {"a": 0}, "expect": {"y": 0}}])
+        assert result["ok"] is True
+        assert result["semantic"]["input_bits"] == 4
+        assert "reg [3:0] a;" in result["code"]
     finally:
         shutil.rmtree(SETTINGS.workspace / name, ignore_errors=True)
 
