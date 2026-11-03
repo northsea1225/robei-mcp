@@ -4,9 +4,7 @@ from __future__ import annotations
 import atexit
 import base64
 from contextlib import contextmanager
-import csv
 from datetime import datetime, timezone
-import io
 import json
 import os
 from pathlib import Path
@@ -308,7 +306,6 @@ def supervise(root: Path, *, entry: Path | None = None) -> int:
     run_id = uuid.uuid4().hex
     env = {**os.environ, "ROBEI_MCP_LIFECYCLE_RUN_ID": run_id,
            "ROBEI_MCP_LIFECYCLE_SUPERVISED": run_id}
-    commit = _commit(root)
     started = time.monotonic()
     # Always start the package module: running robei_mcp/server.py as a script
     # breaks its relative import ("from .lifecycle import run_server").

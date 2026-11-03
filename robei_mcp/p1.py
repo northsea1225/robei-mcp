@@ -16,7 +16,6 @@ from .erc import check as erc_check
 from .errors import BadRequest
 from .model import model_to_verilog, parse_robei_model
 from .security import (
-    is_within,
     require_within_workspace,
     resolve_project_path,
     resolve_source_files,
@@ -26,7 +25,7 @@ from .security import (
 from .vcd import match_signals, parse_vcd, timescale_fs, value_at
 from .verilog import strip_comments, width_info, parse_module_parameters
 from .tb_dut import parameter_overrides
-from .verilog_ast import is_plain_net, net_width, parse_module, parse_modules, port_map, width_of
+from .verilog_ast import is_plain_net, net_width, parse_module, parse_modules, width_of
 
 REL = tools._rel
 

@@ -19,7 +19,6 @@ def _add(issues: list[dict[str, Any]], rule: str, module: str, message: str, **e
 def check_module(module: dict[str, Any], known: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     name = module["name"]
-    ports = port_map(module)
     drivers: dict[str, list[dict[str, Any]]] = {}
     consumers: dict[str, list[dict[str, Any]]] = {}
 

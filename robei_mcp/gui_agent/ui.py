@@ -556,7 +556,7 @@ def menu_headers(dlg) -> dict:
 # --------------------------------------------------------------------------
 def click_menu(dlg, title: str, item: str, attempts: int = 3) -> dict:
     """Open a top menu and click one of its entries. Returns a small report."""
-    from pywinauto import keyboard, mouse
+    from pywinauto import keyboard
 
     headers = menu_headers(dlg)
     if title not in headers:
@@ -671,7 +671,7 @@ def _open_dialog_controls(win: dict) -> list[dict]:
 
 def select_file_in_dialog(path: str) -> dict:
     """Type an absolute path into the native Open dialog and confirm it."""
-    from pywinauto import keyboard, mouse
+    from pywinauto import keyboard
 
     dialog = _wait_dialog()
     if dialog is None:
@@ -1176,7 +1176,6 @@ def wave_load(signals: list[str] | None = None, max_signals: int = 12) -> dict:
     Robei fills ``SignalTree.WaveTree`` from the last ``build/<model>.vcd``; each
     single click on a signal row adds it to ``WaveViewer.SignalTable``.
     """
-    from pywinauto import mouse
 
     def attach_retry(tries: int = 6, delay: float = 1.0):
         for _ in range(tries):
@@ -1265,7 +1264,6 @@ def refresh() -> dict:
     dlg, win = main_window()
     if dlg is None:
         return {"ok": False, "error": "Robei is not running"}
-    before = read_output(dlg)
     click = click_menu(dlg, "Build", "Refresh")
     time.sleep(1.5)
     after = read_output(dlg)
@@ -1304,7 +1302,6 @@ def _design_tab_item(dlg, label: str):
 
 def _code_editor(dlg, activate: bool = True):
     """Switch to the canvas 'Code' tab and return its CodeEditor element."""
-    from pywinauto import mouse
 
     if activate:
         tab = _design_tab_item(dlg, "code")
@@ -1338,7 +1335,7 @@ def code_read() -> dict:
 
 def code_write(code: str, save: bool = True) -> dict:
     """Replace the Code tab text of the active model, then save with Ctrl+S."""
-    from pywinauto import keyboard, mouse
+    from pywinauto import keyboard
 
     dlg, win = main_window()
     if dlg is None:
@@ -1417,7 +1414,7 @@ def _tree_state(item) -> int | None:
 def _expand_tree_item(item) -> int | None:
     """Expand a folder. Qt's tree ignores the UIA ExpandCollapse pattern here,
     but a click plus the RIGHT arrow works."""
-    from pywinauto import keyboard, mouse
+    from pywinauto import keyboard
 
     rect = _rect(item.element_info.rectangle)
     _click(_center(rect))
@@ -1446,7 +1443,6 @@ def _tree_entries(tree) -> list[dict]:
 
 def open_model(name: str) -> dict:
     """Expand the Files tree and double-click a model entry."""
-    from pywinauto import mouse
 
     dlg, win = main_window()
     if dlg is None:
