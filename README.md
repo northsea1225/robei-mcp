@@ -1,184 +1,106 @@
 # Robei MCP Server
 
-> An MCP server that turns Robei EDA into AI-callable tools: Verilog lint, simulation,
-> waveform analysis, project XML, and optional GUI automation. Docs are in Chinese.
+[![CI](https://github.com/northsea1225/robei-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/northsea1225/robei-mcp/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/northsea1225/robei-mcp)](https://github.com/northsea1225/robei-mcp/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
+![MCP](https://img.shields.io/badge/MCP-stdio-informational)
 
-**状态：1.12.0**（54 个工具，GUI=0 时 42 个）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
+**中文** | [English](#english)
+
+让 AI 助手（Codex、Claude Code 等任何 MCP 客户端）直接操作 [Robei EDA](http://www.robei.com/) 工程：
+读写 `.model` / `.proj`、Verilog 检查与仿真、自动生成语义测试台、波形分析、实验报告，
+以及综合 → 布线 → 打包 `.bit` 的 FPGA 流程（下载只生成 dry-run 计划，不碰真机）。
+
+> **54 个工具**：42 个文件级工具（只需 `iverilog` / `vvp` / `yosys`，Linux / macOS / Windows 均可）
+> + 12 个可选 GUI 工具（仅 Windows，需 `[gui]` 额外依赖和 Robei 本体）。
+
+## 30 秒快速开始
+
+```bash
+# 1. 安装：克隆源码（或从 Releases 下载 wheel 后 pip install 该文件）
+git clone https://github.com/northsea1225/robei-mcp && cd robei-mcp
+pip install -e .                    # 仅 Windows 且要 GUI 工具时用 pip install -e ".[gui]"
+
+# 2. 准备工具链：iverilog、vvp、yosys 在 PATH 中即可（Robei 自带的也行）
+
+# 3. 在 MCP 客户端里登记（以 Claude Code 为例）
+claude mcp add --scope user robei -- python -m robei_mcp   # 需在上面的 Python 环境里执行
+
+# 4. 自检：让助手调用 runtime_status / robei_doctor，看到 ok=true 即可
+```
+
+Codex 配置、Windows 路径、通过 SSH 使用远端 stdio 等完整配置见 [安装与客户端配置](#安装与客户端配置)。
+试一试（路径相对 `workspace/`，不要再写 `workspace/` 前缀）：
+
+```text
+lint_verilog(["counter4/counter4.v"], top="counter4")
+simulate(["counter4/counter4.v", "counter4/counter4_tb.v"], top="counter4_tb")
+read_waveform(<vcd_path>, signals=["counter4_tb.dut.count"], time=45)
+```
+
+## 能力一览
+
+| 能力 | 代表工具 | 需要 Robei | 需要桌面 |
+|---|---|:-:|:-:|
+| Verilog 检查 / 仿真 / 综合资源 | `lint_verilog` `simulate` `simulate_project` `run_all_tests` `synthesize_project` | 否 | 否 |
+| 波形分析 | `read_waveform` `compare_waveforms` `find_events` `expect_waveform` `render_waveform` | 否 | 否 |
+| 工程 / 模型读写（`.proj` `.model`） | `read_robei_project` `create_robei_project` `edit_robei_canvas` `set_robei_code` `set_robei_parameter` | 否 | 否 |
+| 语义测试台（表达式白名单，不用 `eval`） | `create_testbench` `generate_testbench` `truth_table` | 否 | 否 |
+| 实验报告（Markdown + evidence.jsonl） | `build_report` | 否 | 否 |
+| FPGA（综合 / 布线 / 打包 / Download dry-run） | `list_fpga_devices` `build_bitstream` `create_robei_const` `export_robei_xdc` | 否（需 FPGA 工具链） | 否 |
+| Robei GUI 自动化（可选） | `robei_gui_open_model` `robei_gui_synthesis` `robei_gui_screenshot` `gui_doctor` | 是 | 是（Windows） |
+
+完整参数、返回值与示例：[docs/tool-reference.md](docs/tool-reference.md)。
+
+## 安全边界
+
+| 保证 | 说明 |
+|---|---|
+| 不执行任意 shell | 只调用固定白名单的 `iverilog` / `vvp` / `yosys` 等程序，`shell=False`，无 `eval`/`exec` |
+| 不改 Robei 安装目录、不写注册表 | 安装目录只读；所有产物写在 `workspace/` |
+| 子进程受控 | 子进程有超时；XML 解析拒绝 DOCTYPE/ENTITY |
+| 路径白名单 | 读写路径必须落在 workspace / 允许的模型根内；仿真前对 `$fopen` `$readmemh` `` `include `` 等做静态路径扫描，相对路径按仿真运行目录（真实 cwd）解析 |
+| 不接触真机 | `build_bitstream` 的 Download 恒为 dry-run，`dry_run=false` 无条件拒绝 |
+| 可回滚 | 每次运行独立目录；默认不覆盖已有文件；改模型前先备份 |
+
+> 语义自检失败时进程返回码仍为 0，请只看返回值里的 `ok` / `run.code`。
 
 > **升级注意（1.0.2 起）**：`simulate` 默认开启**严格路径扫描**。像
 > `$readmemh(PATH, mem)` 这种无法静态判定路径的写法，以前能跑，现在会直接返回
 > `stage="security_scan"` 并拒绝编译。确实需要动态路径时设
 > `ROBEI_MCP_STRICT_PATHS=0`（或在 `robei.toml` 里写 `[security] strict_path_scan = false`）。
 
-把 Robei EDA 变成 AI 能直接调用的工具集：Verilog 检查、仿真、波形、工程文件读写，
-以及（可选）驱动 Robei 本体 GUI。基于 MCP（Model Context Protocol）stdio 传输，
-可在 Codex / Claude Code 里直接用自然语言完成「写代码 → 检查 → 仿真 → 看波形」。
+## 版本记录
 
-- **54 个工具**，其中 42 个不需要 Robei、不需要桌面：只要有 `iverilog`/`vvp`/`yosys` 就能跑。
-- **不碰安装目录**：`E:\Robei` 全程只读，所有产物写在 `workspace/`。
-- **可回滚**：每次运行独立目录，默认不覆盖已有文件，改模型前先备份。
-- **不执行任意 shell**：固定工具白名单 + `shell=False` + 路径白名单。
-- **元件库直接用**：`list_library_models` 扫 Robei 自带 24 个 ToolBox 模型并逐个跑
-  `iverilog -g2012`；`import_library_model` 一键复制进工程、登记 `.proj`、再 lint 一次。
-- **FPGA 直出 .bit**：`synthesize_project` 跑 yosys `synth_xilinx` 给资源用量，
-  `build_bitstream` 接着走 Roplace → fasm2frames → xc7frames2bit，全程不打开 IDE；
-  器件有没有 chipdb、引脚绑没绑全都会在动手前告诉你。
-- **画布可增量改**：`edit_robei_canvas` 用 `add_instance` / `connect` / `rename_wire` 这组
-  操作改画布，整批校验通过才落盘；`set_robei_code` / `set_robei_parameter` 改行为与参数。
+当前版本 **1.12.0**，完整变更与各版本说明见 [CHANGELOG.md](CHANGELOG.md)。
 
-## 1.12.0（2026-11-03）：FPGA 产物与 Download dry-run
+<a name="english"></a>
+## English
 
-沿用现有工具，不增加工具数：`gui_doctor` → `robei_doctor(fpga=true, part=...)` →
-`build_bitstream(steps=["synth","route","package","download"], dry_run=true)`。
+An MCP (stdio) server that lets AI assistants drive **Robei EDA** projects: read/write `.model`/`.proj`,
+lint & simulate Verilog (Icarus), generate semantic testbenches, analyse VCD waveforms, build lab reports,
+and run the yosys → place/route → bitstream flow (Download is dry-run only; no hardware is touched).
+54 tools — 42 portable file-level tools (need only `iverilog`/`vvp`/`yosys`) + 12 optional Windows GUI tools.
+The detailed docs are in Chinese; tool names and JSON fields are in English.
 
-- **Route/Package 真实执行**，产物和逐阶段记录保存在 QA 工程 `build/`，给出路径、大小、SHA256。
-  旧产物先备份并移开，rc=0 但没有生成非空文件也算失败；工具链缺失返回 doctor 诊断。
-- **dry_run 只修饰 Download，不修饰综合/布线/打包。** Download 只检查 bit 文件头、长度、器件、同步字与哈希，并生成白名单命令计划。
-  不运行 openFPGALoader（包括探测命令），不装驱动、不使用 zadig、不接触板卡。
-- `dry_run=false` 无条件拒绝；本迭代没有 board/cable/serial 真机执行入口，也不测试真机路径。
-  `download.executed=false`、`hardware_verified=false`、`returncode=null` 不得解读成下载成功。
-- Download **未在真机验证**，bit 校验不是配置 CRC/时序签核；Roplace Fmax 仍仅供参考。
-- **Lab 2 exp6 原始引脚表与本机 chipdb 不匹配**（`M14` 不在 `xc7a50tfgg484-1` 里），Route 如实失败；
-  同一设计换 QA 引脚后全链路通过，Lab 2 工程未改动。
-- `gui_doctor(allow_battery=true)`：只在电量 ≥ 20% 时把"必须接交流电"降级为 warning，
-  结果带 `power={on_battery, allowed_by, charge_percent}`；默认仍是接电才放行，
-  低于 20% 或读不到电量依旧拒绝（`battery_too_low` / `battery_charge_unknown`）。
-
-包版本 **1.12.0**。未发布变更不代表推送、tag 或 Release。
-
-## 1.11.0（2026-11-03）：有界 sweep 与自检语义
-
-- `create_testbench(parameters=..., sweep=...)` 支持显式参数分组，生成 `<name>_s1`、`_s2` 等独立 TB；
-  每组返回参数、SELFTEST 与真实 rc，`build_report(testbench_results=[sweep_result])` 汇总。
-- 扫描最多 16 组、合计 8192 个向量/事件/断言，全部源码合计不超过 `max_source_bytes`；数组参数和隐式笛卡尔积拒绝。
-  每组可提供自己的 vectors；公共整数覆盖使用 Verilog 实例参数，不改 `.model`。
-- `truth_table` 解析参数默认值/整数覆盖，宽输入可传有限 `vectors` 导出**抽样表**；
-  `mode=sampled, exhaustive=false` 不得写成全穷举通过。exp7 的 N=4/8 验收脚本在 `tests/acceptance_1_11.py`。
-- `simulate`、`simulate_project`、`run_all_tests`、语义 TB、报告遇到 SELFTEST FAIL 统一 `ok=false`、`run.code=selftest_failed`；
-  **进程 rc 保持 0 不变**（已定策略：语义失败只看 `ok`/`run.code`，进程 rc 不作为判定依据）。`build_report.report_written=true` 只说明报告已写出。
-- 新增 MIT [100111 序列检测器夹具](examples/seqdet/README.md)，保留上游原文、许可和提交；只修副本的组合默认赋值，测试含 X/Z 与原版负对照。
-- `runtime_status` 的 `restart_required/restart_guidance` 明确提示重连并复核，不自动杀进程；`simulate.rejected` 镜像保持兼容。
-
-包版本 **1.11.0**，工具数 **54/42**。
-
-## 1.7 实验闭环与报告
-
-- `build_report` 输出事实型 Markdown 与 evidence.jsonl，支持选择 test/章节、truth_map 和运行复用。
-- `export_vcd_window` 按原始 VCD tick 导出 CSV/Markdown；综合工具增加容量、百分比与来源字段。
-- M5 Lab 2 六个工程、7 个 test 真实仿真均 rc=0；缺失值写“未提供”，证据引用已逐项核对。
-  tb_alu8 的真值表因 20 位输入超过上限 8 局部降级，两个 ALU test 均正常进入报告。
-- 完整签名、路径/覆盖边界及超时参数说明见 [工具参考](docs/tool-reference.md)。
-
-## 1.9 语义化测试台
-
-`create_testbench` 从工程 `.model` 读取端口位宽，生成并注册 `test/<name>.test`。组合模式使用写死期望值和 `===` 四态比较；timed 模式声明 `clock`、`reset`、`stimuli` 和 `assertions`，支持 `after_edge`，同一时刻按 drive → settle → sample。
-
-```text
-create_testbench(
-  proj_path="exp1_and/exp1_and.proj",
-  name="tb_and_semantic",
-  model_path="exp1_and/model/and2.model",
-  mode="combinational",
-  vectors=[
-    {"drive": {"a": 0, "b": 0}, "expect": {"y": 0}},
-    {"drive": {"a": 1, "b": 1}, "expect": {"y": 1}},
-  ],
-  run=true,
-)
-```
-
-组合输入默认上限 12 bit、4096 个向量；宽 DUT 的有限 vectors 可显式传 `allow_wide_vectors=true`，不自动穷举；timed 仿真最长 1 ms。`run=true` 复用 `run_all_tests`，生成的自检日志出现 `SELFTEST FAIL` 时返回 `ok=false, run.code=selftest_failed`；顶层 `code` 仍是生成的源码。`build_report(testbench_results=[...])` 可引用向量数、PASS/FAIL 和运行目录；字段缺失时写“未提供”。
-
-### 1.10：exp2 双 DUT 与表达式期望值
-
-先把 exp2 工程复制到 `workspace/_qa_runs/m3_110/exp2_mux/`，不要修改 Lab 2 原工程。
-以下例子只取两组输入；完整穷举是 8 个向量：
-
-```json
-{
-  "proj_path":"_qa_runs/m3_110/exp2_mux/exp2_mux.proj",
-  "name":"tb_mux_multi",
-  "duts":[
-    {"instance":"u_bh","model_path":"_qa_runs/m3_110/exp2_mux/model/mux2_bh.model",
-     "connections":{"a":"a","b":"b","sel":"sel","y":"y_bh"}},
-    {"instance":"u_st","model_path":"_qa_runs/m3_110/exp2_mux/model/mux2_st.model",
-     "connections":{"a":"a","b":"b","sel":"sel","y":"y_st"}}
-  ],
-  "vectors":[
-    {"drive":{"a":0,"b":1,"sel":0},"expect":{"u_bh.y":"sel ? b : a","u_st.y":"sel ? b : a"}},
-    {"drive":{"a":0,"b":1,"sel":1},"expect":{"u_bh.y":"sel ? b : a","u_st.y":"sel ? b : a"}}
-  ],
-  "comparisons":[{"left":"u_bh.y","right":"u_st.y"}],
-  "run":true
-}
-```
-
-`model_path` 与 `duts` 二选一。表达式经 Pratt 白名单解析，不能调用函数、访问层次名或执行 Python；
-内联表达式先赋给输出宽度的临时 reg，再用四态比较检查。`?:` 遇到 X/Z 时保留 Verilog 逐位合并语义。
-`semantic` 返回 `duts`、`comparison_count`、`expression_count`。
-多 DUT 报告用 `truth_map[test].instances` 区分实例，缺项写“未提供”；单 DUT 旧报告保持不变。
-完整白名单、上限与错误码见 [工具参考](docs/tool-reference.md#create_testbench)。版本号为 1.12.0，工具数仍是 54/42。
-
-语义 TB 可用模型根参数默认值解析 `N-1:0`，无法静态解析的位宽仍拒绝，不猜测。
-exp7 QA 使用 Robei 官方[带符号位小数加法规格](http://www.robei.com/lessons/Robei_singed_float_add.pdf)
-独立重写的原码组合加法器，非课程原题；官方资料 © Robei、无已知开源许可，仓库不转载 PDF 或其源码。
-
-## 1.6 根参数与服务生命周期
-
-### 根参数与位宽联动
-
-`set_robei_parameter` 仍是同一个工具，`action` 默认为 `set`，支持 `set`、`add`、
-`rename`、`delete`；`rename_in_parents=true` 只对 `rename` 生效，并把同工程直接父模型
-（不递归祖父模型）的实例覆盖同步改名。参数名必须是合法 Verilog 标识符，参数值可以是
-整数或引用本模型已声明参数的白名单表达式。
-
-lab16 的最小顺序示例：
-
-```text
-1. set_robei_parameter(action="add", name="LEN", value=4)
-2. set_robei_port(name="a", direction="input", width="LEN")
-3. set_robei_parameter(name="LEN", value=8, dry_run=true)
-   -> affected_ports[].effective_width=8
-   -> warnings[].code=parent_width_conflict, instance=top.u1, overridden=false
-4. edit_robei_canvas(op="set_parameters", instance="u1", parameters={"LEN": 4})
-   -> 再次评估时 warning.overridden=true
-5. set_robei_parameter(action="rename", name="LEN", new_name="WIDTH",
-   rename_in_parents=true, dry_run=true)
-   -> 先看 parent_updates，再提交事务
-```
-
-改名会同步本模型端口/wire 的 `Datasize` 和参数表达式；删除前会检查本模型与父实例覆盖的
-引用。dry-run 不写盘，真正的跨文件改名逐文件留 `.bak`，失败会回滚。
-
-### H1 lifecycle / health
-
-服务生命周期日志写入 `%LOCALAPPDATA%\robei-mcp\lifecycle.log`，不污染 stdout。
-`mcp_health.sh` 的 server 身份需同时满足命令行含 `robei_mcp/server`（也认 `\` 和
-`robei_mcp.server`，大小写不敏感），并满足以下任一身份规则：
-
-1. server 的 `ExecutablePath` 位于 `C:\dev\robei-mcp\.venv`；
-2. 父进程的 `ExecutablePath` 是 `.venv\Scripts\python.exe`，且 server 命令行含 server 标记；
-3. server 的 `start.sys_prefix` 指向 `.venv`，且命令行含 server 标记。
-
-已接受的边界：正常退出和 SSH 断开都记为 `stdin_closed`，health 统一显示“客户端断开”；
-外层 cmd 与 Python 同时被强杀且没有 `exit` 事件时，health 显示“未观察到终止”。
-
-## 快速开始
+## 安装与客户端配置
 
 ### 1. 前置条件
 
 | 需要 | 说明 |
 |---|---|
-| Python 3.10+ | 开发机用 3.12.10 |
-| Robei EDA | 自带 `iverilog` / `vvp` / `yosys`；也可用独立安装的 Icarus |
+| Python 3.10+ | 开发与 CI 使用 3.12 |
+| `iverilog` / `vvp` / `yosys` | Robei 自带；也可用独立安装的 Icarus + yosys（Linux/macOS 用包管理器装即可） |
+| Robei EDA | 仅 Robei 相关能力（FPGA 器件库、GUI 工具）需要 |
 | （可选）Verilator | `--lint-only` 那一路，缺了会自动跳过 |
 | （可选）Windows 交互桌面 | 只有 12 个 GUI 工具需要 |
 
 ### 2. 安装
 
 ```powershell
-git clone <REPO_URL> C:\dev\robei-mcp
-cd C:\dev\robei-mcp
+git clone https://github.com/northsea1225/robei-mcp
+cd robei-mcp
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
@@ -186,8 +108,8 @@ python -m venv .venv
 或者用自带引导脚本（只补缺的，幂等，可先 `--check` 只看不动）：
 
 ```powershell
-python C:\dev\robei-mcp\tools\setup.py --check
-python C:\dev\robei-mcp\tools\setup.py --apply
+python tools\setup.py --check
+python tools\setup.py --apply
 ```
 
 依赖只有两个：`mcp==2.3.0`、`matplotlib`（画波形 PNG 用）。
@@ -215,12 +137,12 @@ python C:\dev\robei-mcp\tools\setup.py --apply
 
 ### 4. 接到客户端
 
-**Windows 本地 Codex**（`~/.codex/config.toml`）：
+**Windows 本地 Codex**（`~/.codex/config.toml`；`<repo>` 换成你的克隆目录）：
 
 ```toml
 [mcp_servers.robei]
-command = 'C:\dev\robei-mcp\.venv\Scripts\python.exe'
-args = ['C:\dev\robei-mcp\server.py']
+command = '<repo>\.venv\Scripts\python.exe'
+args = ['<repo>\server.py']
 startup_timeout_sec = 20
 tool_timeout_sec = 120
 ```
@@ -228,15 +150,15 @@ tool_timeout_sec = 120
 **Windows 本地 Claude Code**：
 
 ```powershell
-claude mcp add --scope user robei -- "C:\dev\robei-mcp\.venv\Scripts\python.exe" "C:\dev\robei-mcp\server.py"
+claude mcp add --scope user robei -- "<repo>\.venv\Scripts\python.exe" "<repo>\server.py"
 ```
 
-**Mac 通过 SSH 用远端 stdio**（不需要在 Windows 上开端口）：
+**通过 SSH 使用远端 stdio**（例如 Mac 连 Windows；不需要在 Windows 上开端口，`<windows-host>` 为 ssh 主机别名）：
 
 ```toml
 [mcp_servers.robei_remote]
 command = "ssh"
-args = ["my-win", "MSYS_NO_PATHCONV=1 /c/Windows/System32/cmd.exe /d /c C:/dev/robei-mcp/run-mcp.cmd"]
+args = ["<windows-host>", "MSYS_NO_PATHCONV=1 /c/Windows/System32/cmd.exe /d /c <repo>/run-mcp.cmd"]
 startup_timeout_sec = 30
 tool_timeout_sec = 120
 ```
@@ -244,7 +166,7 @@ tool_timeout_sec = 120
 `run-mcp.cmd` 切 UTF-8、`cd` 到仓库，由轻量等待进程以 `-m robei_mcp.server` 启动服务并记录开始/退出。
 等待进程不自动重启服务，生命周期日志只写文件，stdout 仍只留给 JSON-RPC。
 
-> Codex 的 app-server 是长驻进程，改完配置要重启会话/应用；`codex mcp list` 只说明配置存在。
+> MCP 客户端通常是长驻进程，改完配置要重启会话/应用；`codex mcp list` 之类的命令只说明配置存在。
 
 ### 5. 三十秒验证
 
@@ -280,7 +202,7 @@ read_waveform(<上一步的 vcd_path>, signals=["counter4_tb.dut.count"], time=4
 | `ROBEI_MCP_GUI` | `0` 强制关闭 GUI 面（工具从 `tools/list` 消失，只剩 42 个） |
 | `ROBEI_MCP_STRICT_PATHS` | 默认 `1`：源码扫描遇到无法静态判定的路径（`$readmemh(PATH)`）直接拒绝；设 `0` 退回只记录 `unresolved` |
 | `ROBEI_DEFAULT_TIMEOUT_S` / `ROBEI_MAX_TIMEOUT_S` | 子进程超时，默认 30 / 120 秒；大器件跑 Roplace 时把上限调大 |
-| `ROBEI_FPGA_DB` | 器件库根目录，默认 `C:\ProgramData\Robei\xilinx`（里面要有 `chipdb/` 与 `<family>/<part>/part.yaml`） |
+| `ROBEI_FPGA_DB` | 器件库根目录，默认 `%ProgramData%\Robei\xilinx`（里面要有 `chipdb/` 与 `<family>/<part>/part.yaml`） |
 | `ROBEI_FPGA_BIN` | `Roplace.exe` / `fasm2frames.exe` / `xc7frames2bit.exe` 所在目录，默认 `%ROBEI_HOME%\bin` |
 
 `robei.toml` 里对应的一节：
@@ -318,8 +240,8 @@ strict_path_scan = true
 所以这些工具通过一个计划任务 `RobeiMCP_GuiAgent` 把请求投递到登录用户所在的 Session 1。
 
 ```powershell
-python C:\dev\robei-mcp\tools\gui\register_task.py            # 创建/刷新任务
-python C:\dev\robei-mcp\tools\gui\register_task.py --remove   # 删除
+python tools\gui\register_task.py            # 创建/刷新任务
+python tools\gui\register_task.py --remove   # 删除
 ```
 
 三个要知道的事实：
@@ -331,10 +253,10 @@ python C:\dev\robei-mcp\tools\gui\register_task.py --remove   # 删除
    不会"调用了才报错"。`ROBEI_MCP_GUI=0` 可以手动关掉。
 3. 细节、限制和历史坑见 [docs/gui-tools.md](docs/gui-tools.md)。
 
-## 安全边界
+## 安全边界（详细）
 
 - 固定工具白名单，`shell=False`，不执行任意命令。
-- 源码路径必须在 `workspace/` 内；模型读取只允许 `model_roots` 里的目录（默认 `C:\ProgramData\Robei` + 工作区）。
+- 源码路径必须在 `workspace/` 内；相对路径（`$fopen`、`$readmemh`、`$dump*`、`` `include `` 里的相对写法）按**仿真运行目录**这一真实 cwd 解析，越出 workspace/运行目录同样拒绝；模型读取只允许 `model_roots` 里的目录（默认 Robei 的 `%ProgramData%\Robei` + 工作区）。
 - 每次运行独立目录 `build/<kind>-<timestamp>-<uuid>`，不覆盖旧文件；改模型前自动备份，
   备份名带微秒+序号，**同一秒内的两次修改不会互相覆盖**。
 - `simulate` 编译前静态扫描 `` `include `` / `$fopen` / `$readmemh` / `$writememh` / `$dumpfile`：
@@ -345,8 +267,8 @@ python C:\dev\robei-mcp\tools\gui\register_task.py --remove   # 删除
   确实需要动态路径时显式设 `ROBEI_MCP_STRICT_PATHS=0`，此时它们只进 `unresolved`。
 - 这条静态扫描是**工具链输入检查**，不是 OS 沙箱：它约束的是"我的编译器去读哪个文件"，
   不限制同机其他进程。
-- 子进程有超时（默认 30s，上限 120s）、输出有长度上限、`TMP/TEMP` 指向运行目录。
-- `E:\Robei` 只读；不写系统设置、不写注册表。
+- 子进程有超时（默认 30s，上限 120s）、`TMP/TEMP` 指向运行目录；XML 解析拒绝 DOCTYPE/ENTITY。
+- Robei 安装目录只读；不写系统设置、不写注册表。
 
 ## 已知限制（摘要）
 
@@ -376,7 +298,7 @@ python C:\dev\robei-mcp\tools\gui\register_task.py --remove   # 删除
 
 **看到 `Transport closed`，先查什么？**
 
-Mac 上先运行 `bash tools/mcp_health.sh`：通过 `ssh my-win` 只读显示最近 20 条生命周期事件、
+远端（SSH）使用时先在本机运行 `bash tools/mcp_health.sh`：通过 ssh 只读显示最近 20 条生命周期事件、
 `CIM` 读取进程身份（ExecutablePath + CommandLine），最后给出 `alive` / `stale_pid` / `exited:<原因>` / `never_started`。
 日志为 `%LOCALAPPDATA%\robei-mcp\lifecycle.log`（JSON Lines，UTC 时间），超过 1 MB 轮转，
 只保留 `.1` 一份；`.lock` 是写入互斥锁文件。`runtime_status.lifecycle` 返回日志路径、最近 5 条、
@@ -411,17 +333,19 @@ GUI 工具），UIA 拿不到桌面就会报 `Errno 22`。**不要在嵌套 stdi
 | [docs/coverage-roadmap.md](docs/coverage-roadmap.md) | Robei 能力覆盖矩阵、缺口清单与补齐路线（含未接的 Route/Package/Download） |
 | [docs/repo-layout.md](docs/repo-layout.md) | 仓库结构 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本变更 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 参与开发、测试约定 |
+| [SECURITY.md](SECURITY.md) | 安全问题报告方式 |
 
 ## 测试
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q            # 单元测试（不需要 Robei）
+.\.venv\Scripts\python.exe -m pytest -q            # 全量（Windows + Robei 环境）
 .\.venv\Scripts\python.exe -m pytest tests\test_regressions.py -q   # 1.0.2 的解析/波形/安全回归
 .\.venv\Scripts\python.exe tests\stage3_cases.py   # 核心：警告/语法错误/超时/残留进程
 .\.venv\Scripts\python.exe tests\stage21_packaging.py   # 打包与 GUI 可选面
 ```
 
-各 stage 脚本对应一个功能域，能单独跑，需要 GUI 的会自己启动/关闭 Robei。
+各 stage 脚本对应一个功能域，能单独跑，需要 GUI 的会自己启动/关闭 Robei。pytest 标记说明见 `pyproject.toml`。
 
 ## License
 
