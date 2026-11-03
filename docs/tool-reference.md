@@ -526,6 +526,14 @@ set_robei_parameter(action="rename", name="LEN", new_name="WIDTH",
 
 ### `create_testbench`
 
+```text
+create_testbench(proj_path, name, model_path=None, vectors=None,
+                 timescale="1ns/1ps", overwrite=False, run=False,
+                 mode="combinational", clock=None, reset=None,
+                 stimuli=None, assertions=None, allow_wide_vectors=False,
+                 duts=None, comparisons=None)
+```
+
 ```json
 {
   "proj_path": "_qa_runs/m3_exp6/exp6_counter.proj",
@@ -543,18 +551,67 @@ set_robei_parameter(action="rename", name="LEN", new_name="WIDTH",
 生成并注册 `test/<name>.test`，复用 `create_robei_test` 的备份和 overwrite 规则；输入源
 `.model` 只读。`mode` 有两种：
 
-- `combinational`：`vectors=[{"drive": {...}, "expect": {...}}]`，期望值必须是整数或
-  0/1/x/z 字面量，使用四态 `===` 比较。
+- `combinational`：`vectors=[{"drive": {...}, "expect": {...}}]`，期望值接受整数、
+  0/1/x/z 字面量以及下述安全表达式；`drive` 仍只接受字面量。每个向量必须驱动所有外部输入并检查所有 DUT 输出。
 - `timed`：支持 `clock{signal,period,edge}`、`reset{signal,active,at,duration}`、
   `stimuli[{at,drive}]` 和 `assertions[{at,expect}]`。边沿相对断言写成
   `{"after_edge": N, "expect": {...}}`；同一时刻按 drive → 一个 timescale 单位的 settle → sample。
 
 时间 `at` 只按声明的 `timescale` 解释，不做隐式单位换算。整段仿真最长 1 ms；组合模式默认最多
 12 个输入 bit / 4096 个 vectors，超限返回 `code=limit_exceeded`。对 exp5 这类宽 DUT，有限
-literal vectors 可显式传 `allow_wide_vectors=true`；仍受 4096 vectors 上限约束，不做穷举。
+vectors（字面量或安全表达式）可显式传 `allow_wide_vectors=true`；仍受 4096 vectors 上限约束，不自动穷举。
 参数化端口位宽无法解析时返回 `invalid_argument`。默认 `run=false`；传 `run=true` 会调用 `run_all_tests`，若生成的
-PASS/FAIL 汇总出现 `SELFTEST FAIL`，返回 `code=selftest_failed`。生成代码不包含 `module`、
+PASS/FAIL 汇总出现 `SELFTEST FAIL`，返回 `ok=false`、`run.code=selftest_failed`。
+顶层 `code` 仍保存生成的 TB 源码，不会被错误码覆盖。生成代码不包含 `module`、
 `$dumpfile` 或 `$dumpvars`，Robei 外层负责测试模块和 VCD dump。
+
+#### 1.10 安全表达式与位宽
+
+`expect`（也兼容旧的 `expected`）与 timed `assertions[].expect` 按以下顺序判别值：
+0/1/x/z 位字符串 → 十进制非负整数 → 表达式。因此字符串 `"10"` 仍表示二进制 2，而整数 `10` 表示十进制 10；
+旧字面量仍按目标宽度补零，越界拒绝，不会因表达式支持而静默截断字面量。
+
+- 白名单：DUT 输入名、非负十进制整数、二元 `+ - * & | ^ << >> == != < >`、一元 `~`、
+  三元 `?:`、括号、常量位选 `a[3]`/部分选 `a[3:0]`、普通拼接 `{a,b}`。
+- 拒绝一元负号/负字面量、`/ %`、逻辑运算 `! && ||`、复制拼接 `{2{a}}`、动态或越界选择、
+  函数/系统任务调用、层次路径和未声明标识符。输出不能作为期望表达式的输入，signed 端口直接拒绝。
+  多 DUT 时表达式引用的是连接后、可由 TB 驱动的共享输入 net，不是 `u1.a` 这样的层次名字。
+- 使用独立 Pratt AST 白名单解析，**不调用 eval**。Python 只验证语法、标识符和静态位宽，不计算仿真值。
+  表达式中的整数生成至少 32 bit 的显式 unsigned 常量；端口均按 unsigned 处理，不推断 signed。
+- Python AST 的静态宽度不等于赋值上下文的目标宽度。生成器用目标宽度的 `reg [W-1:0]` 接收内联表达式，
+  由 Icarus 按 Verilog 赋值上下文完成扩展/截断，再用 `!==` 判错。算术下溢仍是 unsigned 位运算，不是允许负字面量。
+  `?:` 的条件为 X/Z 时使用 Verilog 逐位合并规则，例如 `1'bx ? 4'b1010 : 4'b1001` 为 `4'b10xx`。
+- 表达式长度最多 2048 字符、AST 最多 128 节点、深度最多 32；表达式/端口宽度最多 4096 bit。
+  位字符串不套用表达式长度限额，但仍受端口位宽及生成源码大小限制。
+- 表达式拒绝返回 `bad_argument`，带 `field`、零起点 `offset`、`reason`、具体 `hint`。
+
+#### 1.10 多 DUT 与比较
+
+`model_path` 和 `duts` 必须二选一。旧单 DUT 调用方式、端口键、返回的源码 `code` 保持兼容。
+多 DUT 的每项为 `{instance, model_path, connections}`，`connections` 把每个模型端口映射到简单 TB net 名：
+
+```json
+{"duts":[
+  {"instance":"u_bh","model_path":"_qa_runs/m3_110/exp2_mux/model/mux2_bh.model",
+   "connections":{"a":"a","b":"b","sel":"sel","y":"y_bh"}},
+  {"instance":"u_st","model_path":"_qa_runs/m3_110/exp2_mux/model/mux2_st.model",
+   "connections":{"a":"a","b":"b","sel":"sel","y":"y_st"}}
+],"comparisons":[{"left":"u_bh.y","right":"u_st.y"}]}
+```
+
+- 多 DUT 的期望目标用 `instance.port`；组合向量和 timed 断言使用同一套引用。
+  也支持完整输出端口的扁平拼接目标，如 `"{u_bh.cout,u_bh.s}":"a+b+cin"`，以 5 bit 承接加法进位。
+  拼接内不能重复检查同一输出。它不是任意 Verilog 左值接口。
+- `comparisons[{left,right}]` 比较两个等宽 DUT 输出，采用四态不等判错；组合模式每个向量检查一次，
+  timed 模式每个断言采样点检查一次。它不替代组合模式要求的完整期望值。
+- `semantic.duts[]` 返回实例、模型、路径和连接；`comparison_count` 是全部采样点实际安排的跨 DUT 比较次数，
+  `expression_count` 是表达式期望值条数。共享外部输入的 bit 只计算一次，工具数仍是 54/42。
+- 路径必须在当前工程 `model/` 内（否则 `path_escape`）；实例名必须合法且唯一；每个端口必须连接，
+  输入共享 net 位宽必须一致，输出禁止多重驱动，未知端口/非法引用返回 `bad_argument`。
+  TB 内部保留名和 `__robei_` 前缀不能用作连接 net 或实例名。
+- 最多 8 个 DUT、128 条端口连接、128 对比较；生成源码受 `max_source_bytes` 限制（默认 2,000,000 bytes，
+  生成器还预留外层 module/dump 包装开销），超出返回 `limit_exceeded`，写文件前拒绝。
+  `not_found`、`already_exists`、未解析参数宽度的 `invalid_argument` 以及仿真错误仍沿用既有规则。
 
 ### `gui_doctor`
 
@@ -1117,7 +1174,8 @@ build_report(proj_path: str, tests: list[str] | None = None,
              out: str | None = None, include: list[str] | None = None,
              truth_map: dict[str, Any] | None = None,
              overwrite: bool = False, timeout_s: int = 60,
-             reuse_existing_runs: bool = False)
+             reuse_existing_runs: bool = False,
+             testbench_results: list[dict[str, Any]] | None = None)
 ```
 
 生成事实型 Markdown 和同名 `.evidence.jsonl`，不生成 HTML，也不推断电路正确性。
@@ -1134,6 +1192,10 @@ build_report(proj_path: str, tests: list[str] | None = None,
 - 真值表默认从 `tb_<top>` 推导 top，并找工程 `verilog/<top>.v` 或 `build/<top>.v`；
   找不到时记“未提供”。`truth_map` 可把 test stem 映射到 top 字符串，或
   `{top, verilog_path?, deps?}` 对象。不是从 testbench 自动推断期望真值表。
+- 1.10 多实例映射写成 `truth_map[test].instances[instance]`，每个值仍是 top 字符串或
+  `{top, verilog_path?, deps?}`。报告及 evidence 用 `test.instance` 区分；显式映射不等于自动验证了实例关系。
+  已知 DUT 未提供对应映射时，该实例写“未提供”；单实例无数据或真值表超限不打断其余实例。
+  路径逃逸等安全拒绝仍会传播，不被降级隐藏。旧单 DUT 的字符串、对象和 `tb_<top>` 默认映射不变。
 - waveform 用首个 VCD 的前 16 个信号生成 PNG。assertions 只筛选 `$display` 中含
   `pass|fail|assert|mismatch|selftest` 的行，不是独立断言判定器。
 - synthesis 调用 `synthesize_project`；本接口没有 `part` 参数，不会据此猜测容量百分比。
@@ -1159,6 +1221,7 @@ build_report(proj_path: str, tests: list[str] | None = None,
 | `report_path/report_relative_path` | Markdown 路径 |
 | `evidence_path/evidence_relative_path` | JSON Lines 证据路径 |
 | `tests[]` | `test, ok, returncode, duration_ms, vcd_paths, reused, display_output, display_truncated, headless`；可能附带 plot 与证据索引 |
+| `testbench[]` | 调用者通过 `testbench_results` 提供的语义事实，包括 mode、向量/断言数、PASS/FAIL、日志；多 DUT 时增加 duts、comparison_count、expression_count 及证据索引 |
 | `sections` | 实际选择的章节 |
 | `missing[]` | `section, test, reason`；超限项还含 evidence 索引 |
 | `warnings[]` | 真值表超限的 test、输入位数、上限、说明及证据索引 |
@@ -1176,8 +1239,23 @@ JSON 返回与 JSONL 仍保留原始可空值，不伪造 rc/耗时。$display/�
 真值表输入超限只降级该 test 的 truth-table 小节，写“未提供（输入 N 位 > 上限 M）”，
 其余 test 和章节继续。返回 `warnings[]`，每项含
 `code="truth_table_input_limit", test, input_bits, max_inputs, message, evidence`；
-`missing[]` 同时记录原因和证据索引。其它非超限异常不被静默隐藏。
+`missing[]` 同时记录原因和证据索引。旧单 DUT 的其它非超限异常仍会传播；显式多实例映射的缺失文件/无效 top
+只降级该实例，返回 `truth_table_unavailable` warning。安全路径拒绝始终传播。
 这不是完整穷举通过；不能把局部降级或 `ok=true` 写成该真值表验收通过。
+
+**1.10 多 DUT 语义事实**：传入 `create_testbench` 的完整返回作为 `testbench_results`，按 `test/name` 匹配。
+`semantic.duts` 含多项、显式 `truth_map.instances`，或新多 DUT 字段不完整时启用附加事实表；
+`duts`/`comparison_count`/`expression_count` 缺失或无效时显示“未提供”，计数 0 保留，报告不中断。
+旧单 DUT（含 `duts` 长度为 1 的现代返回）的表格和 evidence 编号不变。
+
+```text
+build_report(..., testbench_results=[CREATE_TESTBENCH_RESULT],
+  truth_map={"tb_mux_multi":{"instances":{
+    "u_bh":{"top":"mux2_bh"},
+    "u_st":{"top":"mux2_st","deps":["_qa_runs/m3_110/exp2_mux/verilog/andgate.v",
+      "_qa_runs/m3_110/exp2_mux/verilog/notgate.v","_qa_runs/m3_110/exp2_mux/verilog/orgate.v"]}
+  }}})
+```
 
 **M5 Lab 2 验收（2026-10-30）**：六个工程的 7 个 test 使用 reuse_existing_runs=false，
 全部 rc=0，耗时与执行日志一致；6 份报告均无 None/null，102 处引用全部有效，源文件 SHA256 不变。

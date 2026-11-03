@@ -2,6 +2,19 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## 1.10.0 — Unreleased
+
+**安全表达式期望值与多 DUT 语义验证。** 仍在本地开发，包版本暂保持 1.9.0，工具数仍为 54/42。
+
+- `create_testbench` 用独立 Pratt AST 白名单支持组合/timed 表达式期望值，不使用 eval；支持输入名、非负整数、
+  算术/位运算、移位、比较、三元、常量选位和普通拼接，拒绝 signed、函数/层次访问和动态/越界选择。
+- 扩展原工具的 `duts[]` 与 `comparisons[]`，支持共享输入、实例输出引用和完整输出拼接；路径、连线、位宽、
+  多驱动及资源上限在写盘前校验。原 literal/单 DUT 调用兼容，失败码在 `run.code`，不覆盖源码 `code`。
+- `build_report` 汇总多 DUT 的实例列表、比较数、表达式数；新增 `truth_map[test].instances`，每实例独立降级缺失数据，
+  所有新事实附 evidence；旧单 DUT 的 Markdown 与证据编号保持不变。
+- 固化 18 条 Python 静态位宽 / Icarus `$bits` / 实际四态值对照，覆盖上下文截断/扩展、移位、拼接及 X/Z 三元逐位合并。
+- 更新双 DUT exp2 示例、完整语法/上限/错误码与实例级报告说明；未新增工具。
+
 ## 1.9.0 — 2026-10-31
 
 **Session-1 GUI 前置诊断与语义化测试台。**

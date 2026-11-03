@@ -52,7 +52,37 @@ create_testbench(
 )
 ```
 
-组合输入默认上限 12 bit、4096 个向量；宽 DUT 的有限 literal vectors 可显式传 `allow_wide_vectors=true`，仍不能用来穷举；timed 仿真最长 1 ms。`run=true` 复用 `run_all_tests`，生成的自检日志出现 `SELFTEST FAIL` 时返回 `selftest_failed`。`build_report(testbench_results=[...])` 可引用向量数、PASS/FAIL 和运行目录；字段缺失时写“未提供”。
+组合输入默认上限 12 bit、4096 个向量；宽 DUT 的有限 vectors 可显式传 `allow_wide_vectors=true`，不自动穷举；timed 仿真最长 1 ms。`run=true` 复用 `run_all_tests`，生成的自检日志出现 `SELFTEST FAIL` 时返回 `ok=false, run.code=selftest_failed`；顶层 `code` 仍是生成的源码。`build_report(testbench_results=[...])` 可引用向量数、PASS/FAIL 和运行目录；字段缺失时写“未提供”。
+
+### 1.10 开发中：exp2 双 DUT 与表达式期望值
+
+先把 exp2 工程复制到 `workspace/_qa_runs/m3_110/exp2_mux/`，不要修改 Lab 2 原工程。
+以下例子只取两组输入；完整穷举是 8 个向量：
+
+```json
+{
+  "proj_path":"_qa_runs/m3_110/exp2_mux/exp2_mux.proj",
+  "name":"tb_mux_multi",
+  "duts":[
+    {"instance":"u_bh","model_path":"_qa_runs/m3_110/exp2_mux/model/mux2_bh.model",
+     "connections":{"a":"a","b":"b","sel":"sel","y":"y_bh"}},
+    {"instance":"u_st","model_path":"_qa_runs/m3_110/exp2_mux/model/mux2_st.model",
+     "connections":{"a":"a","b":"b","sel":"sel","y":"y_st"}}
+  ],
+  "vectors":[
+    {"drive":{"a":0,"b":1,"sel":0},"expect":{"u_bh.y":"sel ? b : a","u_st.y":"sel ? b : a"}},
+    {"drive":{"a":0,"b":1,"sel":1},"expect":{"u_bh.y":"sel ? b : a","u_st.y":"sel ? b : a"}}
+  ],
+  "comparisons":[{"left":"u_bh.y","right":"u_st.y"}],
+  "run":true
+}
+```
+
+`model_path` 与 `duts` 二选一。表达式经 Pratt 白名单解析，不能调用函数、访问层次名或执行 Python；
+内联表达式先赋给输出宽度的临时 reg，再用四态比较检查。`?:` 遇到 X/Z 时保留 Verilog 逐位合并语义。
+`semantic` 返回 `duts`、`comparison_count`、`expression_count`。
+多 DUT 报告用 `truth_map[test].instances` 区分实例，缺项写“未提供”；单 DUT 旧报告保持不变。
+完整白名单、上限与错误码见 [工具参考](docs/tool-reference.md#create_testbench)。版本号仍为 1.9.0，工具数仍是 54/42。
 
 ## 1.6 根参数与服务生命周期
 
@@ -172,7 +202,7 @@ startup_timeout_sec = 30
 tool_timeout_sec = 120
 ```
 
-`run-mcp.cmd` 切 UTF-8、`cd` 到仓库，由轻量等待进程启动 `server.py` 并记录开始/退出。
+`run-mcp.cmd` 切 UTF-8、`cd` 到仓库，由轻量等待进程以 `-m robei_mcp.server` 启动服务并记录开始/退出。
 等待进程不自动重启服务，生命周期日志只写文件，stdout 仍只留给 JSON-RPC。
 
 > Codex 的 app-server 是长驻进程，改完配置要重启会话/应用；`codex mcp list` 只说明配置存在。
@@ -318,7 +348,7 @@ Mac 上先运行 `bash tools/mcp_health.sh`：通过 `ssh my-win` 只读显示�
 
 常驻的 MCP 服务是客户端启动会话时拉起来的，**不会自动重载**：改完 `robei_mcp/*.py`
 要重开 Codex（或重启这个服务）才会生效。不重开也能确认自己用的是哪份代码——调
-`runtime_status` 看 `git_commit`（当前进程加载的提交）和 `stale`：`stale=true` 表示
+`runtime_status` 看 `git_commit`（当前源码目录的 HEAD）和 `stale`：`stale=true` 表示
 源码比进程新，这时每次工具调用的返回里都会多一条 `warnings` 提醒你重启。
 
 **为什么 GUI 工具在嵌套的 stdio 服务里报 `OSError: Invalid argument`（Errno 22）？**
