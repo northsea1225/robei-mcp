@@ -39,7 +39,7 @@ from .errors import (
     UnknownParameter,
     WidthMismatch,
 )
-from . import lifecycle, runstate, xmlsafe
+from . import lifecycle, runstate, tb_expr, xmlsafe
 from .security import (
     is_within,
     resolve_model_path,
@@ -2362,7 +2362,7 @@ def create_testbench(
     assertions: list[dict[str, Any]] | None = None,
     allow_wide_vectors: bool = False,
 ) -> dict[str, Any]:
-    """Create a bounded literal-vector or timed ``test/*.test`` model."""
+    """Create a bounded literal/expression-vector or timed ``test/*.test`` model."""
     proj = resolve_project_path(proj_path)
     if not is_within(proj, SETTINGS.workspace):
         raise PathEscape(f"project path escapes workspace: {proj}")
@@ -2371,6 +2371,7 @@ def create_testbench(
         raise PathEscape("model_path must be a model in the selected project")
     if mode not in {"combinational", "timed"}:
         raise BadRequest("mode must be combinational or timed", "pass mode='combinational' or mode='timed'")
+    tb_expr.reject_signed_ports(model)
     parsed = parse_robei_model(model)
     ports = parsed.get("ports") or []
     if not ports:
@@ -2392,6 +2393,13 @@ def create_testbench(
     if any(direction not in {"input", "output"} for direction in directions.values()):
         raise BadRequest("inout ports are not supported", "use input/output ports")
     input_bits = sum(widths[port] for port in input_ports)
+    expression_count = 0
+
+    def expectation(value: Any, port: str, field: str) -> tuple[str, bool]:
+        nonlocal expression_count
+        result = tb_expr.expected(value, widths[port], {p: widths[p] for p in input_ports}, field)
+        expression_count += int(result[1])
+        return result
 
     def literal(value: Any, width: int, field: str) -> str:
         if isinstance(value, bool):
@@ -2464,7 +2472,7 @@ def create_testbench(
                 "split the test or reduce the vector count",
                 code="limit_exceeded",
             )
-        assignments: list[tuple[dict[str, str], dict[str, str]]] = []
+        assignments = []
         for index, vector in enumerate(vectors):
             if not isinstance(vector, dict):
                 raise BadRequest(f"vectors[{index}] must be an object", "use {drive:{...}, expect:{...}}")
@@ -2485,11 +2493,13 @@ def create_testbench(
                 raise BadRequest(f"vectors[{index}] is missing outputs: {sorted(set(output_ports) - set(expect))}", "provide an expected value for every DUT output")
             assignments.append((
                 {port: literal(value, widths[port], f"vectors[{index}].drive.{port}") for port, value in drive.items()},
-                {port: literal(value, widths[port], f"vectors[{index}].expect.{port}") for port, value in expect.items()},
+                {port: expectation(value, port, f"vectors[{index}].expect.{port}") for port, value in expect.items()},
             ))
         lines: list[str] = []
         lines.extend(declaration("reg", port) for port in input_ports)
         lines.extend(declaration("wire", port) for port in output_ports)
+        expression_ports = {port for _, expected_values in assignments for port, (_, is_expr) in expected_values.items() if is_expr}
+        lines.extend(f"reg [{widths[port]-1}:0] __robei_expected_{port};" for port in sorted(expression_ports))
         lines.extend(["integer fail, vector;", "", f"{parsed['name']} dut("])
         lines.append(",\n".join(f"  .{port['name']}({port['name']})" for port in ports))
         lines.extend([");", "", "initial begin", "  fail = 0;", "  vector = 0;"])
@@ -2497,8 +2507,14 @@ def create_testbench(
             lines.append("  vector = vector + 1;")
             lines.extend(f"  {port} = {value};" for port, value in drive_literals.items())
             lines.append("  #1;")
-            condition = " && ".join(f"({port} === {value})" for port, value in expect_literals.items())
-            lines.extend([f"  if (!({condition})) begin", "    fail = fail + 1;", '    $display("FAIL vector=%0d", vector);', "  end"])
+            for port, (value, is_expr) in expect_literals.items():
+                if is_expr:
+                    lines.append(f"  __robei_expected_{port} = {value};")
+            mismatch = " || ".join(
+                f"({port} !== __robei_expected_{port})" if is_expr else f"!({port} === {value})"
+                for port, (value, is_expr) in expect_literals.items()
+            )
+            lines.extend([f"  if ({mismatch}) begin", "    fail = fail + 1;", '    $display("FAIL vector=%0d", vector);', "  end"])
         lines.extend([
             f'  if (fail == 0) $display("SELFTEST PASS: {name} %0d/%0d vectors", vector, vector);',
             '  else $display("SELFTEST FAIL: %0d mismatches", fail);',
@@ -2507,7 +2523,8 @@ def create_testbench(
         return finish("\n".join(lines) + "\n", {
             "mode": "combinational", "dut": parsed["name"], "model_path": str(model),
             "input_bits": input_bits, "vector_count": len(assignments),
-            "assertion_count": len(assignments) * len(output_ports), "literal_expectations": True,
+            "assertion_count": len(assignments) * len(output_ports), "literal_expectations": expression_count == 0,
+            "expression_count": expression_count,
             "allow_wide_vectors": bool(allow_wide_vectors),
         })
 
@@ -2581,11 +2598,11 @@ def create_testbench(
                     break
         if (at_value is None) == (after is None):
             raise BadRequest(f"assertions[{index}] needs exactly one of at or after_edge", "choose absolute or edge-relative sampling")
-        expected: dict[str, str] = {}
+        expected = {}
         for port, value in item["expect"].items():
             if port not in output_ports:
                 raise BadRequest(f"assertions[{index}] expects non-output port {port!r}", "assert only DUT outputs")
-            expected[port] = literal(value, widths[port], f"assertions[{index}].expect.{port}")
+            expected[port] = expectation(value, port, f"assertions[{index}].expect.{port}")
         if after is not None:
             if isinstance(after, bool) or not isinstance(after, int) or after < 1:
                 raise BadRequest("after_edge must be a positive integer", "use after_edge=1 for the next clock edge")
@@ -2604,6 +2621,9 @@ def create_testbench(
     lines.append(",\n".join(f"  .{port['name']}({port['name']})" for port in ports))
     lines.append(");")
     lines.append("")
+    for index, spec in enumerate(assertion_specs, 1):
+        lines.extend(f"reg [{widths[port]-1}:0] __robei_expected_{index}_{port};"
+                     for port, (_, is_expr) in spec["expect"].items() if is_expr)
     lines.append(f"initial {clock_signal} = 1'b0;")
     lines.append(f"always #{max(1, period // 2)} {clock_signal} = ~{clock_signal};")
     lines.extend(["", "initial begin", "  fail = 0;", "  assertion_count = 0;"])
@@ -2631,10 +2651,16 @@ def create_testbench(
         else:
             lines.append(f"  repeat ({spec['after_edge']}) @( {edge} {clock_signal} );")
         lines.append("  #1;")
-        condition = " && ".join(f"({port} === {value})" for port, value in spec["expect"].items())
+        for port, (value, is_expr) in spec["expect"].items():
+            if is_expr:
+                lines.append(f"  __robei_expected_{index}_{port} = {value};")
+        mismatch = " || ".join(
+            f"({port} !== __robei_expected_{index}_{port})" if is_expr else f"!({port} === {value})"
+            for port, (value, is_expr) in spec["expect"].items()
+        )
         lines.extend([
             "  assertion_count = assertion_count + 1;",
-            f"  if (!({condition})) begin",
+            f"  if ({mismatch}) begin",
             "    fail = fail + 1;",
             f'    $display("FAIL assertion=%0d t=%0t", {index}, $time);',
             "  end",
@@ -2645,7 +2671,8 @@ def create_testbench(
         "timescale": timescale, "duration_ticks": duration_ticks,
         "clock": {"signal": clock_signal, "period": period, "edge": edge},
         "stimuli_count": len(stimuli or []), "assertion_count": len(assertion_specs),
-        "simulation_limit": "1ms", "literal_expectations": True,
+        "simulation_limit": "1ms", "literal_expectations": expression_count == 0,
+        "expression_count": expression_count,
     })
 
 

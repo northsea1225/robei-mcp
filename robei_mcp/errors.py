@@ -23,10 +23,13 @@ class BadRequest(ValueError):
     types", which belongs to genuine type/missing-argument failures.
     """
 
-    def __init__(self, message: str, hint: str, code: str | None = None) -> None:
+    def __init__(self, message: str, hint: str, code: str | None = None, *,
+                 field: str | None = None, offset: int | None = None,
+                 reason: str | None = None) -> None:
         super().__init__(message)
         self.hint = hint
         self.code_override = code
+        self.field, self.offset, self.reason = field, offset, reason
 
 
 class WidthMismatch(ValueError):
@@ -213,6 +216,10 @@ def payload(exc: BaseException, **extra: Any) -> dict[str, Any]:
         "hint": getattr(exc, "hint", None) or HINTS.get(code),
     }
     stage = getattr(exc, "stage", None)
+    for key in ("field", "offset", "reason"):
+        value = getattr(exc, key, None)
+        if value is not None:
+            data[key] = value
     if stage:
         data["stage"] = stage
     missing = getattr(exc, "missing", None)

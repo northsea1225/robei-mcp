@@ -658,7 +658,7 @@ def create_testbench(
     assertions: list[dict[str, Any]] | None = None,
     allow_wide_vectors: bool = False,
 ) -> dict[str, Any]:
-    """Create a bounded combinational or timed test/*.test from literal expectations."""
+    """Create a bounded combinational or timed test/*.test with safe expected expressions."""
     try:
         return tools.create_testbench(
             proj_path=proj_path, name=name, model_path=model_path, vectors=vectors,
