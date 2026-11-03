@@ -1,92 +1,104 @@
+<div align="center">
+
 # Robei MCP Server
+
+**让 AI 助手直接操作 [Robei EDA](http://www.robei.com/) 工程：Verilog 检查与仿真、语义测试台、波形分析、实验报告，以及 yosys → 比特流的 FPGA 流程。**
 
 [![CI](https://github.com/northsea1225/robei-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/northsea1225/robei-mcp/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/northsea1225/robei-mcp)](https://github.com/northsea1225/robei-mcp/releases)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![MCP](https://img.shields.io/badge/MCP-stdio-informational)
 
-**中文** | [English](#english)
+[快速开始](#快速开始) · [工具一览](#工具一览) · [配置](#配置) · [安全边界](#安全边界) · [常见问题](#常见问题与排错) · [文档](#文档) · [English](#english)
 
-让 AI 助手（Codex、Claude Code 等任何 MCP 客户端）直接操作 [Robei EDA](http://www.robei.com/) 工程：
-读写 `.model` / `.proj`、Verilog 检查与仿真、自动生成语义测试台、波形分析、实验报告，
-以及综合 → 布线 → 打包 `.bit` 的 FPGA 流程（下载只生成 dry-run 计划，不碰真机）。
+</div>
 
-> **54 个工具**：42 个文件级工具（只需 `iverilog` / `vvp` / `yosys`，Linux / macOS / Windows 均可）
-> + 12 个可选 GUI 工具（仅 Windows，需 `[gui]` 额外依赖和 Robei 本体）。
+---
 
-## 30 秒快速开始
+## 目录
+
+- [为什么用它](#为什么用它)
+- [快速开始](#快速开始)
+- [安装详解](#安装详解)
+- [工具一览](#工具一览)
+- [配置](#配置)
+- [GUI 部分的前提](#gui-部分的前提)
+- [安全边界](#安全边界)
+- [已知限制](#已知限制)
+- [常见问题与排错](#常见问题与排错)
+- [文档](#文档)
+- [开发与测试](#开发与测试)
+- [参与贡献](#参与贡献)
+- [许可证](#许可证)
+- [English](#english)
+
+## 为什么用它
+
+Codex、Claude Code 等任何 MCP 客户端都可以通过 stdio 连上这个服务，把「写 Verilog → 仿真 → 看波形 → 写报告 → 出比特流」交给 AI 助手一步步做，每一步都有结构化的返回值和证据可查。
+
+- **54 个工具**：42 个文件级工具（只需 `iverilog` / `vvp` / `yosys`，Linux / macOS / Windows 均可）+ 12 个可选 GUI 工具（仅 Windows，需 `[gui]` 额外依赖和 Robei 本体）。
+- **读写 Robei 工程**：`.proj` / `.model` / `.const` 的读取、创建、改端口、改参数、改画布、导出 Verilog，改之前先备份。
+- **检查与仿真**：iverilog `-Wall` + Verilator + Yosys 三路 lint；`simulate` 编译并运行测试台，返回 VCD 路径。
+- **语义测试台**：`create_testbench` 用表达式白名单生成组合 / 时序测试台，不用 `eval`；`truth_table` 穷举真值表。
+- **波形分析**：按时刻取值、找事件、逐信号比对两份 VCD、断言、统计、渲染 PNG、导出时间窗。
+- **实验报告**：`build_report` 生成只含事实的 Markdown 报告和逐行可定位的 `evidence.jsonl`。
+- **FPGA 流程**：`synthesize_project`（资源用量）→ `build_bitstream`（Roplace → fasm2frames → xc7frames2bit，直出 `.bit`）。Download 恒为 dry-run，**不碰真机**。
+- **默认安全**：固定工具白名单、`shell=False`、路径限定在 `workspace/`，详见[安全边界](#安全边界)。
+
+## 快速开始
+
+三步：装好 → 接到客户端 → 调用第一个工具。
+
+### 1. 安装
 
 ```bash
-# 1. 安装：克隆源码（或从 Releases 下载 wheel 后 pip install 该文件）
 git clone https://github.com/northsea1225/robei-mcp && cd robei-mcp
-pip install -e .                    # 仅 Windows 且要 GUI 工具时用 pip install -e ".[gui]"
-
-# 2. 准备工具链：iverilog、vvp、yosys 在 PATH 中即可（Robei 自带的也行）
-
-# 3. 在 MCP 客户端里登记（以 Claude Code 为例）
-claude mcp add --scope user robei -- python -m robei_mcp   # 需在上面的 Python 环境里执行
-
-# 4. 自检：让助手调用 runtime_status / robei_doctor，看到 ok=true 即可
+pip install -e .                 # 仅 Windows 且要 GUI 工具时：pip install -e ".[gui]"
 ```
 
-Codex 配置、Windows 路径、通过 SSH 使用远端 stdio 等完整配置见 [安装与客户端配置](#安装与客户端配置)。
-试一试（路径相对 `workspace/`，不要再写 `workspace/` 前缀）：
+也可以从 [Releases](https://github.com/northsea1225/robei-mcp/releases) 下载 wheel，再 `pip install` 该文件。
+
+工具链：`iverilog`、`vvp`、`yosys` 在 `PATH` 中即可（Robei 自带的也行；Linux / macOS 用包管理器装独立的 Icarus + yosys）。Windows 的虚拟环境、`tools\setup.py` 引导脚本等见[安装详解](#安装详解)。
+
+### 2. 接到 MCP 客户端
+
+**Codex**（`~/.codex/config.toml`；`python` 要换成装了本包的那个解释器）：
+
+```toml
+[mcp_servers.robei]
+command = "python"
+args = ["-m", "robei_mcp"]
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+```
+
+**Claude Code**：
+
+```bash
+claude mcp add --scope user robei -- python -m robei_mcp   # 在装了本包的 Python 环境里执行
+```
+
+装包后也有控制台脚本 `robei-mcp`，与 `python -m robei_mcp` 等价。Windows 本地、通过 SSH 的远端 stdio 等写法见[接到客户端](#4-接到客户端)；`examples/` 下有现成的配置模板。
+
+> MCP 客户端通常是长驻进程，改完配置要重启会话 / 应用。
+
+### 3. 第一次调用
+
+在客户端里让助手依次调用（路径相对 `workspace/`，不要再写 `workspace/` 前缀）：
 
 ```text
+runtime_status                          → ok=true，看各工具链的路径与版本
 lint_verilog(["counter4/counter4.v"], top="counter4")
 simulate(["counter4/counter4.v", "counter4/counter4_tb.v"], top="counter4_tb")
-read_waveform(<vcd_path>, signals=["counter4_tb.dut.count"], time=45)
+read_waveform(<simulate 返回的 vcd_rel_paths[0]>, signals=["counter4_tb.dut.count"], time=45)
 ```
 
-## 能力一览
+`read_waveform` 在 t=45 时返回 `counter4_tb.dut.count` 的值 `0100`（即 4）。缺什么工具，`robei_doctor` 会逐项给出修复提示。
 
-| 能力 | 代表工具 | 需要 Robei | 需要桌面 |
-|---|---|:-:|:-:|
-| Verilog 检查 / 仿真 / 综合资源 | `lint_verilog` `simulate` `simulate_project` `run_all_tests` `synthesize_project` | 否 | 否 |
-| 波形分析 | `read_waveform` `compare_waveforms` `find_events` `expect_waveform` `render_waveform` | 否 | 否 |
-| 工程 / 模型读写（`.proj` `.model`） | `read_robei_project` `create_robei_project` `edit_robei_canvas` `set_robei_code` `set_robei_parameter` | 否 | 否 |
-| 语义测试台（表达式白名单，不用 `eval`） | `create_testbench` `generate_testbench` `truth_table` | 否 | 否 |
-| 实验报告（Markdown + evidence.jsonl） | `build_report` | 否 | 否 |
-| FPGA（综合 / 布线 / 打包 / Download dry-run） | `list_fpga_devices` `build_bitstream` `create_robei_const` `export_robei_xdc` | 否（需 FPGA 工具链） | 否 |
-| Robei GUI 自动化（可选） | `robei_gui_open_model` `robei_gui_synthesis` `robei_gui_screenshot` `gui_doctor` | 是 | 是（Windows） |
+## 安装详解
 
-完整参数、返回值与示例：[docs/tool-reference.md](docs/tool-reference.md)。
-
-## 安全边界
-
-| 保证 | 说明 |
-|---|---|
-| 不执行任意 shell | 只调用固定白名单的 `iverilog` / `vvp` / `yosys` 等程序，`shell=False`，无 `eval`/`exec` |
-| 不改 Robei 安装目录、不写注册表 | 安装目录只读；所有产物写在 `workspace/` |
-| 子进程受控 | 超时杀整个进程树；输出有长度上限（超出标记 `output_truncated`）；XML 解析拒绝 DOCTYPE/ENTITY（含 UTF-16/32 编码） |
-| 路径白名单 | 读写路径必须落在 workspace / 允许的模型根内；仿真前对 `$fopen` `$readmemh` `` `include `` 等做静态路径扫描，相对路径按仿真运行目录（真实 cwd）解析 |
-| 不接触真机 | `build_bitstream` 的 Download 恒为 dry-run，`dry_run=false` 无条件拒绝 |
-| 可回滚 | 每次运行独立目录；默认不覆盖已有文件；改模型前先备份 |
-
-> 语义自检失败时进程返回码仍为 0，请只看返回值里的 `ok` / `run.code`。
-
-> **升级注意（1.0.2 起）**：`simulate` 默认开启**严格路径扫描**。像
-> `$readmemh(PATH, mem)` 这种无法静态判定路径的写法，以前能跑，现在会直接返回
-> `stage="security_scan"` 并拒绝编译。确实需要动态路径时设
-> `ROBEI_MCP_STRICT_PATHS=0`（或在 `robei.toml` 里写 `[security] strict_path_scan = false`）。
-
-## 版本记录
-
-当前版本 **1.12.0**，完整变更与各版本说明见 [CHANGELOG.md](CHANGELOG.md)。
-
-<a name="english"></a>
-## English
-
-An MCP (stdio) server that lets AI assistants drive **Robei EDA** projects: read/write `.model`/`.proj`,
-lint & simulate Verilog (Icarus), generate semantic testbenches, analyse VCD waveforms, build lab reports,
-and run the yosys → place/route → bitstream flow (Download is dry-run only; no hardware is touched).
-54 tools — 42 portable file-level tools (need only `iverilog`/`vvp`/`yosys`) + 12 optional Windows GUI tools.
-The detailed docs are in Chinese; tool names and JSON fields are in English.
-
-## 安装与客户端配置
-
-### 1. 前置条件
+### 前置条件
 
 | 需要 | 说明 |
 |---|---|
@@ -96,7 +108,7 @@ The detailed docs are in Chinese; tool names and JSON fields are in English.
 | （可选）Verilator | `--lint-only` 那一路，缺了会自动跳过 |
 | （可选）Windows 交互桌面 | 只有 12 个 GUI 工具需要 |
 
-### 2. 安装
+### 1. 从源码安装（Windows 示例）
 
 ```powershell
 git clone https://github.com/northsea1225/robei-mcp
@@ -127,13 +139,18 @@ python tools\setup.py --apply
 一句话：基础 wheel 只有 **42 个文件级工具**；装上 `[gui]`（且只在 Windows 上）才会多出
 12 个 GUI 工具，合计 **54 个**。
 
-### 3. 自检
+### 2. 自检
 
 ```powershell
 .\.venv\Scripts\python.exe -c "from robei_mcp import tools; import json; print(json.dumps(tools.runtime_status(), indent=1))"
 ```
 
 看 `ok: true` 和 `tools.*.exists` 全为 `true` 就齐了。缺什么，`robei_doctor` 会逐项给修复提示。
+
+### 3. 路径约定
+
+文件参数一律**相对 workspace**（`counter4/counter4.v`）。写成 `workspace/counter4/counter4.v`
+也认，不会因此多套一层目录。
 
 ### 4. 接到客户端
 
@@ -168,19 +185,116 @@ tool_timeout_sec = 120
 
 > MCP 客户端通常是长驻进程，改完配置要重启会话/应用；`codex mcp list` 之类的命令只说明配置存在。
 
-### 5. 三十秒验证
+## 工具一览
 
-在客户端里依次调用：
+按类别分组，共 **54 个**（文件级 42 + GUI 12）。完整参数与真实返回示例见 [docs/tool-reference.md](docs/tool-reference.md)。
 
-```text
-runtime_status                 → ok=true，四个工具的 exists 都是 true
-lint_verilog(["counter4/counter4.v"], top="counter4")
-simulate(["counter4/counter4.v", "counter4/counter4_tb.v"], top="counter4_tb")
-read_waveform(<上一步的 vcd_path>, signals=["counter4_tb.dut.count"], time=45)
-```
+| 类别 | 数量 | 工具 | 需要 Robei | 需要桌面 |
+|---|:-:|---|:-:|:-:|
+| 诊断 | 2 | `runtime_status` `robei_doctor` | 否 | 否 |
+| 检查与仿真 | 6 | `lint_verilog` `simulate` `simulate_project` `run_all_tests` `read_run_log` `check_connectivity` | 否 | 否 |
+| 波形分析 | 7 | `read_waveform` `find_events` `compare_waveforms` `waveform_stats` `expect_waveform` `render_waveform` `export_vcd_window` | 否 | 否 |
+| 工程与模型 | 16 | `list_projects` `read_robei_project` `read_robei_model` `create_robei_project` `create_robei_model` `set_robei_port` `set_robei_code` `set_robei_parameter` `edit_robei_canvas` `create_robei_canvas_model` `import_verilog_canvas` `manage_robei_model` `export_robei_verilog` `sync_robei_verilog` `list_library_models` `import_library_model` | 否 | 否 |
+| 测试台与报告 | 5 | `generate_testbench` `create_testbench` `create_robei_test` `truth_table` `build_report` | 否 | 否 |
+| 引脚约束 | 3 | `create_robei_const` `read_robei_const` `export_robei_xdc` | 否 | 否 |
+| FPGA | 3 | `list_fpga_devices` `synthesize_project` `build_bitstream` | 否（需 FPGA 工具链） | 否 |
+| GUI 自动化（可选） | 12 | `gui_doctor` `robei_gui_status` `robei_gui_launch` `robei_gui_open_project` `robei_gui_open_model` `robei_gui_compile` `robei_gui_output` `robei_gui_save_project` `robei_gui_synthesis` `robei_gui_close` `robei_gui_compile_all` `robei_gui_screenshot` | 是 | 是（Windows） |
 
-路径一律**相对 workspace**（`counter4/counter4.v`）。写成 `workspace/counter4/counter4.v`
-也认，不会因此多套一层目录。
+<details>
+<summary><b>诊断（2）与检查、仿真（6）</b></summary>
+
+| 工具 | 作用 |
+|---|---|
+| `runtime_status` | 路径 / 版本 / 配置来源 / 源码是否过期（`stale`、`git_commit`）/ 生命周期日志 |
+| `robei_doctor` | 全栈自检；`deep=true` 会真跑一个测试台 |
+| `lint_verilog` | iverilog `-Wall` + Verilator + Yosys 三路（Verilator ≥5.0 自动带 `--timing`） |
+| `simulate` | 编译并运行测试台，返回输出和 VCD 路径 |
+| `simulate_project` | 无头运行 Robei 工程里的 `test/*.test`（不开 IDE、不要桌面） |
+| `run_all_tests` | 一次跑完工程里选中的 test 并汇总 |
+| `read_run_log` | 只读打开 `build/`、`logs/` 下的运行日志，默认尾部 200 行、上限 500 KB |
+| `check_connectivity` | 静态 ERC：多驱动、未驱动网、位宽不匹配、未知模块、悬空端口 |
+
+</details>
+
+<details>
+<summary><b>波形分析（7）</b></summary>
+
+| 工具 | 作用 |
+|---|---|
+| `read_waveform` | 列信号 / 按时刻取值 |
+| `find_events` | 找信号进入某条件的时刻，如 `count == 4'b1111` 首次出现 |
+| `compare_waveforms` | 两份 VCD 逐信号比对，任何结构性差异都算不通过 |
+| `waveform_stats` | 跳变数、电平覆盖、X/Z 标记、时钟周期 / 频率估计 |
+| `expect_waveform` | 断言取值（某时刻值，或某区间内保持） |
+| `render_waveform` | 画 PNG |
+| `export_vcd_window` | 把一个有界时间窗导出为 CSV 或 Markdown |
+
+</details>
+
+<details>
+<summary><b>工程与模型（16）</b></summary>
+
+| 工具 | 作用 |
+|---|---|
+| `list_projects` | 列出工作区里所有 Robei 工程及其模型、测试、Verilog、VCD |
+| `read_robei_project` | 只读 `.proj`（含画布 instances / wires） |
+| `read_robei_model` | 读 `.model`：元数据、端口、参数、Verilog 代码 |
+| `create_robei_project` | 在工作区创建工程骨架 |
+| `create_robei_model` | 创建带参数、端口、代码的 `.model` 并注册 |
+| `set_robei_port` | 增加 / 更新一个端口（备份 + XML 校验） |
+| `set_robei_code` | 替换行为级模型的 Code（含画布连线的模型会被拒绝） |
+| `set_robei_parameter` | 改一个根参数的默认值并重算受影响的端口位宽 |
+| `edit_robei_canvas` | 原子地编辑画布模型（含 `move_instance`、`rename_port`），支持 `dry_run` |
+| `create_robei_canvas_model` | 直接生成画布级 XML（实例 + 连线） |
+| `import_verilog_canvas` | Verilog → 画布：结构化源码导入，行为级源码返回建议 |
+| `manage_robei_model` | 重命名 / 删除 / 复制模型，带引用检查和回滚 |
+| `export_robei_verilog` | 由 `.model` 导出完整模块并 lint |
+| `sync_robei_verilog` | 把工程所有模型导出到 `<proj>/verilog/<model>.v` |
+| `list_library_models` | 只读列出已安装的 Robei ToolBox 模型（含 iverilog lint） |
+| `import_library_model` | 把 ToolBox 模型复制进工程并注册（先备份、再 lint） |
+
+</details>
+
+<details>
+<summary><b>测试台与报告（5）、引脚约束（3）、FPGA（3）</b></summary>
+
+| 工具 | 作用 |
+|---|---|
+| `generate_testbench` | 旧的时钟 / 复位 / VCD 骨架；`full_combo` 枚举全部输入组合（只生成骨架，不理解设计语义） |
+| `create_testbench` | 组合 / 时序语义测试台，期望值走表达式白名单 |
+| `create_robei_test` | 创建 `test/<name>.test` 并注册到 `.proj` |
+| `truth_table` | 组合逻辑穷举真值表（`max_inputs` 按**输入总位数**计）；更宽输入只接受有限抽样 |
+| `build_report` | 只含事实的 Markdown 实验报告 + `evidence.jsonl` |
+| `create_robei_const` | 写引脚约束（拒绝同一引脚被两个端口 / 两位重复占用） |
+| `read_robei_const` | 读 `.const`：端口 → 位 → FPGA 引脚映射 |
+| `export_robei_xdc` | `.const` → `<proj>/constrain/<name>.xdc`（默认标准 Tcl 写法 `[get_ports {a[0]}]`，`quote_bus=false` 回到 Robei legacy 写法） |
+| `list_fpga_devices` | 器件表：有没有 chipdb、有没有 part.yaml、能不能出 `.bit` |
+| `synthesize_project` | yosys `synth_xilinx` + LUT / FF / BRAM / DSP / IO 用量 |
+| `build_bitstream` | Roplace → fasm2frames → xc7frames2bit，直出 `.bit`；Download 只生成 dry-run 计划 |
+
+可跑的示例工程见 `examples/fpga_demo/`（4 位 `light` + fgg484 引脚 `.const`，`build_bitstream` 开箱即用）。
+
+</details>
+
+<details>
+<summary><b>GUI 自动化（12，需 Windows 桌面）</b></summary>
+
+| 工具 | 作用 |
+|---|---|
+| `gui_doctor` | Session-1 桌面前置检查（只读）；`allow_battery=true` 允许在电量 ≥20% 的电池上跑 GUI 阶段，默认 `false` |
+| `robei_gui_status` | Robei 是否在运行、当前工程、已打开模型、Output 尾部；`probe=true` 顺带查 UIA 桥是否还活着 |
+| `robei_gui_launch` | 启动 Robei |
+| `robei_gui_open_project` / `robei_gui_open_model` | 打开工程 / 模型 |
+| `robei_gui_compile` / `robei_gui_compile_all` | 编译当前模型 / 批量编译 |
+| `robei_gui_output` | 读 Output 面板 |
+| `robei_gui_save_project` | 保存工程 |
+| `robei_gui_synthesis` | 触发综合 |
+| `robei_gui_screenshot` | 截图 |
+| `robei_gui_close` | 关闭 Robei |
+
+前提与限制见[GUI 部分的前提](#gui-部分的前提)和 [docs/gui-tools.md](docs/gui-tools.md)。
+
+</details>
 
 ## 配置
 
@@ -196,6 +310,7 @@ read_waveform(<上一步的 vcd_path>, signals=["counter4_tb.dut.count"], time=4
 | 变量 | 作用 |
 |---|---|
 | `ROBEI_MCP_WORKSPACE` | 产物目录，默认 `<repo>/workspace`；装成 wheel 时默认 `%LOCALAPPDATA%\robei-mcp\workspace` |
+| `ROBEI_MCP_CONFIG` | 指向另一份 `robei.toml`（不放在仓库根时用） |
 | `ROBEI_HOME` | Robei 安装根目录 |
 | `IVERILOG_EXE` / `VVP_EXE` / `YOSYS_EXE` | 单独指定工具链 |
 | `VERILATOR_EXE` / `VERILATOR_ROOT_DIR` | Verilator 那一路 |
@@ -211,28 +326,6 @@ read_waveform(<上一步的 vcd_path>, signals=["counter4_tb.dut.count"], time=4
 [security]
 strict_path_scan = true
 ```
-
-## 工具一览
-
-完整参数与真实返回示例见 [docs/tool-reference.md](docs/tool-reference.md)。
-
-**诊断（3）** — `runtime_status`（路径/版本/配置来源）、`robei_doctor`（全栈自检，`deep=true` 会真跑一个 tb）、`gui_doctor`（Session-1 桌面前置检查）
-
-**检查与仿真（5）** — `lint_verilog`（iverilog `-Wall` + Verilator + Yosys 三路，Verilator ≥5.0 自动带 `--timing`）、`simulate`（编译+跑 tb）、`simulate_project`（无头跑 Robei 的 `test/*.test`）、`run_all_tests`（一次跑完工程里的 test 并汇总）、`read_run_log`（只读打开 `build/`、`logs/` 下的运行日志，默认尾部 200 行、上限 500 KB）
-
-**波形（6）** — `read_waveform`（列信号/按时刻取值）、`find_events`（`count == 4'b1111` 首次出现）、`compare_waveforms`（两份 VCD 逐信号比对，任何结构性差异都算不通过）、`waveform_stats`（跳变数/翻转率/时钟周期估计）、`expect_waveform`（断言取值）、`render_waveform`（画 PNG）
-
-**工程与模型（11）** — `read_robei_model`、`list_projects`、`read_robei_project`（含画布 instances/wires）、`create_robei_project`、`create_robei_model`、`set_robei_port`、`export_robei_verilog`、`sync_robei_verilog`、`create_robei_test`、`create_robei_canvas_model`（画布级 XML）、`import_verilog_canvas`（Verilog → 画布）
-
-**辅助（4）** — `generate_testbench`（旧的时钟/复位/VCD 骨架）、`create_testbench`（组合/ timed 语义 TB）、`check_connectivity`（ERC）、`truth_table`（组合逻辑穷举真值表，`max_inputs` 按**输入总位数**计）
-
-**引脚约束（3）** — `create_robei_const`（拒绝同一引脚被两个端口/两位重复占用）、`read_robei_const`、`export_robei_xdc`（默认标准 Tcl 写法 `[get_ports {a[0]}]`，`quote_bus=false` 回到 Robei legacy 写法）
-
-可跑的示例工程见 `examples/fpga_demo/`（4 位 `light` + fgg484 引脚 `.const`，`build_bitstream` 开箱即用）。
-
-**FPGA（3）** — `list_fpga_devices`（器件表：有没有 chipdb、有没有 part.yaml）、`synthesize_project`（yosys `synth_xilinx` + LUT/FF/BRAM/DSP/IO 用量）、`build_bitstream`（Roplace → fasm2frames → xc7frames2bit，直出 `.bit`）
-
-**GUI（12，需 Windows 桌面）** — `gui_doctor`、`robei_gui_status`（`probe=true` 顺带查 UIA 桥是否还活着）、`launch`、`open_project`、`open_model`、`compile`、`output`、`save_project`、`synthesis`、`compile_all`、`screenshot`、`close`
 
 ## GUI 部分的前提
 
@@ -253,7 +346,26 @@ python tools\gui\register_task.py --remove   # 删除
    不会"调用了才报错"。`ROBEI_MCP_GUI=0` 可以手动关掉。
 3. 细节、限制和历史坑见 [docs/gui-tools.md](docs/gui-tools.md)。
 
-## 安全边界（详细）
+## 安全边界
+
+| 保证 | 说明 |
+|---|---|
+| 不执行任意 shell | 只调用固定白名单的 `iverilog` / `vvp` / `yosys` 等程序，`shell=False`，无 `eval`/`exec` |
+| 不改 Robei 安装目录、不写注册表 | 安装目录只读；所有产物写在 `workspace/` |
+| 子进程受控 | 超时杀整个进程树；输出有长度上限（超出标记 `output_truncated`）；XML 解析拒绝 DOCTYPE/ENTITY（含 UTF-16/32 编码） |
+| 路径白名单 | 读写路径必须落在 workspace / 允许的模型根内；仿真前对 `$fopen` `$readmemh` `` `include `` 等做静态路径扫描，相对路径按仿真运行目录（真实 cwd）解析 |
+| 不接触真机 | `build_bitstream` 的 Download 恒为 dry-run，`dry_run=false` 无条件拒绝 |
+| 可回滚 | 每次运行独立目录；默认不覆盖已有文件；改模型前先备份 |
+
+> 语义自检失败时进程返回码仍为 0，请只看返回值里的 `ok` / `run.code`。
+
+> **升级注意（1.0.2 起）**：`simulate` 默认开启**严格路径扫描**。像
+> `$readmemh(PATH, mem)` 这种无法静态判定路径的写法，以前能跑，现在会直接返回
+> `stage="security_scan"` 并拒绝编译。确实需要动态路径时设
+> `ROBEI_MCP_STRICT_PATHS=0`（或在 `robei.toml` 里写 `[security] strict_path_scan = false`）。
+
+<details>
+<summary><b>安全边界（详细）</b></summary>
 
 - 固定工具白名单，`shell=False`，不执行任意命令。
 - 源码路径必须在 `workspace/` 内；相对路径（`$fopen`、`$readmemh`、`$dump*`、`` `include `` 里的相对写法）按**仿真运行目录**这一真实 cwd 解析，越出 workspace/运行目录同样拒绝；模型读取只允许 `model_roots` 里的目录（默认 Robei 的 `%ProgramData%\Robei` + 工作区）。
@@ -270,7 +382,11 @@ python tools\gui\register_task.py --remove   # 删除
 - 子进程有超时（默认 30s，上限 120s）、输出有长度上限（超出截断并标记 `output_truncated`）、超时会杀掉整个进程树、`TMP/TEMP` 指向运行目录；XML 解析拒绝 DOCTYPE/ENTITY（含 UTF-16/32 编码声明）。
 - Robei 安装目录只读；不写系统设置、不写注册表。
 
-## 已知限制（摘要）
+</details>
+
+发现安全问题请按 [SECURITY.md](SECURITY.md) 私下报告，不要在公开 Issue 里贴可利用的细节。
+
+## 已知限制
 
 - **打开 Robei 的 Wave 面板会让它的 UIA 树塌掉**（控件数变 0，新进程也读不到），只能重启 IDE。
   所以波形一律走 `read_waveform` / `render_waveform`，不用 Robei 的 Wave。
@@ -294,7 +410,7 @@ python tools\gui\register_task.py --remove   # 删除
 
 完整清单（含每条限制的原因和实测证据）见 [docs/verification-log.md](docs/verification-log.md)。
 
-## 常见问题
+## 常见问题与排错
 
 **看到 `Transport closed`，先查什么？**
 
@@ -332,11 +448,11 @@ GUI 工具），UIA 拿不到桌面就会报 `Errno 22`。**不要在嵌套 stdi
 | [docs/verification-log.md](docs/verification-log.md) | 每个阶段「实际跑通了什么」的证据日志 |
 | [docs/coverage-roadmap.md](docs/coverage-roadmap.md) | Robei 能力覆盖矩阵、缺口清单与补齐路线（含未接的 Route/Package/Download） |
 | [docs/repo-layout.md](docs/repo-layout.md) | 仓库结构 |
-| [CHANGELOG.md](CHANGELOG.md) | 版本变更 |
+| [CHANGELOG.md](CHANGELOG.md) | 版本变更（当前版本 **1.12.0**） |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 参与开发、测试约定 |
 | [SECURITY.md](SECURITY.md) | 安全问题报告方式 |
 
-## 测试
+## 开发与测试
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q            # 全量（Windows + Robei 环境）
@@ -348,6 +464,39 @@ GUI 工具），UIA 拿不到桌面就会报 `Errno 22`。**不要在嵌套 stdi
 
 各 stage 脚本对应一个功能域，能单独跑，需要 GUI 的会自己启动/关闭 Robei。pytest 标记说明见 `pyproject.toml`。
 
-## License
+## 参与贡献
+
+欢迎 Issue 和 PR：先读 [CONTRIBUTING.md](CONTRIBUTING.md)（环境、测试约定、夹具只读规则），提交时会用到仓库里的 Issue / PR 模板。
+
+## 许可证
 
 [MIT](LICENSE)
+
+<a name="english"></a>
+## English
+
+An MCP (stdio) server that lets AI assistants drive **Robei EDA** projects: read/write `.model`/`.proj`,
+lint & simulate Verilog (Icarus), generate semantic testbenches, analyse VCD waveforms, build lab reports,
+and run the yosys → place/route → bitstream flow (Download is dry-run only; no hardware is touched).
+54 tools — 42 portable file-level tools (need only `iverilog`/`vvp`/`yosys`) + 12 optional Windows GUI tools.
+The detailed docs are in Chinese; tool names and JSON fields are in English.
+
+**Quick start**
+
+```bash
+git clone https://github.com/northsea1225/robei-mcp && cd robei-mcp
+pip install -e .                       # add the [gui] extra on Windows for the 12 GUI tools
+claude mcp add --scope user robei -- python -m robei_mcp
+```
+
+For Codex add this to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.robei]
+command = "python"
+args = ["-m", "robei_mcp"]
+```
+
+Put `iverilog`, `vvp` and `yosys` on `PATH`, then call `runtime_status` and `robei_doctor` to verify the setup.
+See [docs/tool-reference.md](docs/tool-reference.md) for every tool, [SECURITY.md](SECURITY.md) for reporting
+vulnerabilities, [CONTRIBUTING.md](CONTRIBUTING.md) to contribute, and the [MIT License](LICENSE).
