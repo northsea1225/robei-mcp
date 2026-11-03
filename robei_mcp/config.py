@@ -174,6 +174,8 @@ class Settings:
     max_model_bytes: int = 5_000_000
     max_vcd_bytes: int = 50_000_000
     max_output_chars: int = 20_000
+    # Hard ceiling on what one child process may buffer per stream (head + tail kept).
+    max_capture_bytes: int = 16_000_000
     strict_path_scan: bool = True
     config_file: Path | None = None
     config_error: str | None = None

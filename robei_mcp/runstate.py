@@ -11,10 +11,39 @@ from __future__ import annotations
 
 import contextlib
 import itertools
+import os
+import signal
 import subprocess
 import threading
 
 _ids = itertools.count(1)
+
+
+def kill_tree(proc: subprocess.Popen) -> None:
+    """Kill ``proc`` and everything it spawned (Icarus ``vvp`` may start helpers)."""
+    try:
+        if proc.poll() is not None:
+            return
+        if os.name == "nt":
+            root = os.environ.get("SystemRoot", r"C:\Windows")
+            subprocess.run(
+                [os.path.join(root, "System32", "taskkill.exe"), "/PID", str(proc.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=0x08000000,  # CREATE_NO_WINDOW
+                timeout=10,
+                check=False,
+            )
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+    except Exception:
+        pass
+    try:
+        if proc.poll() is None:
+            proc.kill()
+    except Exception:
+        pass
 
 
 class RunToken:
@@ -46,11 +75,7 @@ class RunToken:
 
     @staticmethod
     def _kill(proc: subprocess.Popen) -> None:
-        try:
-            if proc.poll() is None:
-                proc.kill()
-        except Exception:
-            pass
+        kill_tree(proc)
 
 
 _local = threading.local()
