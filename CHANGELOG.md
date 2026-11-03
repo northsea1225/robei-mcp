@@ -2,6 +2,29 @@
 
 版本号对应 `pyproject.toml` 里的 `version`。工具数量指 `tools/list` 返回的数量（Windows + GUI 可用时）。
 
+## Unreleased
+
+**审计修复批次（A–E）。** 工具数保持 54/42，工具名与返回结构不变，只新增字段。
+
+- **安全（A）**
+  - `simulate` 的源码路径扫描补上"运行目录"这一基准：`` `include ``、`$fopen`、`$readmemh/b`、`$dump*` 的相对路径按真实仿真 cwd（运行目录）解析，
+    越出 workspace/运行目录的一律拒绝（沿用现有 `security.rejected` 结构，新增 `base: source|run_cwd` 标记）。此前相对路径按源文件目录判定，与 Icarus/vvp 实际按 cwd 解析不一致，可借此读写 workspace 之外的文件。
+  - XML 防护（`xmlsafe`）改为按解析器真实会采用的编码检查：UTF-16/UTF-32（BOM 或 XML 声明）里的 `<!DOCTYPE`/`<!ENTITY` 不再绕过；
+    `tools.py` 与 `constraints.py` 里所有直接 `ElementTree.fromstring` 的位置改走 `xmlsafe`。Robei 自身 `.model`/`.proj` 的编码读取不受影响。
+  - 子进程输出加上限（`max_capture_bytes`，默认 16 MB，保留头尾，使尾部 `SELFTEST` 结论不丢），超出时返回 `output_truncated`/`truncated_bytes`；
+    超时时杀整个进程树（POSIX `killpg`，Windows `taskkill /T /F`），不再被孙进程占住管道拖到超时之后。
+- **一致性（B）**
+  - 写入越界检查统一抛 `PathEscape`，外部 `code` 统一为 `path_escape`；原先的 `invalid_argument` / `permission_denied` 保留在新增字段 `legacy_code` 中。
+    **可见变化**：这些位置的 `code` 值变了，依赖旧值的客户端请读 `legacy_code`。
+  - `generate_testbench` 与波形 PNG 的输出目录检查改用 resolve + `is_relative_to`（大小写不敏感），不再用 `startswith`；`is_within` 同步修正（根为 `/` 时也正确）。
+  - `create_testbench` 的 `expected`：与输入端口同名的纯 `0/1/x/z` 字符串报 `bad_argument`（`reason=ambiguous_literal_or_port`），
+    可用 `N'b...`（N 必须等于端口位宽）或 `(name)` 消歧；文档明确"二进制字符串 vs 十进制整数"的优先级。
+- **清理（C）**：删除 `_set_robei_parameter_h2` 里不可达的代码，以及 ruff/vulture 100% 置信度报告的未用 import/变量；纯删除，无重构。
+- **测试与 CI（D）**：注册 `needs_robei`、`needs_windows`、`needs_lab2`、`needs_chipdb`、`needs_robei_yosys` 标记；CI 改为运行
+  `pytest -m "not needs_robei and not needs_windows"`（apt 安装 iverilog 与 yosys）。
+- **文档与元数据（E）**：重写 README 首屏（徽章、快速开始、能力表、安全边界、英文摘要），版本说明迁入本文件；新增 `SECURITY.md`、Issue/PR 模板；
+  `pyproject.toml` 增加 classifiers 与 `project.urls`；README 里错误的"包版本 1.11.0"已随迁移移除。
+
 ## 1.12.0 — 2026-11-03
 
 **真实 FPGA 产物与只生成计划的 Download。** 工具数保持 54/42。

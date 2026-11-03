@@ -59,7 +59,7 @@ read_waveform(<vcd_path>, signals=["counter4_tb.dut.count"], time=45)
 |---|---|
 | 不执行任意 shell | 只调用固定白名单的 `iverilog` / `vvp` / `yosys` 等程序，`shell=False`，无 `eval`/`exec` |
 | 不改 Robei 安装目录、不写注册表 | 安装目录只读；所有产物写在 `workspace/` |
-| 子进程受控 | 子进程有超时；XML 解析拒绝 DOCTYPE/ENTITY |
+| 子进程受控 | 超时杀整个进程树；输出有长度上限（超出标记 `output_truncated`）；XML 解析拒绝 DOCTYPE/ENTITY（含 UTF-16/32 编码） |
 | 路径白名单 | 读写路径必须落在 workspace / 允许的模型根内；仿真前对 `$fopen` `$readmemh` `` `include `` 等做静态路径扫描，相对路径按仿真运行目录（真实 cwd）解析 |
 | 不接触真机 | `build_bitstream` 的 Download 恒为 dry-run，`dry_run=false` 无条件拒绝 |
 | 可回滚 | 每次运行独立目录；默认不覆盖已有文件；改模型前先备份 |
@@ -267,7 +267,7 @@ python tools\gui\register_task.py --remove   # 删除
   确实需要动态路径时显式设 `ROBEI_MCP_STRICT_PATHS=0`，此时它们只进 `unresolved`。
 - 这条静态扫描是**工具链输入检查**，不是 OS 沙箱：它约束的是"我的编译器去读哪个文件"，
   不限制同机其他进程。
-- 子进程有超时（默认 30s，上限 120s）、`TMP/TEMP` 指向运行目录；XML 解析拒绝 DOCTYPE/ENTITY。
+- 子进程有超时（默认 30s，上限 120s）、输出有长度上限（超出截断并标记 `output_truncated`）、超时会杀掉整个进程树、`TMP/TEMP` 指向运行目录；XML 解析拒绝 DOCTYPE/ENTITY（含 UTF-16/32 编码声明）。
 - Robei 安装目录只读；不写系统设置、不写注册表。
 
 ## 已知限制（摘要）
@@ -340,6 +340,7 @@ GUI 工具），UIA 拿不到桌面就会报 `Errno 22`。**不要在嵌套 stdi
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q            # 全量（Windows + Robei 环境）
+.\.venv\Scripts\python.exe -m pytest -q -m "not needs_robei and not needs_windows"   # CI 子集：只需 iverilog + yosys
 .\.venv\Scripts\python.exe -m pytest tests\test_regressions.py -q   # 1.0.2 的解析/波形/安全回归
 .\.venv\Scripts\python.exe tests\stage3_cases.py   # 核心：警告/语法错误/超时/残留进程
 .\.venv\Scripts\python.exe tests\stage21_packaging.py   # 打包与 GUI 可选面
