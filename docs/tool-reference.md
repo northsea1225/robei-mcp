@@ -1,9 +1,9 @@
 # 工具参考
 
-1.10.0 共 54 个工具（文件级 42 + GUI 12）；ROBEI_MCP_GUI=0 时为 42 个。
+1.11.0 共 54 个工具（文件级 42 + GUI 12）；ROBEI_MCP_GUI=0 时为 42 个。
 工具名、参数名、返回字段保持英文。
 
-开发变更：**1.11.0（Unreleased）**，包版本暂留 1.10.0，工具数不变。
+当前版本：**1.11.0**，工具数不变（54/42）。
 
 > 这份文件是从早期 README 拆出来的，示例里的时间戳/路径是当时的真实输出，不要当成当前默认值。
 
@@ -581,7 +581,7 @@ PASS/FAIL 汇总出现 `SELFTEST FAIL`，返回 `ok=false`、`run.code=selftest_
 顶层 `code` 仍保存生成的 TB 源码，不会被错误码覆盖。生成代码不包含 `module`、
 `$dumpfile` 或 `$dumpvars`，Robei 外层负责测试模块和 VCD dump。
 
-#### 1.11.0（Unreleased）：参数与 sweep
+#### 1.11.0：参数与 sweep
 
 `parameters={"N":8}` 覆盖单次调用的全部 DUT；`duts[].parameters` 可设置实例专属值，公共覆盖优先。
 参数名大小写敏感、必须已声明；仅接受有符号 32 位整数，不接受 bool、字符串、数组或表达式覆盖；模型自身的安全默认表达式仍可解析。
@@ -604,7 +604,7 @@ PASS/FAIL 汇总出现 `SELFTEST FAIL`，返回 `ok=false`、`run.code=selftest_
 - 全部分组参数/位宽/向量/目标名先校验再写文件；生成 `<name>_s1`、`_s2` 等独立 test，沿用 overwrite/备份规则。
 - 返回 `sweep[]` 的每项含 parameters、semantic、code、run.tests[0].selftest/returncode；顶层 run 汇总批量结果。
   运行仍为有界串行批量，单 test 60 s，整批 `SETTINGS.max_timeout_s`（默认 120 s），超时不冒充通过。
-- 不改变进程 rc。若未来把 `$finish` 换成 `$fatal(1)`，会破坏“进程成功/语义失败”的旧调用、改变批量 fail-fast/CI 分支和错误类别；**待用户决定**。
+- 不改变进程 rc：语义失败一律由 `ok=false` + `run.code=selftest_failed` 表达，进程 rc 保持 0（**已定策略**，不再讨论改非零）。若改用 `$fatal(1)` 会破坏“进程成功/语义失败”的旧调用、改变批量 fail-fast/CI 分支和错误类别。
 - timed 的绝对时刻断言在 at+1 采样，汇总至少再晚一个 tick，保证最后一条断言已计入。
 
 #### 1.10 安全表达式与位宽

@@ -3,7 +3,7 @@
 > An MCP server that turns Robei EDA into AI-callable tools: Verilog lint, simulation,
 > waveform analysis, project XML, and optional GUI automation. Docs are in Chinese.
 
-**状态：1.10.0**（54 个工具，GUI=0 时 42 个）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
+**状态：1.11.0**（54 个工具，GUI=0 时 42 个）· [变更记录](CHANGELOG.md) · [工具参考](docs/tool-reference.md) · [发布页](https://github.com/northsea1225/robei-mcp/releases)
 
 > **升级注意（1.0.2 起）**：`simulate` 默认开启**严格路径扫描**。像
 > `$readmemh(PATH, mem)` 这种无法静态判定路径的写法，以前能跑，现在会直接返回
@@ -26,7 +26,7 @@
 - **画布可增量改**：`edit_robei_canvas` 用 `add_instance` / `connect` / `rename_wire` 这组
   操作改画布，整批校验通过才落盘；`set_robei_code` / `set_robei_parameter` 改行为与参数。
 
-## 1.11.0（Unreleased）：有界 sweep 与自检语义
+## 1.11.0（2026-11-03）：有界 sweep 与自检语义
 
 - `create_testbench(parameters=..., sweep=...)` 支持显式参数分组，生成 `<name>_s1`、`_s2` 等独立 TB；
   每组返回参数、SELFTEST 与真实 rc，`build_report(testbench_results=[sweep_result])` 汇总。
@@ -35,11 +35,11 @@
 - `truth_table` 解析参数默认值/整数覆盖，宽输入可传有限 `vectors` 导出**抽样表**；
   `mode=sampled, exhaustive=false` 不得写成全穷举通过。exp7 的 N=4/8 验收脚本在 `tests/acceptance_1_11.py`。
 - `simulate`、`simulate_project`、`run_all_tests`、语义 TB、报告遇到 SELFTEST FAIL 统一 `ok=false`、`run.code=selftest_failed`；
-  **进程 rc 不改**。`build_report.report_written=true` 只说明报告已写出。更改 rc 的兼容性待审，不在本迭代实施。
+  **进程 rc 保持 0 不变**（已定策略：语义失败只看 `ok`/`run.code`，进程 rc 不作为判定依据）。`build_report.report_written=true` 只说明报告已写出。
 - 新增 MIT [100111 序列检测器夹具](examples/seqdet/README.md)，保留上游原文、许可和提交；只修副本的组合默认赋值，测试含 X/Z 与原版负对照。
 - `runtime_status` 的 `restart_required/restart_guidance` 明确提示重连并复核，不自动杀进程；`simulate.rejected` 镜像保持兼容。
 
-本地开发仍保留包版本 **1.10.0**，工具数 **54/42**；以上是未发布变更，最终版本 bump 等待确认。
+包版本 **1.11.0**，工具数 **54/42**。
 
 ## 1.7 实验闭环与报告
 
@@ -97,7 +97,7 @@ create_testbench(
 内联表达式先赋给输出宽度的临时 reg，再用四态比较检查。`?:` 遇到 X/Z 时保留 Verilog 逐位合并语义。
 `semantic` 返回 `duts`、`comparison_count`、`expression_count`。
 多 DUT 报告用 `truth_map[test].instances` 区分实例，缺项写“未提供”；单 DUT 旧报告保持不变。
-完整白名单、上限与错误码见 [工具参考](docs/tool-reference.md#create_testbench)。版本号为 1.10.0，工具数仍是 54/42。
+完整白名单、上限与错误码见 [工具参考](docs/tool-reference.md#create_testbench)。版本号为 1.11.0，工具数仍是 54/42。
 
 语义 TB 可用模型根参数默认值解析 `N-1:0`，无法静态解析的位宽仍拒绝，不猜测。
 exp7 QA 使用 Robei 官方[带符号位小数加法规格](http://www.robei.com/lessons/Robei_singed_float_add.pdf)
