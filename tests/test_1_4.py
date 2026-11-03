@@ -474,6 +474,7 @@ def test_driver_never_kills_by_image_name() -> None:
     assert '"/IM"' not in source
 
 
+@pytest.mark.needs_windows
 def test_same_image_compares_resolved_paths(monkeypatch) -> None:
     from robei_mcp.gui_agent import ui
 

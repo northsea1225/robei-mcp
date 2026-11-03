@@ -74,6 +74,7 @@ def _fake_truth(**kwargs):
             "rows": [{"a": "0", "y": "1"}, {"a": "1", "y": "0"}]}
 
 
+@pytest.mark.needs_windows
 def test_legacy_single_report_and_evidence_are_byte_compatible(project, monkeypatch):
     _mock_sim(monkeypatch)
     result = tools.build_report(str(project), tests=["tb_inv"], out="legacy.md", include=["simulation"],
@@ -82,6 +83,7 @@ def test_legacy_single_report_and_evidence_are_byte_compatible(project, monkeypa
     assert _rendered(result, project) == baseline
 
 
+@pytest.mark.needs_windows
 def test_modern_single_dut_keeps_legacy_layout_and_evidence(project, monkeypatch):
     _mock_sim(monkeypatch)
     item = _semantic()

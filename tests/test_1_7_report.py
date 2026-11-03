@@ -49,6 +49,7 @@ def test_report_overwrite_sections_missing_and_truth_map(project: Path) -> None:
     assert any(item["reason"] == "未提供" for item in mapped["missing"])
 
 
+@pytest.mark.needs_windows
 def test_report_path_escape_and_source_hashes(project: Path) -> None:
     source_files = [project, *project.parent.joinpath("model").glob("*"), *project.parent.joinpath("test").glob("*")]
     before = {path: _sha(path) for path in source_files if path.is_file()}

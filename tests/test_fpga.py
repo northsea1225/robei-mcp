@@ -131,6 +131,8 @@ def test_unknown_part_is_rejected() -> None:
 
 
 @needs_yosys
+@pytest.mark.needs_robei
+@pytest.mark.needs_chipdb
 def test_synthesize_reports_utilization_and_writes_json(light_project: str) -> None:
     result = fpga.synthesize_project(proj_path=light_project, part="xc7a50tfgg484-1")
     assert result["ok"] is True

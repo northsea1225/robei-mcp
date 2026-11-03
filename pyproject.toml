@@ -38,3 +38,11 @@ robei_mcp = ["data/*.yaml"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+  "needs_robei: needs a Robei installation (its bundled toolchain, chipdb or Lab 2 project data); skipped-by-selection on CI",
+  "needs_windows: relies on Windows paths, Win32 APIs or Windows process behaviour",
+  "needs_lab2: needs the Lab 2 course projects under workspace/ (implies needs_robei)",
+  "needs_chipdb: needs the Robei FPGA chipdb / part.yaml database (implies needs_robei)",
+  "needs_robei_yosys: output depends on the yosys build shipped with Robei (implies needs_robei)",
+]
+filterwarnings = ["error::pytest.PytestUnknownMarkWarning"]

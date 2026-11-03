@@ -242,6 +242,8 @@ def test_sequence_detector_timed_xz_behavior(project, original):
         assert result['run']['code'] == 'selftest_failed'
 
 
+@pytest.mark.needs_robei
+@pytest.mark.needs_robei_yosys
 def test_sequence_default_removes_yosys_latch(project):
     _, root = project
     counts = []
