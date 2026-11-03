@@ -22,6 +22,8 @@ def test_capacity_catalog_has_only_five_buildable_parts() -> None:
     assert all(rows[name]["confidence"] == "manual_datasheet" for name in rows)
 
 
+@pytest.mark.needs_robei
+@pytest.mark.needs_chipdb
 def test_manual_source_has_provenance_and_sha() -> None:
     row = next(item for item in fpga.device_table() if item["buildable"])
     capacity, source, warnings = fpga._manual_capacity_for_part(row["part"])
@@ -46,6 +48,8 @@ def test_io_percent_uses_package_user_capacity() -> None:
     assert percent["LUT"] == round(100 * 100 / capacity["LUT"], 3)
 
 
+@pytest.mark.needs_robei
+@pytest.mark.needs_chipdb
 def test_list_fpga_devices_exposes_capacity_source() -> None:
     result = fpga.list_fpga_devices()
     buildable = {row["part"]: row for row in result["devices"] if row["buildable"]}
@@ -63,6 +67,8 @@ def test_missing_manual_part_returns_null_capacity_and_derived_or_none() -> None
     assert warnings
 
 
+@pytest.mark.needs_robei
+@pytest.mark.needs_chipdb
 def test_unknown_part_still_has_device_unsupported() -> None:
     with pytest.raises(fpga.DeviceUnsupported) as excinfo:
         fpga._device("not-a-real-part")

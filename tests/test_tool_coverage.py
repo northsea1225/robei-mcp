@@ -58,6 +58,7 @@ def _rel(path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.needs_robei
 def test_doctor_reports_the_toolchain() -> None:
     res = doctor.run(deep=False)
     assert res["ok"] is True
@@ -70,6 +71,7 @@ def test_doctor_reports_the_toolchain() -> None:
 
 
 @pytest.mark.skipif(not Path(SETTINGS.iverilog).exists(), reason="iverilog not installed")
+@pytest.mark.needs_robei
 def test_doctor_deep_run_reports_version() -> None:
     res = doctor.run(deep=True)
     assert res["ok"] is True
@@ -460,6 +462,7 @@ def test_owned_pid_rejects_a_recycled_pid_from_another_directory(
     assert not record.exists()
 
 
+@pytest.mark.needs_windows
 def test_owned_pid_accepts_the_instance_it_launched(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

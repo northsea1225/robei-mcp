@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import pytest
+
 from robei_mcp import p1, tools
 from robei_mcp.config import SETTINGS
 
 
+@pytest.mark.needs_robei
+@pytest.mark.needs_lab2
 def test_behavioral_suggestions_include_create_ports_for_exp1_exp3_exp6() -> None:
     cases = [("exp1_and", "and2"), ("exp3_decoder", "decode3_8"), ("exp6_counter", "dec_counter")]
     for project, name in cases:
@@ -14,6 +18,8 @@ def test_behavioral_suggestions_include_create_ports_for_exp1_exp3_exp6() -> Non
         assert all({"name", "direction", "width"} <= set(port) for port in result["create_robei_model"]["ports"])
 
 
+@pytest.mark.needs_robei
+@pytest.mark.needs_lab2
 def test_run_all_tests_elapsed_ms_is_present() -> None:
     result = tools.run_all_tests(str(SETTINGS.workspace / "exp1_and" / "exp1_and.proj"))
     assert isinstance(result["elapsed_ms"], int)

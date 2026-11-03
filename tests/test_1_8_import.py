@@ -74,6 +74,8 @@ def test_behavior_keywords_are_detected_without_legacy_flag(project: str) -> Non
         assert blocks[0].lower() == token.lower(), token
 
 
+@pytest.mark.needs_robei
+@pytest.mark.needs_lab2
 def test_lab2_headless_classifications_match_m1() -> None:
     expected = {
         "exp1_and/verilog/and2.v": "behavioral",
@@ -136,6 +138,8 @@ def test_mixed_behavior_blocks_are_reported_before_canvas_write(project: str) ->
         p1.import_verilog_canvas(project, rel)
 
 
+@pytest.mark.needs_robei
+@pytest.mark.needs_lab2
 def test_alu32_constant_connection_is_not_silent() -> None:
     path = SETTINGS.workspace / "exp5_alu" / "verilog" / "alu32_st.v"
     assert path.is_file()

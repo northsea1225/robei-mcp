@@ -7,6 +7,8 @@ import pytest
 from robei_mcp import errors, fpga
 
 
+@pytest.mark.needs_robei
+@pytest.mark.needs_chipdb
 def test_unknown_part_has_device_unsupported_and_available_parts() -> None:
     with pytest.raises(fpga.DeviceUnsupported) as exc:
         fpga._device("not-a-real-part")

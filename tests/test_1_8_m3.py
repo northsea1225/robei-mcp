@@ -60,6 +60,8 @@ def project():
         shutil.rmtree(Path(proj).parent, ignore_errors=True)
 
 
+@pytest.mark.needs_robei
+@pytest.mark.needs_lab2
 def test_behavioral_suggestions_have_ports_for_exp1_exp3_exp6() -> None:
     expected = {
         "exp1_and/exp1_and.proj": "and2",
