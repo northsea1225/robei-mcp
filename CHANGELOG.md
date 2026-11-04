@@ -24,6 +24,7 @@
   `pytest -m "not needs_robei and not needs_windows"`（apt 安装 iverilog 与 yosys）。
 - **文档与元数据（E）**：重写 README 首屏（徽章、快速开始、能力表、安全边界、英文摘要），版本说明迁入本文件；新增 `SECURITY.md`、Issue/PR 模板；
   `pyproject.toml` 增加 classifiers 与 `project.urls`；README 里错误的"包版本 1.11.0"已随迁移移除。
+- **生命周期（F）**：`python -m robei_mcp.lifecycle --health` 不再把"日志里有 start 但系统里已查不到该 pid"（整棵进程树被强杀、未写 exit 事件）报成 `stale_pid`，改按"已退出但未观察到终止"处理；只有进程存在但不像 robei server（pid 复用/命令不符）才报 `stale_pid`。`supervise()` 在退出码为 1 且没有 `clean_exit`/`crash` 时，exit 事件新增 `reason: "forced_kill_suspected"`（TerminateProcess/taskkill /F 的退出码即 1）。
 
 ## 1.12.0 — 2026-11-03
 

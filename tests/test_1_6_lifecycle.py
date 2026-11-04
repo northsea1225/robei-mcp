@@ -264,6 +264,68 @@ def test_health_marks_pid_reuse_or_wrong_command_stale(journal, monkeypatch, cap
     assert '"pid": 4567' in output and output.splitlines()[-1] == "stale_pid"
 
 
+def test_health_vanished_pid_is_not_stale(journal, monkeypatch, capsys):
+    # start/ready without exit and no such process (tree force-killed): not "stale_pid".
+    for kind in ("start", "ready"):
+        lc.event(kind, pid=4567, run_id="killed")
+    monkeypatch.setattr(lc.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "[]", ""))
+    assert lc.health() == 0
+    output = capsys.readouterr().out
+    assert "stale_pid" not in output
+    assert output.splitlines()[-1] == "exited:未观察到终止"
+
+
+def test_health_vanished_pid_does_not_mask_a_live_server(journal, monkeypatch, capsys):
+    lc.event("start", pid=1111, run_id="killed")
+    lc.event("start", pid=4567, run_id="live")
+    payload = json.dumps([{
+        "ProcessId": 4567,
+        "ExecutablePath": r"C:\dev\robei-mcp\.venv\Scripts\python.exe",
+        "CommandLine": "python -u -m robei_mcp.server",
+    }])
+    monkeypatch.setattr(lc.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, payload, ""))
+    assert lc.health() == 0
+    output = capsys.readouterr().out
+    assert "stale_pid" not in output and output.splitlines()[-1] == "alive"
+
+
+def test_health_vanished_pid_alongside_wrong_process_still_reports_stale(journal, monkeypatch, capsys):
+    lc.event("start", pid=1111, run_id="killed")
+    lc.event("start", pid=4567, run_id="reused")
+    payload = json.dumps([{"ProcessId": 4567, "ExecutablePath": r"C:\Windows\notepad.exe",
+                           "CommandLine": "notepad.exe"}])
+    monkeypatch.setattr(lc.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, payload, ""))
+    assert lc.health() == 0
+    output = capsys.readouterr().out
+    stale_lines = [line for line in output.splitlines() if line.startswith("stale_pid ")]
+    assert len(stale_lines) == 1 and '"pid": 4567' in stale_lines[0]
+    assert output.splitlines()[-1] == "stale_pid"
+
+
+@pytest.mark.parametrize("events,code,expect", [
+    ((), 1, "forced_kill_suspected"),
+    (("clean_exit",), 1, None),
+    (("crash",), 1, None),
+    ((), 0, None),
+    ((), -9, None),
+])
+def test_supervise_marks_forced_kill_only_for_code_1_without_exit_events(
+        journal, monkeypatch, tmp_path, events, code, expect):
+    class Child:
+        pid = 4567
+        def __init__(self, command, **kwargs):
+            run_id = kwargs["env"]["ROBEI_MCP_LIFECYCLE_RUN_ID"]
+            lc.event("start", pid=self.pid, run_id=run_id, pid_source="server")
+            for kind in events:
+                lc.event(kind, pid=self.pid, run_id=run_id, exception_type="X")
+        def wait(self):
+            return code
+    monkeypatch.setattr(lc.subprocess, "Popen", Child)
+    assert lc.supervise(tmp_path) == code
+    exit_row = lc.read_events()[-1]
+    assert exit_row["event"] == "exit" and exit_row.get("reason") == expect
+
+
 def test_production_never_reads_test_crash_env(monkeypatch):
     from robei_mcp import server_app
     seen = []

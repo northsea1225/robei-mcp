@@ -313,14 +313,19 @@ def supervise(root: Path, *, entry: Path | None = None) -> int:
     proc = subprocess.Popen(command, cwd=root, env=env)
     code = proc.wait()
     try:
-        starts = [r for r in read_events() if r.get("run_id") == run_id and r["event"] == "start"]
+        run_rows = [r for r in read_events() if r.get("run_id") == run_id]
     except OSError:
-        starts = []
+        run_rows = []
+    starts = [r for r in run_rows if r["event"] == "start"]
+    # Exit code 1 with neither clean_exit nor crash means atexit never ran:
+    # TerminateProcess/taskkill /F (both yield 1) rather than the server's own exit.
+    forced = ({"reason": "forced_kill_suspected"}
+              if code == 1 and not any(r["event"] in {"clean_exit", "crash"} for r in run_rows) else {})
     # The server is authoritative for its own PID.  If it failed before
     # install(), record only the exit; never fabricate a launcher start event.
     server_pid = starts[-1]["pid"] if starts else proc.pid
     event("exit", pid=server_pid, run_id=run_id, exit_code=code,
-          duration_s=round(time.monotonic() - started, 3), launcher_pid=os.getpid(), spawn_pid=proc.pid)
+          duration_s=round(time.monotonic() - started, 3), launcher_pid=os.getpid(), spawn_pid=proc.pid, **forced)
     return code
 
 
@@ -372,7 +377,11 @@ def health() -> int:
 
     alive, stale = [], []
     for pid in sorted(known):
-        row = by_pid.get(pid) or {}
+        if pid not in by_pid:
+            # No such process any more (e.g. the whole tree was force-killed, so no
+            # exit event was written).  That is "exit not observed", not a stale pid.
+            continue
+        row = by_pid[pid]
         executable = str(row.get("ExecutablePath") or "")
         command = str(row.get("CommandLine") or "")
         normalized = command.replace("\\", "/").lower()
